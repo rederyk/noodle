@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CAD Studio</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; display: flex; height: 100vh; }
+  #sidebar { width: 260px; background: #16213e; padding: 16px; overflow-y: auto; border-right: 1px solid #0f3460; }
+  #sidebar h2 { font-size: 14px; color: #888; margin-bottom: 8px; }
+  #sidebar .proj { padding: 8px 12px; margin: 4px 0; border-radius: 6px; cursor: pointer; background: #0f3460; }
+  #sidebar .proj:hover { background: #1a5276; }
+  #sidebar .proj.active { background: #e94560; }
+  #main { flex: 1; display: flex; flex-direction: column; }
+  #toolbar { height: 40px; background: #16213e; display: flex; align-items: center; gap: 8px; padding: 0 16px; border-bottom: 1px solid #0f3460; }
+  #toolbar button { background: #e94560; color: #fff; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  #toolbar button:hover { background: #c0392b; }
+  #toolbar select, #toolbar input { background: #0f3460; color: #eee; border: 1px solid #1a5276; padding: 4px 8px; border-radius: 4px; }
+  #content { flex: 1; display: flex; }
+  #editor-area { flex: 1; display: flex; flex-direction: column; }
+  #code-editor { flex: 1; background: #0d1117; color: #c9d1d9; font-family: 'Fira Code', monospace; font-size: 14px; padding: 12px; border: none; resize: none; outline: none; tab-size: 4; }
+  #viewer-area { flex: 1; position: relative; }
+  #viewer-canvas { width: 100%; height: 100%; }
+  #status { height: 24px; background: #16213e; padding: 0 16px; line-height: 24px; font-size: 12px; color: #888; }
+  #params-panel { display: none; position: absolute; right: 16px; top: 16px; background: #16213eee; padding: 16px; border-radius: 8px; min-width: 200px; }
+  #params-panel label { display: block; margin: 6px 0; font-size: 13px; }
+  #params-panel input { width: 80px; background: #0f3460; color: #eee; border: 1px solid #1a5276; padding: 2px 6px; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h2>PROJECTS</h2>
+  <div id="project-list"></div>
+  <div style="margin-top:16px">
+    <button onclick="createProject()" style="width:100%;background:#0f3460;color:#eee;border:none;padding:8px;border-radius:6px;cursor:pointer">+ New Project</button>
+  </div>
+</div>
+
+<div id="main">
+  <div id="toolbar">
+    <select id="backend-select">
+      <option value="openscad">OpenSCAD</option>
+      <option value="cadquery">CadQuery</option>
+    </select>
+    <button onclick="saveProject()">💾 Save</button>
+    <button onclick="renderProject()">▶ Render</button>
+    <button onclick="downloadSTL()">⬇ STL</button>
+    <span id="render-status"></span>
+  </div>
+  <div id="content">
+    <div id="editor-area">
+      <textarea id="code-editor" spellcheck="false" placeholder="Write OpenSCAD or CadQuery code here..."></textarea>
+    </div>
+    <div id="viewer-area">
+      <canvas id="viewer-canvas"></canvas>
+      <div id="params-panel"></div>
+    </div>
+  </div>
+  <div id="status">CAD Studio v0.1.0 — ready</div>
+</div>
+
+<script>
+const API = '';
+let currentProject = null;
+
+// --- Projects ---
+async function loadProjects() {
+  const res = await fetch(`${API}/api/projects`);
+  const projects = await res.json();
+  const list = document.getElementById('project-list');
+  list.innerHTML = '';
+  for (const p of projects) {
+    const div = document.createElement('div');
+    div.className = 'proj' + (p.name === currentProject ? ' active' : '');
+    div.textContent = p.name;
+    div.onclick = () => openProject(p.name);
+    list.appendChild(div);
+  }
+}
+
+async function openProject(name) {
+  const res = await fetch(`${API}/api/projects/${name}`);
+  const data = await res.json();
+  currentProject = name;
+  document.getElementById('code-editor').value = data.code || '';
+  document.getElementById('backend-select').value = data.backend || 'openscad';
+  setStatus(`Opened: ${name}`);
+  loadProjects();
+}
+
+async function createProject() {
+  const name = prompt('Project name:');
+  if (!name) return;
+  const backend = document.getElementById('backend-select').value;
+  const code = backend === 'openscad'
+    ? '// Param: width = 10\n// Param: height = 10\n// Param: depth = 10\n\ncube([width, height, depth]);'
+    : 'import cadquery as cq\n\nresult = cq.Workplane("XY").box(10, 10, 10)\ncq.exporters.export(result, __output_stl__)';
+  await fetch(`${API}/api/projects/${name}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({code, backend}),
+  });
+  await openProject(name);
+  loadProjects();
+}
+
+async function saveProject() {
+  if (!currentProject) return alert('No project open');
+  const code = document.getElementById('code-editor').value;
+  const backend = document.getElementById('backend-select').value;
+  await fetch(`${API}/api/projects/${currentProject}`, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({code, backend}),
+  });
+  setStatus(`Saved: ${currentProject}`);
+}
+
+async function renderProject() {
+  if (!currentProject) return alert('No project open');
+  await saveProject();
+  setStatus('Rendering...');
+  const res = await fetch(`${API}/api/projects/${currentProject}/render`, {method: 'POST'});
+  const data = await res.json();
+  if (data.status === 'rendered') {
+    setStatus(`Rendered ✓ ${data.warnings ? '⚠ ' + data.warnings : ''}`);
+    loadSTL(`${API}/api/projects/${currentProject}/download`);
+  } else {
+    setStatus('Render failed: ' + JSON.stringify(data));
+  }
+}
+
+function downloadSTL() {
+  if (!currentProject) return;
+  window.open(`${API}/api/projects/${currentProject}/download`, '_blank');
+}
+
+function setStatus(msg) {
+  document.getElementById('status').textContent = msg;
+  document.getElementById('render-status').textContent = msg;
+}
+
+// --- STL Viewer (Three.js) ---
+let scene, camera, renderer, mesh;
+
+function initViewer() {
+  // Minimal stub — Three.js loaded via CDN in production
+  const canvas = document.getElementById('viewer-canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#0d1117';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#888';
+  ctx.font = '16px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('3D Viewer — click Render to see model', canvas.width/2, canvas.height/2);
+}
+
+function loadSTL(url) {
+  // Stub: in production, use Three.js STLLoader
+  setStatus('STL ready at ' + url);
+}
+
+// --- Init ---
+initViewer();
+loadProjects();
+</script>
+</body>
+</html>

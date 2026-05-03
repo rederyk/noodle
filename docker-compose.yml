@@ -1,0 +1,17 @@
+services:
+  cad-studio:
+    build: .
+    container_name: cad-studio
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./projects:/app/projects
+      - ./backends:/app/backends:ro
+      - ./webui:/app/webui:ro
+      - ./server.py:/app/server.py:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
