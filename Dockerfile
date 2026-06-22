@@ -3,7 +3,8 @@ FROM python:3.10-slim
 # Install OpenSCAD + system deps for CadQuery
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openscad \
-    libgl1-mesa-glx \
+    libgl1 \
+    libegl1 \
     libglu1-mesa \
     libxmu6 \
     libxi6 \
@@ -13,9 +14,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfontconfig1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install CadQuery (bundles pythonocc + OCP)
-RUN pip install --no-cache-dir \
-    cadquery==2.7.0 \
+# Install build123d (bundles its matching cadquery-ocp / OCCT) + node engine deps.
+# NOTE: cadquery 2.7.0 pins an OCP build incompatible with build123d, so build123d
+# is now the B-Rep backend (per PLAN_NODE_CAD.md, it replaces cadquery).
+RUN pip install --no-cache-dir --timeout 120 --retries 5 \
+    build123d \
+    numpy \
     fastapi==0.115.0 \
     uvicorn[standard]==0.30.0 \
     python-multipart
@@ -24,6 +28,7 @@ WORKDIR /app
 
 COPY server.py .
 COPY backends/ ./backends/
+COPY cad_nodes/ ./cad_nodes/
 COPY webui/ ./webui/
 
 # Projects volume

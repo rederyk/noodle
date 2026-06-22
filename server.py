@@ -15,6 +15,12 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+# Node-based CAD engine (pure imports; build123d only used in the subprocess)
+from cad_nodes import catalog
+from cad_nodes.graph import Graph, ValidationError
+from cad_nodes.transpiler import transpile
+from cad_nodes.executor import execute_graph
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -196,6 +202,18 @@ async def render_project(name: str):
     meta = json.loads((d / "meta.json").read_text()) if (d / "meta.json").exists() else {}
     backend = meta.get("backend", "openscad")
 
+    # Node graph: transpile + execute build123d, producing output.stl.
+    if backend == "nodegraph":
+        result = execute_graph(_load_graph(name), d)
+        if not result["success"]:
+            raise HTTPException(400, f"Graph execution failed:\n{result.get('errors')}")
+        return {
+            "status": "rendered",
+            "stl": f"/api/projects/{name}/download",
+            "warnings": None,
+            "view": result["view"],
+        }
+
     ext = "scad" if backend == "openscad" else "py"
     code_path = d / f"main.{ext}"
     if not code_path.exists():
@@ -274,11 +292,96 @@ async def set_params(name: str, payload: ParamsPayload):
 
 
 # ---------------------------------------------------------------------------
+# Node-based CAD (graph engine)
+# ---------------------------------------------------------------------------
+def _load_graph(name: str) -> Graph:
+    d = require_project(name)
+    gpath = d / "graph.json"
+    if not gpath.exists():
+        raise HTTPException(404, f"Project '{name}' has no graph.json")
+    return Graph.from_dict(json.loads(gpath.read_text()))
+
+
+@app.get("/api/nodes")
+async def node_catalog(category: str = ""):
+    """Full node catalog (optionally filtered by category)."""
+    nodes = catalog.as_json()
+    if category:
+        nodes = [n for n in nodes if n.get("category") == category]
+    return nodes
+
+
+@app.post("/api/graph/{name}")
+async def save_graph(name: str, graph: dict):
+    """Create/overwrite a node graph project."""
+    graph.setdefault("name", name)
+    try:
+        Graph.from_dict(graph).validate()
+    except ValidationError as e:
+        raise HTTPException(400, f"Invalid graph: {e}")
+
+    d = project_dir(name)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "graph.json").write_text(json.dumps(graph, indent=2))
+    (d / "meta.json").write_text(json.dumps({
+        "backend": "nodegraph",
+        "description": graph.get("description", ""),
+    }, indent=2))
+    return {"status": "saved", "name": name,
+            "nodes": len(graph.get("nodes", [])),
+            "connections": len(graph.get("connections", []))}
+
+
+@app.get("/api/graph/{name}")
+async def get_graph(name: str):
+    return _load_graph(name).to_dict()
+
+
+@app.get("/api/graph/{name}/code")
+async def get_graph_code(name: str):
+    try:
+        return {"code": transpile(_load_graph(name))}
+    except ValidationError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/graph/{name}/execute")
+async def execute_graph_project(name: str):
+    d = require_project(name)
+    graph = _load_graph(name)
+    try:
+        result = execute_graph(graph, d)
+    except ValidationError as e:
+        raise HTTPException(400, str(e))
+    if not result["success"]:
+        raise HTTPException(400, {
+            "message": "Graph execution failed",
+            "errors": result.get("errors"),
+            "code": result.get("code"),
+        })
+    return {
+        "status": "executed",
+        "view": result["view"],
+        "code": result["code"],
+        "stl": f"/api/projects/{name}/download" if result.get("stl") else None,
+    }
+
+
+@app.get("/api/graph/{name}/view")
+async def get_graph_view(name: str):
+    d = require_project(name)
+    vpath = d / "view.json"
+    if not vpath.exists():
+        raise HTTPException(404, "No view yet. Call /execute first.")
+    return json.loads(vpath.read_text())
+
+
+# ---------------------------------------------------------------------------
 # Backends list
 # ---------------------------------------------------------------------------
 @app.get("/api/backends")
 async def list_backends():
     return [
         {"id": "openscad", "name": "OpenSCAD", "type": "CSG text (.scad)"},
-        {"id": "cadquery", "name": "CadQuery / PythonOCC", "type": "B-Rep Python (.py)"},
+        {"id": "nodegraph", "name": "Node CAD (build123d)", "type": "Visual graph -> build123d"},
     ]

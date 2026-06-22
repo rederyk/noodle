@@ -1,0 +1,18 @@
+{
+  "name": "flange",
+  "nodes": [
+    {"id": "c_outer", "type": "Circle", "params": {"radius": 20}, "position": [0, 0]},
+    {"id": "e_outer", "type": "Extrude", "params": {"amount": 10}, "position": [200, 0]},
+    {"id": "c_hole", "type": "Circle", "params": {"radius": 5}, "position": [0, 200]},
+    {"id": "e_hole", "type": "Extrude", "params": {"amount": 10}, "position": [200, 200]},
+    {"id": "sub", "type": "Subtract", "params": {}, "position": [400, 100]},
+    {"id": "exp", "type": "ExportSTEP", "params": {"path": "flange.step"}, "position": [600, 100]}
+  ],
+  "connections": [
+    {"id": "k1", "from_node": "c_outer", "from_socket": "result", "to_node": "e_outer", "to_socket": "sketch"},
+    {"id": "k2", "from_node": "c_hole", "from_socket": "result", "to_node": "e_hole", "to_socket": "sketch"},
+    {"id": "k3", "from_node": "e_outer", "from_socket": "result", "to_node": "sub", "to_socket": "a"},
+    {"id": "k4", "from_node": "e_hole", "from_socket": "result", "to_node": "sub", "to_socket": "b"},
+    {"id": "k5", "from_node": "sub", "from_socket": "result", "to_node": "exp", "to_socket": "shape"}
+  ]
+}

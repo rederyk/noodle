@@ -2,69 +2,398 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CAD Studio</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.2/ace.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.2/mode-scad.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.2/mode-python.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.2/theme-one_dark.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.2/ext-language_tools.js"></script>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; display: flex; height: 100vh; }
-  #sidebar { width: 260px; background: #16213e; padding: 16px; overflow-y: auto; border-right: 1px solid #0f3460; }
-  #sidebar h2 { font-size: 14px; color: #888; margin-bottom: 8px; }
-  #sidebar .proj { padding: 8px 12px; margin: 4px 0; border-radius: 6px; cursor: pointer; background: #0f3460; }
-  #sidebar .proj:hover { background: #1a5276; }
-  #sidebar .proj.active { background: #e94560; }
-  #main { flex: 1; display: flex; flex-direction: column; }
-  #toolbar { height: 40px; background: #16213e; display: flex; align-items: center; gap: 8px; padding: 0 16px; border-bottom: 1px solid #0f3460; }
-  #toolbar button { background: #e94560; color: #fff; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer; font-size: 13px; }
-  #toolbar button:hover { background: #c0392b; }
-  #toolbar select, #toolbar input { background: #0f3460; color: #eee; border: 1px solid #1a5276; padding: 4px 8px; border-radius: 4px; }
-  #content { flex: 1; display: flex; }
-  #editor-area { flex: 1; display: flex; flex-direction: column; }
-  #code-editor { flex: 1; background: #0d1117; color: #c9d1d9; font-family: 'Fira Code', monospace; font-size: 14px; padding: 12px; border: none; resize: none; outline: none; tab-size: 4; }
-  #viewer-area { flex: 1; position: relative; }
-  #viewer-canvas { width: 100%; height: 100%; }
-  #status { height: 24px; background: #16213e; padding: 0 16px; line-height: 24px; font-size: 12px; color: #888; }
-  #params-panel { display: none; position: absolute; right: 16px; top: 16px; background: #16213eee; padding: 16px; border-radius: 8px; min-width: 200px; }
-  #params-panel label { display: block; margin: 6px 0; font-size: 13px; }
-  #params-panel input { width: 80px; background: #0f3460; color: #eee; border: 1px solid #1a5276; padding: 2px 6px; border-radius: 3px; }
+:root {
+  --bg-0: #0b0e14;
+  --bg-1: #0f1318;
+  --bg-2: #151a22;
+  --bg-3: #1a2030;
+  --border: #1e2738;
+  --text: #c5cdd8;
+  --text-dim: #5c6a7a;
+  --accent: #e94560;
+  --accent-hover: #ff6b81;
+  --accent-glow: rgba(233,69,96,.15);
+  --green: #2dd4a0;
+  --blue: #3b82f6;
+  --orange: #f59e0b;
+  --radius: 8px;
+  --font: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body { height:100%; overflow:hidden; }
+body { font-family:var(--font); background:var(--bg-0); color:var(--text); }
+
+/* ── Layout ── */
+.app { display:grid; grid-template-columns:240px 1fr; grid-template-rows:48px 1fr 28px; height:100vh; }
+.sidebar { grid-row:1/4; background:var(--bg-1); border-right:1px solid var(--border); display:flex; flex-direction:column; overflow:hidden; }
+.toolbar { grid-column:2; background:var(--bg-1); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:6px; padding:0 12px; }
+.workspace { grid-column:2; display:flex; overflow:hidden; position:relative; }
+.statusbar { grid-column:2; background:var(--bg-1); border-top:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; padding:0 12px; font-size:11px; color:var(--text-dim); }
+
+/* ── Sidebar ── */
+.sidebar-header { padding:14px 16px 10px; display:flex; align-items:center; justify-content:space-between; }
+.sidebar-header h1 { font-size:14px; font-weight:700; letter-spacing:.5px; color:var(--accent); }
+.sidebar-header span { font-size:10px; color:var(--text-dim); background:var(--bg-3); padding:2px 6px; border-radius:4px; }
+.project-list { flex:1; overflow-y:auto; padding:4px 8px; }
+.project-list::-webkit-scrollbar { width:4px; }
+.project-list::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+.proj-item { padding:8px 10px; margin:2px 0; border-radius:6px; cursor:pointer; display:flex; align-items:center; gap:8px; font-size:13px; transition:all .15s; border:1px solid transparent; }
+.proj-item:hover { background:var(--bg-3); }
+.proj-item.active { background:var(--accent-glow); border-color:var(--accent); color:#fff; }
+.proj-item .icon { font-size:14px; opacity:.6; }
+.proj-item .name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.proj-item .badge { font-size:9px; padding:1px 5px; border-radius:3px; background:var(--bg-3); color:var(--text-dim); text-transform:uppercase; font-weight:600; }
+.proj-item.active .badge { background:var(--accent); color:#fff; }
+.sidebar-footer { padding:8px; border-top:1px solid var(--border); }
+.btn-new { width:100%; padding:8px; background:var(--bg-3); border:1px dashed var(--border); border-radius:6px; color:var(--text-dim); cursor:pointer; font-size:12px; transition:all .15s; }
+.btn-new:hover { border-color:var(--accent); color:var(--accent); background:var(--accent-glow); }
+
+/* ── Toolbar ── */
+.toolbar select { background:var(--bg-3); color:var(--text); border:1px solid var(--border); padding:5px 8px; border-radius:5px; font-size:12px; cursor:pointer; }
+.toolbar select:focus { outline:none; border-color:var(--accent); }
+.tb-btn { display:inline-flex; align-items:center; gap:5px; padding:5px 12px; border:1px solid var(--border); border-radius:5px; background:var(--bg-3); color:var(--text); font-size:12px; cursor:pointer; transition:all .15s; white-space:nowrap; }
+.tb-btn:hover { border-color:var(--text-dim); background:var(--bg-2); }
+.tb-btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+.tb-btn.primary:hover { background:var(--accent-hover); border-color:var(--accent-hover); }
+.tb-btn.primary:disabled { opacity:.4; cursor:not-allowed; }
+.tb-btn .spinner { width:12px; height:12px; border:2px solid transparent; border-top-color:#fff; border-radius:50%; animation:spin .6s linear infinite; display:none; }
+.tb-btn.loading .spinner { display:inline-block; }
+@keyframes spin { to { transform:rotate(360deg); } }
+.toolbar .spacer { flex:1; }
+.toolbar .status-pill { font-size:11px; padding:3px 8px; border-radius:10px; background:var(--bg-3); color:var(--text-dim); }
+.toolbar .status-pill.ok { color:var(--green); }
+.toolbar .status-pill.err { color:var(--accent); }
+
+/* ── Workspace split ── */
+.editor-pane { flex:1; display:flex; flex-direction:column; min-width:200px; position:relative; }
+.viewer-pane { flex:1; position:relative; min-width:200px; background:var(--bg-0); }
+.split-handle { width:5px; background:var(--border); cursor:col-resize; transition:background .15s; flex-shrink:0; }
+.split-handle:hover, .split-handle.dragging { background:var(--accent); }
+#ace-editor { position:absolute; inset:0; font-size:14px; }
+
+/* ── 3D Viewer ── */
+#viewer-canvas { width:100%; height:100%; display:block; }
+.viewer-overlay { position:absolute; bottom:12px; left:12px; font-size:10px; color:var(--text-dim); pointer-events:none; display:flex; gap:12px; }
+.viewer-overlay kbd { background:var(--bg-3); padding:1px 4px; border-radius:3px; font-size:9px; border:1px solid var(--border); }
+.viewer-stats { position:absolute; top:12px; right:12px; font-size:11px; color:var(--text-dim); background:var(--bg-1ee); padding:6px 10px; border-radius:6px; border:1px solid var(--border); display:none; }
+.viewer-stats.visible { display:block; }
+
+/* ── Params panel ── */
+.params-panel { position:absolute; right:12px; top:12px; width:240px; background:var(--bg-1); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; display:none; z-index:10; box-shadow:0 8px 32px rgba(0,0,0,.4); }
+.params-panel.open { display:block; }
+.params-header { padding:10px 12px; font-size:12px; font-weight:600; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
+.params-header .close { cursor:pointer; color:var(--text-dim); }
+.params-body { padding:10px 12px; max-height:300px; overflow-y:auto; }
+.param-row { display:flex; align-items:center; justify-content:space-between; margin:6px 0; }
+.param-row label { font-size:12px; color:var(--text); font-family:var(--mono); }
+.param-row input { width:72px; background:var(--bg-3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:12px; font-family:var(--mono); text-align:right; }
+.param-row input:focus { outline:none; border-color:var(--accent); }
+.params-footer { padding:8px 12px; border-top:1px solid var(--border); }
+.params-footer button { width:100%; padding:6px; background:var(--accent); color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600; }
+.params-footer button:hover { background:var(--accent-hover); }
+.params-empty { padding:16px; text-align:center; font-size:11px; color:var(--text-dim); }
+.params-empty code { background:var(--bg-3); padding:1px 4px; border-radius:3px; font-size:10px; }
+
+/* ── Console ── */
+.console-panel { position:absolute; bottom:0; left:0; right:0; height:0; background:var(--bg-1); border-top:1px solid var(--border); overflow:hidden; transition:height .2s; z-index:5; }
+.console-panel.open { height:140px; }
+.console-header { padding:4px 10px; font-size:11px; color:var(--text-dim); border-bottom:1px solid var(--border); display:flex; justify-content:space-between; }
+.console-body { padding:6px 10px; font-family:var(--mono); font-size:11px; color:var(--text-dim); overflow-y:auto; height:calc(100% - 26px); }
+.console-body .log { margin:2px 0; }
+.console-body .log.err { color:var(--accent); }
+.console-body .log.ok { color:var(--green); }
+
+/* ── Modal ── */
+.modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:100; display:none; align-items:center; justify-content:center; }
+.modal-overlay.open { display:flex; }
+.modal { background:var(--bg-1); border:1px solid var(--border); border-radius:12px; padding:24px; width:360px; }
+.modal h3 { font-size:16px; margin-bottom:16px; }
+.modal label { display:block; font-size:12px; color:var(--text-dim); margin-bottom:4px; }
+.modal input, .modal select { width:100%; padding:8px 10px; background:var(--bg-3); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:13px; margin-bottom:12px; }
+.modal input:focus, .modal select:focus { outline:none; border-color:var(--accent); }
+.modal .actions { display:flex; gap:8px; justify-content:flex-end; margin-top:8px; }
+.modal .actions button { padding:7px 16px; border-radius:6px; border:1px solid var(--border); background:var(--bg-3); color:var(--text); cursor:pointer; font-size:13px; }
+.modal .actions button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+
+/* ── Statusbar ── */
+.statusbar .left { display:flex; gap:12px; align-items:center; }
+.statusbar .right { display:flex; gap:12px; align-items:center; }
+.statusbar .dot { width:6px; height:6px; border-radius:50%; background:var(--green); }
 </style>
 </head>
 <body>
-
-<div id="sidebar">
-  <h2>PROJECTS</h2>
-  <div id="project-list"></div>
-  <div style="margin-top:16px">
-    <button onclick="createProject()" style="width:100%;background:#0f3460;color:#eee;border:none;padding:8px;border-radius:6px;cursor:pointer">+ New Project</button>
+<div class="app">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <h1>CAD Studio</h1>
+      <span>v0.2</span>
+    </div>
+    <div class="project-list" id="project-list"></div>
+    <div class="sidebar-footer">
+      <button class="btn-new" onclick="showNewModal()">+ New Project</button>
+    </div>
   </div>
-</div>
 
-<div id="main">
-  <div id="toolbar">
-    <select id="backend-select">
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <select id="sel-backend" onchange="switchBackend()">
       <option value="openscad">OpenSCAD</option>
       <option value="cadquery">CadQuery</option>
     </select>
-    <button onclick="saveProject()">💾 Save</button>
-    <button onclick="renderProject()">▶ Render</button>
-    <button onclick="downloadSTL()">⬇ STL</button>
-    <span id="render-status"></span>
+    <button class="tb-btn" onclick="saveProject()">💾 Save</button>
+    <button class="tb-btn primary" id="btn-render" onclick="renderProject()">▶ Render</button>
+    <button class="tb-btn" onclick="downloadSTL()">⬇ STL</button>
+    <button class="tb-btn" onclick="toggleParams()">⚙ Params</button>
+    <button class="tb-btn" onclick="toggleConsole()">📟 Console</button>
+    <div class="spacer"></div>
+    <div class="status-pill" id="status-pill">Ready</div>
   </div>
-  <div id="content">
-    <div id="editor-area">
-      <textarea id="code-editor" spellcheck="false" placeholder="Write OpenSCAD or CadQuery code here..."></textarea>
+
+  <!-- Workspace -->
+  <div class="workspace">
+    <div class="editor-pane" id="editor-pane">
+      <div id="ace-editor"></div>
+      <div class="console-panel" id="console-panel">
+        <div class="console-header"><span>Console</span><span class="close" onclick="toggleConsole()">✕</span></div>
+        <div class="console-body" id="console-body"></div>
+      </div>
     </div>
-    <div id="viewer-area">
+    <div class="split-handle" id="split-handle"></div>
+    <div class="viewer-pane" id="viewer-pane">
       <canvas id="viewer-canvas"></canvas>
-      <div id="params-panel"></div>
+      <div class="viewer-overlay">
+        <span><kbd>LMB</kbd> Rotate</span>
+        <span><kbd>RMB</kbd> Pan</span>
+        <span><kbd>Scroll</kbd> Zoom</span>
+        <span><kbd>Ctrl+Enter</kbd> Render</span>
+      </div>
+      <div class="viewer-stats" id="viewer-stats"></div>
+      <div class="params-panel" id="params-panel">
+        <div class="params-header"><span>Parameters</span><span class="close" onclick="toggleParams()">✕</span></div>
+        <div class="params-body" id="params-body"></div>
+        <div class="params-footer"><button onclick="applyParams()">Apply & Render</button></div>
+      </div>
     </div>
   </div>
-  <div id="status">CAD Studio v0.1.0 — ready</div>
+
+  <!-- Statusbar -->
+  <div class="statusbar">
+    <div class="left">
+      <span class="dot"></span>
+      <span id="sb-status">Ready</span>
+    </div>
+    <div class="right">
+      <span id="sb-project">No project</span>
+      <span id="sb-backend">openscad</span>
+    </div>
+  </div>
 </div>
 
-<script>
+<!-- New Project Modal -->
+<div class="modal-overlay" id="modal-new">
+  <div class="modal">
+    <h3>New Project</h3>
+    <label>Project name</label>
+    <input id="inp-name" placeholder="my-part" autofocus>
+    <label>Backend</label>
+    <select id="inp-backend">
+      <option value="openscad">OpenSCAD — CSG text</option>
+      <option value="cadquery">CadQuery — B-Rep Python</option>
+    </select>
+    <div class="actions">
+      <button onclick="hideNewModal()">Cancel</button>
+      <button class="primary" onclick="createProject()">Create</button>
+    </div>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
 const API = '';
 let currentProject = null;
+let aceEditor = null;
 
-// --- Projects ---
+// ── Ace Editor ──
+function initAce() {
+  aceEditor = ace.edit('ace-editor');
+  aceEditor.setTheme('one_dark');
+  aceEditor.setOptions({
+    fontSize: 14,
+    fontFamily: 'JetBrains Mono, Fira Code, Consolas, monospace',
+    showPrintMargin: false,
+    tabSize: 4,
+    useSoftTabs: true,
+    enableBasicAutocompletion: true,
+    scrollPastEnd: 0.5,
+  });
+  aceEditor.commands.addCommand({
+    name: 'render',
+    bindKey: { win: 'Ctrl-Enter', mac: 'Cmd-Enter' },
+    exec: () => renderProject(),
+  });
+  aceEditor.commands.addCommand({
+    name: 'save',
+    bindKey: { win: 'Ctrl-S', mac: 'Cmd-S' },
+    exec: () => saveProject(),
+  });
+  setAceMode('openscad');
+}
+
+function setAceMode(backend) {
+  if (backend === 'cadquery') {
+    aceEditor.session.setMode('ace/mode/python');
+  } else {
+    aceEditor.session.setMode('ace/mode/scad');
+  }
+}
+
+// ── Three.js Viewer ──
+let scene, camera, renderer, controls, currentMesh, gridHelper;
+let stlLoader;
+
+function initViewer() {
+  const canvas = document.getElementById('viewer-canvas');
+  const container = canvas.parentElement;
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0b0e14);
+
+  // Grid
+  gridHelper = new THREE.GridHelper(100, 50, 0x1e2738, 0x151a22);
+  scene.add(gridHelper);
+
+  // Axes
+  const axes = new THREE.AxesHelper(25);
+  axes.material.transparent = true;
+  axes.material.opacity = 0.5;
+  scene.add(axes);
+
+  // Lights
+  scene.add(new THREE.AmbientLight(0x404060, 2.5));
+  const key = new THREE.DirectionalLight(0xffffff, 2);
+  key.position.set(40, 60, 40);
+  scene.add(key);
+  const fill = new THREE.DirectionalLight(0x8888cc, 0.8);
+  fill.position.set(-40, 20, -40);
+  scene.add(fill);
+  const rim = new THREE.DirectionalLight(0xe94560, 0.3);
+  rim.position.set(0, -20, 50);
+  scene.add(rim);
+
+  // Camera
+  camera = new THREE.PerspectiveCamera(40, container.clientWidth / container.clientHeight, 0.1, 2000);
+  camera.position.set(50, 35, 50);
+
+  // Renderer
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setSize(container.clientWidth, container.clientHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.1;
+
+  // Controls
+  controls = new OrbitControls(camera, canvas);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.target.set(0, 5, 0);
+
+  stlLoader = new STLLoader();
+  animate();
+  window.addEventListener('resize', onResize);
+}
+
+function onResize() {
+  const container = document.getElementById('viewer-canvas').parentElement;
+  const w = container.clientWidth;
+  const h = container.clientHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  if (aceEditor) aceEditor.resize();
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+function loadSTL(url) {
+  stlLoader.load(url, (geometry) => {
+    if (currentMesh) {
+      scene.remove(currentMesh);
+      currentMesh.geometry.dispose();
+      currentMesh.material.dispose();
+    }
+
+    geometry.computeVertexNormals();
+    const material = new THREE.MeshStandardMaterial({
+      color: 0xe94560,
+      roughness: 0.35,
+      metalness: 0.15,
+      side: THREE.DoubleSide,
+    });
+    currentMesh = new THREE.Mesh(geometry, material);
+
+    // Center
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    const center = new THREE.Vector3();
+    box.getCenter(center);
+    currentMesh.position.sub(center);
+    currentMesh.position.y += (box.max.y - box.min.y) / 2; // sit on grid
+
+    // Fit camera
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const dist = maxDim * 2.2;
+    camera.position.set(dist * 0.6, dist * 0.45, dist * 0.6);
+    controls.target.set(0, size.y / 2, 0);
+    controls.update();
+
+    scene.add(currentMesh);
+
+    // Stats
+    const verts = geometry.attributes.position.count;
+    const faces = verts / 3;
+    const stats = document.getElementById('viewer-stats');
+    stats.innerHTML = `${Math.round(size.x*10)/10} × ${Math.round(size.y*10)/10} × ${Math.round(size.z*10)/10} mm<br>${verts} verts · ${faces} faces`;
+    stats.classList.add('visible');
+
+    setStatus('Rendered ✓', 'ok');
+    logConsole(`Rendered: ${Math.round(size.x*10)/10}×${Math.round(size.y*10)/10}×${Math.round(size.z*10)/10} mm — ${verts} vertices`, 'ok');
+  }, (progress) => {
+    if (progress.total) setStatus(`Loading ${(progress.loaded/progress.total*100)|0}%...`);
+  }, (err) => {
+    setStatus('STL load failed', 'err');
+    logConsole('STL load error: ' + err.message, 'err');
+  });
+}
+
+// ── API ──
 async function loadProjects() {
   const res = await fetch(`${API}/api/projects`);
   const projects = await res.json();
@@ -72,8 +401,9 @@ async function loadProjects() {
   list.innerHTML = '';
   for (const p of projects) {
     const div = document.createElement('div');
-    div.className = 'proj' + (p.name === currentProject ? ' active' : '');
-    div.textContent = p.name;
+    div.className = 'proj-item' + (p.name === currentProject ? ' active' : '');
+    const icon = p.backend === 'cadquery' ? '🐍' : '🔷';
+    div.innerHTML = `<span class="icon">${icon}</span><span class="name">${p.name}</span><span class="badge">${p.backend}</span>`;
     div.onclick = () => openProject(p.name);
     list.appendChild(div);
   }
@@ -83,87 +413,202 @@ async function openProject(name) {
   const res = await fetch(`${API}/api/projects/${name}`);
   const data = await res.json();
   currentProject = name;
-  document.getElementById('code-editor').value = data.code || '';
-  document.getElementById('backend-select').value = data.backend || 'openscad';
-  setStatus(`Opened: ${name}`);
+  aceEditor.setValue(data.code || '', -1);
+  document.getElementById('sel-backend').value = data.backend || 'openscad';
+  setAceMode(data.backend || 'openscad');
+  document.getElementById('sb-project').textContent = name;
+  document.getElementById('sb-backend').textContent = data.backend || 'openscad';
+  setStatus('Opened: ' + name);
   loadProjects();
+  loadParams();
 }
 
-async function createProject() {
-  const name = prompt('Project name:');
-  if (!name) return;
-  const backend = document.getElementById('backend-select').value;
-  const code = backend === 'openscad'
-    ? '// Param: width = 10\n// Param: height = 10\n// Param: depth = 10\n\ncube([width, height, depth]);'
-    : 'import cadquery as cq\n\nresult = cq.Workplane("XY").box(10, 10, 10)\ncq.exporters.export(result, __output_stl__)';
-  await fetch(`${API}/api/projects/${name}`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({code, backend}),
-  });
-  await openProject(name);
-  loadProjects();
-}
+window.switchBackend = function() {
+  const backend = document.getElementById('sel-backend').value;
+  setAceMode(backend);
+  document.getElementById('sb-backend').textContent = backend;
+};
 
-async function saveProject() {
-  if (!currentProject) return alert('No project open');
-  const code = document.getElementById('code-editor').value;
-  const backend = document.getElementById('backend-select').value;
+window.saveProject = async function() {
+  if (!currentProject) return;
+  const code = aceEditor.getValue();
+  const backend = document.getElementById('sel-backend').value;
   await fetch(`${API}/api/projects/${currentProject}`, {
     method: 'PUT',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({code, backend}),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, backend }),
   });
-  setStatus(`Saved: ${currentProject}`);
-}
+  setStatus('Saved ✓');
+  logConsole('Project saved');
+};
 
-async function renderProject() {
-  if (!currentProject) return alert('No project open');
-  await saveProject();
+window.renderProject = async function() {
+  if (!currentProject) return;
+  await window.saveProject();
+  const btn = document.getElementById('btn-render');
+  btn.classList.add('loading');
+  btn.disabled = true;
   setStatus('Rendering...');
-  const res = await fetch(`${API}/api/projects/${currentProject}/render`, {method: 'POST'});
-  const data = await res.json();
-  if (data.status === 'rendered') {
-    setStatus(`Rendered ✓ ${data.warnings ? '⚠ ' + data.warnings : ''}`);
-    loadSTL(`${API}/api/projects/${currentProject}/download`);
-  } else {
-    setStatus('Render failed: ' + JSON.stringify(data));
+  logConsole('Rendering...');
+  try {
+    const res = await fetch(`${API}/api/projects/${currentProject}/render`, { method: 'POST' });
+    const data = await res.json();
+    if (data.status === 'rendered') {
+      loadSTL(`${API}/api/projects/${currentProject}/download?t=${Date.now()}`);
+      if (data.warnings) logConsole('Warnings: ' + data.warnings, 'err');
+    } else {
+      setStatus('Render failed', 'err');
+      logConsole('Render failed: ' + JSON.stringify(data), 'err');
+    }
+  } catch (e) {
+    setStatus('Error', 'err');
+    logConsole('Error: ' + e.message, 'err');
+  } finally {
+    btn.classList.remove('loading');
+    btn.disabled = false;
+  }
+};
+
+window.downloadSTL = function() {
+  if (!currentProject) return;
+  window.open(`${API}/api/projects/${currentProject}/download`, '_blank');
+};
+
+window.createProject = async function() {
+  const name = document.getElementById('inp-name').value.trim();
+  const backend = document.getElementById('inp-backend').value;
+  if (!name) return;
+  const code = backend === 'openscad'
+    ? '// Param: width = 20\n// Param: height = 20\n// Param: depth = 10\n\ndifference() {\n    cube([width, height, depth], center=true);\n    cylinder(h=depth+2, r=width/4, center=true, $fn=64);\n}'
+    : 'import cadquery as cq\n\nresult = (\n    cq.Workplane("XY")\n    .box(20, 20, 10)\n    .faces(">Z").workplane()\n    .hole(6)\n)\ncq.exporters.export(result, __output_stl__)';
+  await fetch(`${API}/api/projects/${name}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, backend }),
+  });
+  hideNewModal();
+  await openProject(name);
+  loadProjects();
+};
+
+// ── Params ──
+async function loadParams() {
+  if (!currentProject) return;
+  const body = document.getElementById('params-body');
+  try {
+    const res = await fetch(`${API}/api/projects/${currentProject}/params`);
+    if (!res.ok) throw new Error('Not available');
+    const params = await res.json();
+    if (Object.keys(params).length === 0) {
+      body.innerHTML = `<div class="params-empty">No params found.<br>Use <code>// Param: name = value</code></div>`;
+      return;
+    }
+    body.innerHTML = '';
+    for (const [key, val] of Object.entries(params)) {
+      const row = document.createElement('div');
+      row.className = 'param-row';
+      row.innerHTML = `<label>${key}</label><input type="number" step="any" value="${val}" data-param="${key}">`;
+      body.appendChild(row);
+    }
+  } catch {
+    body.innerHTML = `<div class="params-empty">Params only for<br>OpenSCAD backend</div>`;
   }
 }
 
-function downloadSTL() {
+window.applyParams = async function() {
   if (!currentProject) return;
-  window.open(`${API}/api/projects/${currentProject}/download`, '_blank');
+  const inputs = document.querySelectorAll('#params-body input[data-param]');
+  const params = {};
+  inputs.forEach(inp => { params[inp.dataset.param] = parseFloat(inp.value); });
+  await fetch(`${API}/api/projects/${currentProject}/params`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ params }),
+  });
+  renderProject();
+};
+
+window.toggleParams = function() {
+  const panel = document.getElementById('params-panel');
+  panel.classList.toggle('open');
+  if (panel.classList.contains('open')) loadParams();
+};
+
+// ── Console ──
+window.toggleConsole = function() {
+  document.getElementById('console-panel').classList.toggle('open');
+  onResize();
+};
+
+function logConsole(msg, type = '') {
+  const body = document.getElementById('console-body');
+  const div = document.createElement('div');
+  div.className = 'log' + (type ? ' ' + type : '');
+  const ts = new Date().toLocaleTimeString();
+  div.textContent = `[${ts}] ${msg}`;
+  body.appendChild(div);
+  body.scrollTop = body.scrollHeight;
 }
 
-function setStatus(msg) {
-  document.getElementById('status').textContent = msg;
-  document.getElementById('render-status').textContent = msg;
+// ── Modal ──
+window.showNewModal = function() {
+  document.getElementById('modal-new').classList.add('open');
+  document.getElementById('inp-name').value = '';
+  document.getElementById('inp-name').focus();
+};
+window.hideNewModal = function() {
+  document.getElementById('modal-new').classList.remove('open');
+};
+document.getElementById('inp-name').addEventListener('keydown', e => {
+  if (e.key === 'Enter') createProject();
+  if (e.key === 'Escape') hideNewModal();
+});
+
+// ── Status ──
+function setStatus(msg, type = '') {
+  document.getElementById('sb-status').textContent = msg;
+  const pill = document.getElementById('status-pill');
+  pill.textContent = msg;
+  pill.className = 'status-pill' + (type ? ' ' + type : '');
 }
 
-// --- STL Viewer (Three.js) ---
-let scene, camera, renderer, mesh;
+// ── Split handle ──
+const splitHandle = document.getElementById('split-handle');
+const editorPane = document.getElementById('editor-pane');
+let isDragging = false;
 
-function initViewer() {
-  // Minimal stub — Three.js loaded via CDN in production
-  const canvas = document.getElementById('viewer-canvas');
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#0d1117';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#888';
-  ctx.font = '16px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('3D Viewer — click Render to see model', canvas.width/2, canvas.height/2);
-}
+splitHandle.addEventListener('mousedown', e => {
+  isDragging = true;
+  splitHandle.classList.add('dragging');
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
+  e.preventDefault();
+});
 
-function loadSTL(url) {
-  // Stub: in production, use Three.js STLLoader
-  setStatus('STL ready at ' + url);
-}
+document.addEventListener('mousemove', e => {
+  if (!isDragging) return;
+  const workspace = document.querySelector('.workspace');
+  const rect = workspace.getBoundingClientRect();
+  const newW = e.clientX - rect.left;
+  const minW = 200;
+  editorPane.style.flex = 'none';
+  editorPane.style.width = Math.max(minW, Math.min(rect.width - minW - 5, newW)) + 'px';
+  onResize();
+});
 
-// --- Init ---
+document.addEventListener('mouseup', () => {
+  if (!isDragging) return;
+  isDragging = false;
+  splitHandle.classList.remove('dragging');
+  document.body.style.cursor = '';
+  document.body.style.userSelect = '';
+});
+
+// ── Init ──
+initAce();
 initViewer();
 loadProjects();
+logConsole('CAD Studio ready');
 </script>
 </body>
 </html>
