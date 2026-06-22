@@ -10,6 +10,7 @@ services:
       - ./cad_nodes:/app/cad_nodes:ro
       - ./webui:/app/webui:ro
       - ./server.py:/app/server.py:ro
+      - ./mcp_server.py:/app/mcp_server.py:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]

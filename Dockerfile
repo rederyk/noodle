@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir --timeout 120 --retries 5 \
     build123d \
     numpy \
+    mcp \
     fastapi==0.115.0 \
     uvicorn[standard]==0.30.0 \
     python-multipart
@@ -27,6 +28,7 @@ RUN pip install --no-cache-dir --timeout 120 --retries 5 \
 WORKDIR /app
 
 COPY server.py .
+COPY mcp_server.py .
 COPY backends/ ./backends/
 COPY cad_nodes/ ./cad_nodes/
 COPY webui/ ./webui/

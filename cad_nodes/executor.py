@@ -79,3 +79,39 @@ def execute_graph(graph: Graph, workdir: Path, timeout: int = 120) -> dict:
     """Transpile + execute a graph end-to-end."""
     code = transpile(graph)
     return execute_code(code, workdir, timeout=timeout)
+
+
+_EXPORTERS = {
+    "step": ("export_step", "step"),
+    "stl": ("export_stl", "stl"),
+    "gltf": ("export_gltf", "gltf"),
+}
+
+
+def export_graph(graph: Graph, workdir: Path, fmt: str = "step",
+                 timeout: int = 120) -> Path:
+    """Transpile, execute and write `__result__` to a file in `fmt`."""
+    fmt = fmt.lower()
+    if fmt not in _EXPORTERS:
+        raise ValueError(f"Unsupported export format {fmt!r}; "
+                         f"choose from {sorted(_EXPORTERS)}")
+    func, ext = _EXPORTERS[fmt]
+    workdir.mkdir(parents=True, exist_ok=True)
+    out_path = workdir / f"output.{ext}"
+    script_path = workdir / "_export.py"
+
+    code = transpile(graph)
+    script = code + (
+        f"\n# --- export (injected) ---\n"
+        f"from build123d import {func}\n"
+        f"{func}(__result__, {str(out_path)!r})\n"
+    )
+    script_path.write_text(script)
+
+    proc = subprocess.run(
+        [sys.executable, str(script_path)],
+        capture_output=True, text=True, timeout=timeout, cwd=str(workdir),
+    )
+    if proc.returncode != 0 or not out_path.exists():
+        raise RuntimeError(f"Export failed:\n{proc.stderr}")
+    return out_path
