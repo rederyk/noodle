@@ -123,6 +123,14 @@ async def webui():
     return HTMLResponse("<h1>CAD Studio</h1><p>WebUI not found</p>", status_code=404)
 
 
+@app.get("/nodes", response_class=HTMLResponse)
+async def webui_nodes():
+    page = Path("/app/webui/nodes.html")
+    if page.exists():
+        return page.read_text()
+    return HTMLResponse("<h1>CAD Studio</h1><p>Node editor not found</p>", status_code=404)
+
+
 # ---------------------------------------------------------------------------
 # Projects CRUD
 # ---------------------------------------------------------------------------

@@ -111,6 +111,24 @@ def test_transpile_select_param_maps_to_code():
     assert "mirror(__out_1, Plane.YZ)" in code
 
 
+def test_transpile_boolean_operators():
+    # build123d algebra: + union, - difference, & intersection (NOT *).
+    g = Graph.from_dict({
+        "nodes": [
+            {"id": "a", "type": "Box"},
+            {"id": "b", "type": "Sphere"},
+            {"id": "x", "type": "Intersect"},
+        ],
+        "connections": [
+            {"id": "1", "from_node": "a", "from_socket": "result", "to_node": "x", "to_socket": "a"},
+            {"id": "2", "from_node": "b", "from_socket": "result", "to_node": "x", "to_socket": "b"},
+        ],
+    })
+    code = transpile(g)
+    assert "(__out_1 & __out_2)" in code
+    assert " * " not in code  # '*' is for Locations, not intersection
+
+
 def test_transpile_codeblock():
     g = Graph.from_dict({
         "nodes": [{"id": "cb", "type": "CodeBlock",

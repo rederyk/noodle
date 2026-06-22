@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CAD Studio — Nodes</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/css/litegraph.css">
+<script src="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/build/litegraph.min.js"></script>
+<style>
+:root{
+  --bg-0:#0b0e14; --bg-1:#0f1318; --bg-2:#151a22; --bg-3:#1a2030;
+  --border:#1e2738; --text:#c5cdd8; --text-dim:#5c6a7a;
+  --accent:#e94560; --accent-hover:#ff6b81; --green:#2dd4a0; --blue:#3b82f6; --orange:#f59e0b;
+  --font:'Inter','Segoe UI',system-ui,sans-serif; --mono:'JetBrains Mono','Fira Code','Consolas',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{height:100%;overflow:hidden;}
+body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
+.app{display:grid;grid-template-rows:48px 1fr 24px;height:100vh;}
+/* toolbar */
+.toolbar{background:var(--bg-1);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;padding:0 12px;}
+.toolbar h1{font-size:14px;font-weight:700;color:var(--accent);letter-spacing:.5px;margin-right:8px;}
+.toolbar input,.toolbar select{background:var(--bg-3);color:var(--text);border:1px solid var(--border);padding:5px 8px;border-radius:5px;font-size:12px;}
+.toolbar input:focus,.toolbar select:focus{outline:none;border-color:var(--accent);}
+.tb-btn{display:inline-flex;align-items:center;gap:5px;padding:5px 12px;border:1px solid var(--border);border-radius:5px;background:var(--bg-3);color:var(--text);font-size:12px;cursor:pointer;transition:all .15s;white-space:nowrap;}
+.tb-btn:hover{border-color:var(--text-dim);background:var(--bg-2);}
+.tb-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;}
+.tb-btn.primary:hover{background:var(--accent-hover);}
+.toolbar .spacer{flex:1;}
+.status-pill{font-size:11px;padding:3px 8px;border-radius:10px;background:var(--bg-3);color:var(--text-dim);}
+.status-pill.ok{color:var(--green);} .status-pill.err{color:var(--accent);}
+/* workspace */
+.workspace{display:flex;overflow:hidden;}
+.graph-pane{flex:1.4;position:relative;min-width:240px;}
+#graph-canvas{width:100%;height:100%;display:block;}
+.split{width:5px;background:var(--border);cursor:col-resize;}
+.split:hover{background:var(--accent);}
+.right-pane{flex:1;display:flex;flex-direction:column;min-width:240px;background:var(--bg-0);}
+.viewer-wrap{flex:1;position:relative;border-bottom:1px solid var(--border);}
+#viewer-canvas{width:100%;height:100%;display:block;}
+.viewer-stats{position:absolute;top:8px;right:8px;font-size:11px;color:var(--text-dim);background:var(--bg-1);padding:5px 9px;border-radius:6px;border:1px solid var(--border);display:none;}
+.viewer-stats.visible{display:block;}
+/* bottom tabs */
+.panel{height:220px;display:flex;flex-direction:column;background:var(--bg-1);}
+.tabs{display:flex;border-bottom:1px solid var(--border);}
+.tab{padding:7px 14px;font-size:12px;cursor:pointer;color:var(--text-dim);border-right:1px solid var(--border);}
+.tab.active{color:var(--accent);background:var(--bg-2);}
+.tab-body{flex:1;overflow:auto;padding:8px 10px;font-family:var(--mono);font-size:11px;white-space:pre-wrap;color:var(--text-dim);}
+.tab-body.code{color:var(--text);}
+.statusbar{background:var(--bg-1);border-top:1px solid var(--border);display:flex;align-items:center;gap:12px;padding:0 12px;font-size:11px;color:var(--text-dim);}
+.hint{font-size:10px;color:var(--text-dim);}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="toolbar">
+    <h1>CAD Studio</h1>
+    <select id="sel-graph" title="Open graph"><option value="">— open graph —</option></select>
+    <input id="inp-name" placeholder="graph name" style="width:130px">
+    <button class="tb-btn" onclick="newGraph()">＋ New</button>
+    <button class="tb-btn" onclick="saveGraph()">💾 Save</button>
+    <button class="tb-btn primary" onclick="runGraph()">▶ Run</button>
+    <button class="tb-btn" onclick="exportStep()">⬇ STEP</button>
+    <span class="hint">right-click canvas → Add Node · double-click = search</span>
+    <div class="spacer"></div>
+    <a class="tb-btn" href="/ui">Code UI</a>
+    <div class="status-pill" id="status">Ready</div>
+  </div>
+
+  <div class="workspace">
+    <div class="graph-pane"><canvas id="graph-canvas"></canvas></div>
+    <div class="split" id="split"></div>
+    <div class="right-pane">
+      <div class="viewer-wrap">
+        <canvas id="viewer-canvas"></canvas>
+        <div class="viewer-stats" id="viewer-stats"></div>
+      </div>
+      <div class="panel">
+        <div class="tabs">
+          <div class="tab active" data-tab="code" onclick="showTab('code')">Code</div>
+          <div class="tab" data-tab="view" onclick="showTab('view')">View / Data</div>
+          <div class="tab" data-tab="log" onclick="showTab('log')">Log</div>
+        </div>
+        <div class="tab-body code" id="body-code">// Run the graph to generate build123d code</div>
+        <div class="tab-body" id="body-view" style="display:none">No execution yet.</div>
+        <div class="tab-body" id="body-log" style="display:none"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span id="sb">Ready</span><span class="spacer"></span>
+    <span id="sb-graph">no graph</span>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const API = '';
+const LiteGraph = window.LiteGraph;
+let catalog = {};          // type -> NodeDef
+let lgraph, lcanvas;
+let currentName = null;
+
+// ── wire-type colors + input accept-lists (mirrors catalog.WIRE_COMPATIBLE) ──
+const WIRE_COLORS = {
+  geometry:'#2dd4a0', sketch:'#3b82f6', curve:'#f59e0b',
+  data:'#8a93a3', tree:'#a855f7', plane:'#fb923c', vector:'#ef4444',
+};
+// for an input of type T, which output types may feed it
+const INPUT_ACCEPTS = {
+  geometry:['geometry','sketch'],
+  sketch:['sketch'],
+  curve:['curve'],
+  data:['geometry','sketch','curve','data','tree','plane','vector'],
+  tree:['tree'],
+  plane:['plane'],
+  vector:['vector'],
+};
+
+function log(msg, cls=''){
+  const el = document.getElementById('body-log');
+  const t = new Date().toLocaleTimeString();
+  el.textContent += `[${t}] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+function setStatus(msg, cls=''){
+  document.getElementById('sb').textContent = msg;
+  const p = document.getElementById('status'); p.textContent = msg;
+  p.className = 'status-pill' + (cls?' '+cls:'');
+}
+
+// ── register every catalog node as a Litegraph type ──
+function registerNodes(defs){
+  for (const def of defs){
+    catalog[def.type] = def;
+    const ctor = function(){
+      this.cadType = def.type;
+      this.properties = {};
+      for (const s of (def.inputs||[])){
+        const accepts = (INPUT_ACCEPTS[s.wire_type]||[s.wire_type]).join(',');
+        this.addInput(s.name, accepts);
+      }
+      for (const s of (def.outputs||[])){
+        this.addOutput(s.name, s.wire_type);
+      }
+      for (const p of (def.params||[])) addWidget(this, p);
+      this.size = this.computeSize();
+      this.size[0] = Math.max(this.size[0], 150);
+    };
+    ctor.title = def.label || def.type;
+    ctor.desc = def.description || '';
+    LiteGraph.registerNodeType('cad/'+def.category+'/'+def.type, ctor);
+  }
+  // colour links by their (output) wire type
+  for (const [t,c] of Object.entries(WIRE_COLORS)){
+    LGraphCanvas.link_type_colors[t] = c;
+  }
+}
+
+function addWidget(node, p){
+  const cb = (v)=>{ node.properties[p.name] = v; };
+  node.properties[p.name] = p.default;
+  let w;
+  if (p.type === 'bool') w = node.addWidget('toggle', p.name, !!p.default, cb);
+  else if (p.type === 'select') w = node.addWidget('combo', p.name, p.default, cb, {values:p.options||[]});
+  else if (p.type === 'str') w = node.addWidget('text', p.name, p.default ?? '', cb);
+  else if (p.widget === 'slider' && p.min!=null && p.max!=null)
+    w = node.addWidget('slider', p.name, p.default, cb, {min:p.min, max:p.max});
+  else w = node.addWidget('number', p.name, p.default, cb,
+                          {step:(p.step||1)*10, precision: p.type==='int'?0:2});
+  w.cadParam = p.name;
+}
+
+// ── serialize Litegraph -> our graph JSON ──
+function toGraphJSON(name){
+  const nodes = [], connections = [], idMap = {};
+  for (const n of lgraph._nodes){
+    const id = 'n'+n.id; idMap[n.id] = id;
+    const params = {};
+    if (n.widgets) for (const w of n.widgets) if (w.cadParam) params[w.cadParam] = w.value;
+    nodes.push({id, type:n.cadType, params, position:[Math.round(n.pos[0]),Math.round(n.pos[1])]});
+  }
+  for (const k in lgraph.links){
+    const l = lgraph.links[k]; if(!l) continue;
+    const on = lgraph.getNodeById(l.origin_id), tn = lgraph.getNodeById(l.target_id);
+    if(!on||!tn) continue;
+    connections.push({
+      id:'l'+l.id,
+      from_node:idMap[l.origin_id], from_socket:on.outputs[l.origin_slot].name,
+      to_node:idMap[l.target_id],   to_socket:tn.inputs[l.target_slot].name,
+    });
+  }
+  return {name, nodes, connections};
+}
+
+// ── rebuild Litegraph from our graph JSON (round-trip, incl. MCP-made graphs) ──
+function fromGraphJSON(data){
+  lgraph.clear();
+  const map = {};
+  for (const nd of (data.nodes||[])){
+    const def = catalog[nd.type]; if(!def){ log('unknown node type '+nd.type,'err'); continue; }
+    const node = LiteGraph.createNode('cad/'+def.category+'/'+nd.type);
+    node.pos = nd.position || [120, 120];
+    if (node.widgets) for (const w of node.widgets){
+      if (w.cadParam && nd.params && w.cadParam in nd.params){
+        w.value = nd.params[w.cadParam];
+        node.properties[w.cadParam] = w.value;
+      }
+    }
+    lgraph.add(node);
+    map[nd.id] = node;
+  }
+  for (const c of (data.connections||[])){
+    const on = map[c.from_node], tn = map[c.to_node]; if(!on||!tn) continue;
+    const os = on.outputs.findIndex(s=>s.name===c.from_socket);
+    const is = tn.inputs.findIndex(s=>s.name===c.to_socket);
+    if (os>=0 && is>=0) on.connect(os, tn, is);
+  }
+  lgraph.setDirtyCanvas(true,true);
+}
+
+// ── API actions ──
+window.newGraph = async function(){
+  const name = (document.getElementById('inp-name').value || '').trim();
+  if(!name){ setStatus('enter a name','err'); return; }
+  lgraph.clear();
+  await fetch(`${API}/api/graph/${name}`, {method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name, nodes:[], connections:[]})});
+  currentName = name;
+  document.getElementById('sb-graph').textContent = name;
+  await refreshGraphList();
+  setStatus('new graph: '+name,'ok');
+};
+
+window.saveGraph = async function(){
+  const name = currentName || (document.getElementById('inp-name').value||'').trim();
+  if(!name){ setStatus('enter a name','err'); return; }
+  const payload = toGraphJSON(name);
+  const res = await fetch(`${API}/api/graph/${name}`, {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+  if(!res.ok){ const e=await res.json(); setStatus('save failed','err'); log('save: '+JSON.stringify(e.detail),'err'); return; }
+  currentName = name;
+  document.getElementById('sb-graph').textContent = name;
+  await refreshGraphList();
+  setStatus('saved ✓','ok');
+};
+
+window.runGraph = async function(){
+  await window.saveGraph();
+  if(!currentName) return;
+  setStatus('running…');
+  const res = await fetch(`${API}/api/graph/${currentName}/execute`, {method:'POST'});
+  if(!res.ok){
+    const e = await res.json();
+    const d = e.detail || e;
+    setStatus('execution failed','err');
+    document.getElementById('body-code').textContent = (d.code||'');
+    document.getElementById('body-view').textContent = (d.errors||JSON.stringify(d,null,2));
+    showTab('view'); log('execute failed','err');
+    return;
+  }
+  const data = await res.json();
+  document.getElementById('body-code').textContent = data.code || '';
+  document.getElementById('body-view').textContent = JSON.stringify(stripMesh(data.view), null, 2);
+  loadSTL(`${API}/api/projects/${currentName}/download?t=`+Date.now());
+  setStatus('done ✓','ok'); log('executed '+currentName,'ok');
+};
+
+window.exportStep = function(){
+  if(!currentName){ setStatus('save first','err'); return; }
+  window.open(`${API}/api/projects/${currentName}/download`, '_blank');
+};
+
+function stripMesh(v){ if(!v) return v; const c={...v}; if(c.mesh) c.mesh = `(${(c.mesh.triangles||[]).length} triangles)`; return c; }
+
+async function refreshGraphList(){
+  const res = await fetch(`${API}/api/projects`);
+  const projects = (await res.json()).filter(p=>p.backend==='nodegraph');
+  const sel = document.getElementById('sel-graph');
+  sel.innerHTML = '<option value="">— open graph —</option>';
+  for (const p of projects){
+    const o = document.createElement('option'); o.value=p.name; o.textContent=p.name;
+    if(p.name===currentName) o.selected=true;
+    sel.appendChild(o);
+  }
+}
+
+window.openGraph = async function(name){
+  if(!name) return;
+  const res = await fetch(`${API}/api/graph/${name}`);
+  if(!res.ok){ setStatus('open failed','err'); return; }
+  const data = await res.json();
+  fromGraphJSON(data);
+  currentName = name;
+  document.getElementById('inp-name').value = name;
+  document.getElementById('sb-graph').textContent = name;
+  setStatus('opened '+name,'ok');
+};
+
+window.showTab = function(t){
+  for (const el of document.querySelectorAll('.tab')) el.classList.toggle('active', el.dataset.tab===t);
+  document.getElementById('body-code').style.display = t==='code'?'block':'none';
+  document.getElementById('body-view').style.display = t==='view'?'block':'none';
+  document.getElementById('body-log').style.display  = t==='log'?'block':'none';
+};
+
+// ── Three.js viewer (same setup as the code UI) ──
+let scene, camera, renderer, controls, currentMesh, stlLoader;
+function initViewer(){
+  const canvas = document.getElementById('viewer-canvas');
+  const c = canvas.parentElement;
+  scene = new THREE.Scene(); scene.background = new THREE.Color(0x0b0e14);
+  scene.add(new THREE.GridHelper(100,50,0x1e2738,0x151a22));
+  const ax = new THREE.AxesHelper(25); ax.material.transparent=true; ax.material.opacity=.5; scene.add(ax);
+  scene.add(new THREE.AmbientLight(0x404060,2.5));
+  const key=new THREE.DirectionalLight(0xffffff,2); key.position.set(40,60,40); scene.add(key);
+  const fill=new THREE.DirectionalLight(0x8888cc,.8); fill.position.set(-40,20,-40); scene.add(fill);
+  camera = new THREE.PerspectiveCamera(40, c.clientWidth/c.clientHeight, .1, 2000);
+  camera.position.set(50,35,50);
+  renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+  renderer.setSize(c.clientWidth, c.clientHeight); renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  controls = new OrbitControls(camera, canvas); controls.enableDamping=true; controls.dampingFactor=.08;
+  stlLoader = new STLLoader();
+  (function loop(){ requestAnimationFrame(loop); controls.update(); renderer.render(scene,camera); })();
+}
+function resizeViewer(){
+  const c = document.getElementById('viewer-canvas').parentElement;
+  camera.aspect = c.clientWidth/c.clientHeight; camera.updateProjectionMatrix();
+  renderer.setSize(c.clientWidth, c.clientHeight);
+}
+function loadSTL(url){
+  stlLoader.load(url, (geo)=>{
+    if(currentMesh){ scene.remove(currentMesh); currentMesh.geometry.dispose(); currentMesh.material.dispose(); }
+    geo.computeVertexNormals();
+    currentMesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color:0xe94560, roughness:.35, metalness:.15, side:THREE.DoubleSide}));
+    geo.computeBoundingBox(); const box=geo.boundingBox, ctr=new THREE.Vector3(); box.getCenter(ctr);
+    currentMesh.position.sub(ctr);
+    const size=new THREE.Vector3(); box.getSize(size); const md=Math.max(size.x,size.y,size.z), d=md*2.2;
+    camera.position.set(d*.6,d*.45,d*.6); controls.target.set(0,0,0); controls.update();
+    scene.add(currentMesh);
+    const st=document.getElementById('viewer-stats');
+    st.innerHTML = `${(size.x).toFixed(1)} × ${(size.y).toFixed(1)} × ${(size.z).toFixed(1)} mm`;
+    st.classList.add('visible');
+  }, undefined, (err)=>{ setStatus('STL load failed','err'); log('stl: '+err.message,'err'); });
+}
+
+// ── Litegraph init ──
+function initGraph(){
+  lgraph = new LGraph();
+  const canvas = document.getElementById('graph-canvas');
+  lcanvas = new LGraphCanvas(canvas, lgraph);
+  lcanvas.background_image = null;
+  lgraph.start();
+  resizeGraph();
+}
+function resizeGraph(){
+  const canvas = document.getElementById('graph-canvas');
+  const r = canvas.parentElement.getBoundingClientRect();
+  canvas.width = r.width; canvas.height = r.height;
+  if (lcanvas) lcanvas.resize();
+}
+
+// ── split handle ──
+(function(){
+  const split=document.getElementById('split'), gp=document.querySelector('.graph-pane');
+  let drag=false;
+  split.addEventListener('mousedown',e=>{drag=true;document.body.style.cursor='col-resize';e.preventDefault();});
+  document.addEventListener('mousemove',e=>{
+    if(!drag)return;
+    const ws=document.querySelector('.workspace').getBoundingClientRect();
+    gp.style.flex='none'; gp.style.width=Math.max(240,Math.min(ws.width-245, e.clientX-ws.left))+'px';
+    resizeGraph(); resizeViewer();
+  });
+  document.addEventListener('mouseup',()=>{drag=false;document.body.style.cursor='';});
+})();
+window.addEventListener('resize', ()=>{ resizeGraph(); resizeViewer(); });
+document.getElementById('sel-graph').addEventListener('change', e=>openGraph(e.target.value));
+
+// ── boot ──
+(async function(){
+  initGraph();
+  initViewer();
+  try{
+    const defs = await (await fetch(`${API}/api/nodes`)).json();
+    registerNodes(defs);
+    log(`registered ${defs.length} node types`);
+    await refreshGraphList();
+    setStatus('ready','ok');
+  }catch(e){ setStatus('init failed','err'); log('init: '+e.message,'err'); }
+})();
+</script>
+</body>
+</html>

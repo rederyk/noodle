@@ -295,8 +295,8 @@ register(NodeDef("Subtract", "boolean", "Subtract",
 register(NodeDef("Intersect", "boolean", "Intersect",
     inputs=[Socket("a", WIRE_GEOMETRY), Socket("b", WIRE_GEOMETRY)],
     outputs=_geo(),
-    code_template={"algebra": "({a} * {b})"},
-    description="Boolean intersection A * B."))
+    code_template={"algebra": "({a} & {b})"},
+    description="Boolean intersection A & B."))
 
 register(NodeDef("BooleanMulti", "boolean", "Union (N)",
     inputs=[Socket("shapes", WIRE_GEOMETRY, multiple=True)],
