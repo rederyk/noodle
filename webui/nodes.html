@@ -47,6 +47,11 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 .tab.active{color:var(--accent);background:var(--bg-2);}
 .tab-body{flex:1;overflow:auto;padding:8px 10px;font-family:var(--mono);font-size:11px;white-space:pre-wrap;color:var(--text-dim);}
 .tab-body.code{color:var(--text);}
+.panel-badge{font-size:9px;background:var(--accent);color:#fff;border-radius:8px;padding:0 5px;margin-left:2px;display:none;}
+.panel-badge.visible{display:inline;}
+.panel-row{display:flex;gap:8px;padding:3px 0;border-bottom:1px solid var(--border);color:var(--text);}
+.panel-row .pid{color:var(--green);min-width:120px;flex-shrink:0;}
+.panel-row .pval{white-space:pre-wrap;word-break:break-word;}
 .statusbar{background:var(--bg-1);border-top:1px solid var(--border);display:flex;align-items:center;gap:12px;padding:0 12px;font-size:11px;color:var(--text-dim);}
 .hint{font-size:10px;color:var(--text-dim);}
 </style>
@@ -79,10 +84,12 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
         <div class="tabs">
           <div class="tab active" data-tab="code" onclick="showTab('code')">Code</div>
           <div class="tab" data-tab="view" onclick="showTab('view')">View / Data</div>
+          <div class="tab" data-tab="panels" onclick="showTab('panels')">Panels <span id="panel-count" class="panel-badge"></span></div>
           <div class="tab" data-tab="log" onclick="showTab('log')">Log</div>
         </div>
         <div class="tab-body code" id="body-code">// Run the graph to generate build123d code</div>
         <div class="tab-body" id="body-view" style="display:none">No execution yet.</div>
+        <div class="tab-body" id="body-panels" style="display:none">No Panel nodes. Add a Panel node and wire a value into it.</div>
         <div class="tab-body" id="body-log" style="display:none"></div>
       </div>
     </div>
@@ -273,13 +280,15 @@ window.runGraph = async function(){
   const data = await res.json();
   document.getElementById('body-code').textContent = data.code || '';
   document.getElementById('body-view').textContent = JSON.stringify(stripMesh(data.view), null, 2);
+  renderPanels(data.view);
   loadSTL(`${API}/api/projects/${currentName}/download?t=`+Date.now());
   setStatus('done ✓','ok'); log('executed '+currentName,'ok');
 };
 
 window.exportStep = function(){
   if(!currentName){ setStatus('save first','err'); return; }
-  window.open(`${API}/api/projects/${currentName}/download`, '_blank');
+  // Real STEP export: transpile + execute + write .step (not the cached STL).
+  window.open(`${API}/api/graph/${currentName}/export/step`, '_blank');
 };
 
 function stripMesh(v){ if(!v) return v; const c={...v}; if(c.mesh) c.mesh = `(${(c.mesh.triangles||[]).length} triangles)`; return c; }
@@ -310,10 +319,37 @@ window.openGraph = async function(name){
 
 window.showTab = function(t){
   for (const el of document.querySelectorAll('.tab')) el.classList.toggle('active', el.dataset.tab===t);
-  document.getElementById('body-code').style.display = t==='code'?'block':'none';
-  document.getElementById('body-view').style.display = t==='view'?'block':'none';
-  document.getElementById('body-log').style.display  = t==='log'?'block':'none';
+  document.getElementById('body-code').style.display   = t==='code'?'block':'none';
+  document.getElementById('body-view').style.display   = t==='view'?'block':'none';
+  document.getElementById('body-panels').style.display = t==='panels'?'block':'none';
+  document.getElementById('body-log').style.display    = t==='log'?'block':'none';
 };
+
+// ── render Panel-node values from a view's `panels` dict ──
+function renderPanels(view){
+  const body = document.getElementById('body-panels');
+  const badge = document.getElementById('panel-count');
+  const panels = (view && view.panels) || {};
+  const ids = Object.keys(panels);
+  badge.textContent = ids.length || '';
+  badge.classList.toggle('visible', ids.length > 0);
+  if (!ids.length){
+    body.textContent = 'No Panel nodes. Add a Panel node and wire a value into it.';
+    return;
+  }
+  body.innerHTML = '';
+  for (const id of ids){
+    const row = document.createElement('div'); row.className = 'panel-row';
+    const pid = document.createElement('span'); pid.className = 'pid'; pid.textContent = id;
+    const pval = document.createElement('span'); pval.className = 'pval'; pval.textContent = fmtPanel(panels[id]);
+    row.appendChild(pid); row.appendChild(pval); body.appendChild(row);
+  }
+}
+// mesh_extractor summarises non-scalar values to {type, ...}; show scalars raw.
+function fmtPanel(v){
+  if (v === null || typeof v !== 'object') return String(v);
+  return JSON.stringify(v, null, 2);
+}
 
 // ── Three.js viewer (same setup as the code UI) ──
 let scene, camera, renderer, controls, currentMesh, stlLoader;

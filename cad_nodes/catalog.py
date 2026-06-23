@@ -249,13 +249,15 @@ register(NodeDef("Extrude", "operations", "Extrude",
 register(NodeDef("Revolve", "operations", "Revolve",
     inputs=[Socket("sketch", WIRE_SKETCH)],
     params=[_f("angle", 360, 1, 360),
-            Param("axis", "select", "axis", "Z", widget="select",
+            Param("axis", "select", "axis", "Y", widget="select",
                   options=["X", "Y", "Z"],
                   code_map={"X": "Axis.X", "Y": "Axis.Y", "Z": "Axis.Z"})],
     outputs=_geo(),
     code_template={"algebra": "revolve({sketch}, axis={axis}, revolution_arc={angle})",
                    "builder": "revolve(axis={axis}, revolution_arc={angle})"},
-    description="Revolve a sketch around an axis."))
+    description="Revolve a sketch around an in-plane axis (X or Y). The profile "
+                "must sit off the axis (use a Move node), like a lathe — a "
+                "profile crossing the axis is invalid geometry."))
 
 register(NodeDef("Loft", "operations", "Loft",
     inputs=[Socket("sections", WIRE_SKETCH, multiple=True)],
@@ -325,8 +327,8 @@ register(NodeDef("Shell", "modifiers", "Shell",
     inputs=[Socket("part", WIRE_GEOMETRY)],
     params=[_f("thickness", 1, 0.05, 100)],
     outputs=_geo(),
-    code_template={"algebra": "offset({part}, amount=0, openings={part}.faces().sort_by().last, kind=Kind.INTERSECTION) if False else {part}"},
-    description="Hollow out a part (placeholder; refine per use-case)."))
+    code_template={"algebra": "offset({part}, amount=-{thickness}, openings={part}.faces().sort_by(Axis.Z)[-1])"},
+    description="Hollow out a part with the given wall thickness, leaving the top (+Z) face open."))
 
 register(NodeDef("Offset", "modifiers", "Offset",
     inputs=[Socket("shape", WIRE_GEOMETRY)],

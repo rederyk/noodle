@@ -768,3 +768,62 @@ Length: 5
 - Per preview rapide: mesh estrazione via OCCT → JSON compresso (solo vertici+triangoli)
 - Per export: STEP è diretto dal kernel, STL via tassellazione
 - Data trees: liste Python native, per N>100000 usare numpy o lazy evaluation
+
+---
+
+## Roadmap / Suggerimenti (post-Fase 4)
+
+> Visione: rimanere **semplici** e **integrati con l'AI fin da subito**, con la
+> massima personalizzazione. Target: chi oggi usa Grasshopper a livello
+> amatoriale. Potenziale progetto opensource.
+
+### A. Anteprima 3D in tempo reale (no "Run" manuale)
+Oggi bisogna premere **Run** per vedere il risultato. Obiettivo: ri-eseguire
+automaticamente (debounce ~300-500ms) al cambio di un parametro/connessione e
+aggiornare il viewer Three.js.
+- Backend: l'engine è già subprocess-per-run; per il realtime serve un worker
+  persistente con build123d caricato (evita il costo di import a ogni run) e
+  uno stream WebSocket `/ws/graph/{id}` (già previsto in Fase 3) che spinge
+  mesh/errori.
+- Frontend: hook su `lgraph.onNodeConnectionChange` / widget callback → run
+  debounced → `loadSTL`/mesh diretta dal `view.mesh` (già prodotta) invece di
+  rifare il download STL.
+- Incrementale: rieseguire solo il sotto-grafo a valle del nodo cambiato.
+
+### B. Errori topologici precisi + auto-fallback
+Casi tipici da gestire bene: **fillet/chamfer con raggio troppo grande**,
+**boolean che annulla la geometria** (risultato vuoto), sketch auto-intersecanti,
+revolve di profilo che attraversa l'asse (vedi nodo Revolve).
+- Mappare l'eccezione OCCT (es. `StdFail_NotDone`, `BRep_API: command not done`)
+  → messaggio in linguaggio umano + **nodo colpevole evidenziato** sul canvas.
+  Serve correlare l'errore alla riga di codice generata → al `node_id` (il
+  transpiler già annota `# {node.type}`; aggiungere `# node={id}`).
+- Rilevare risultato vuoto: `volume≈0` / `solids==0` dopo un boolean → warning
+  "questa operazione elimina tutta la geometria".
+- **Auto-fallback su min/max**: per parametri numerici con `min`/`max` nel
+  catalogo (già presenti), se il valore fa fallire l'op, ritentare con un
+  bisection verso un valore valido (es. fillet: dimezzare il raggio finché
+  passa) e proporlo all'utente.
+
+### C. Chat AI integrata (API OpenAI-compatible)
+Pannello chat nella UI che parla con un endpoint OpenAI-compatible
+(configurabile: OpenAI / locale / Anthropic via proxy). L'infrastruttura MCP
+esiste già (`mcp_server.py`): gli stessi tool (`cad_add_node`, `cad_connect`,
+`cad_execute`, `cad_get_view`...) diventano le function/tool della chat.
+- Capacità: **leggere** il grafo corrente, **creare/modificare** workflow e
+  nodi, **diagnosticare** i casi limite del punto B e proporre/applicare il fix.
+- Personalizzazione: salvare CodeBlock come nuovi nodi (Fase 5) e lasciare che
+  l'AI ne generi di nuovi su richiesta.
+- Tenere il provider astratto (base_url + api_key + model) per non legarsi a un
+  fornitore.
+
+### Note di stato (giugno 2026)
+- ✅ Export STEP reale via `GET /api/graph/{name}/export/{fmt}` (step|stl|gltf).
+- ✅ Tab **Panels** nella UI: mostra i valori dei nodi Panel dopo l'esecuzione.
+- ✅ Nodo **Shell** ora svuota davvero (era un no-op placeholder).
+- ✅ **Revolve**: default asse `Y` (in-plane); il profilo va spostato off-axis.
+- ⚠️ Builder mode (`BuildPart`/`BuildSketch`) ancora non collegabile dalla UI
+  (manca la gestione del campo `parent` in Litegraph).
+- ⚠️ Map automatico su liste (stile Grasshopper) non ancora implementato.
+- ⚠️ Esecuzione non sandboxata (CodeBlock/Expression = codice arbitrario):
+  da chiudere prima di esporre la porta o l'MCP a terzi.

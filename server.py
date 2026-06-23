@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from cad_nodes import catalog
 from cad_nodes.graph import Graph, ValidationError
 from cad_nodes.transpiler import transpile
-from cad_nodes.executor import execute_graph
+from cad_nodes.executor import execute_graph, export_graph
 
 # ---------------------------------------------------------------------------
 # Config
@@ -382,6 +382,33 @@ async def get_graph_view(name: str):
     if not vpath.exists():
         raise HTTPException(404, "No view yet. Call /execute first.")
     return json.loads(vpath.read_text())
+
+
+# Real geometry export: transpile + execute + write the file in the requested
+# format, then stream it back. (The /download route only serves the STL.)
+_EXPORT_MEDIA = {
+    "step": ("model/step", "step"),
+    "stl": ("model/stl", "stl"),
+    "gltf": ("model/gltf+json", "gltf"),
+}
+
+
+@app.get("/api/graph/{name}/export/{fmt}")
+async def export_graph_project(name: str, fmt: str):
+    fmt = fmt.lower()
+    if fmt not in _EXPORT_MEDIA:
+        raise HTTPException(400, f"Unsupported format {fmt!r}; "
+                                 f"choose from {sorted(_EXPORT_MEDIA)}")
+    d = require_project(name)
+    graph = _load_graph(name)
+    media, ext = _EXPORT_MEDIA[fmt]
+    try:
+        out_path = export_graph(graph, d, fmt)
+    except ValidationError as e:
+        raise HTTPException(400, str(e))
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(400, f"Export failed: {e}")
+    return FileResponse(out_path, media_type=media, filename=f"{name}.{ext}")
 
 
 # ---------------------------------------------------------------------------
