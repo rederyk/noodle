@@ -373,6 +373,7 @@ async def execute_graph_project(name: str):
         "view": result["view"],
         "code": result["code"],
         "warnings": result.get("warnings", []),
+        "node_errors": result.get("node_errors", {}),
         "stl": f"/api/projects/{name}/download" if result.get("stl") else None,
     }
 

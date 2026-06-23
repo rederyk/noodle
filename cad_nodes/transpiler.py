@@ -38,6 +38,7 @@ from build123d import *
 # --- runtime helpers (injected by the transpiler) ---
 __panels__ = {}
 __previews__ = {}
+__errors__ = {}
 
 
 def _panel(_id, _value):
@@ -83,8 +84,22 @@ class Transpiler:
         self.graph = graph
         self.var_of: dict[str, str] = {}
         self._counter = 0
-        # Nodes used as a source by some connection (so we can tell terminals).
-        self._consumed = {c.from_node for c in graph.connections}
+        # A node is an "extremity" unless its geometry is passed onward to a node
+        # that *continues* the geometry (feeds a geometry-class input AND itself
+        # produces geometry). Feeding a Panel/inspector (data input) or an Export
+        # (no output) doesn't count — those nodes stay visible by default.
+        by_id = {n.id: n for n in graph.nodes}
+        self._consumed: set[str] = set()
+        for c in graph.connections:
+            dst = by_id.get(c.to_node)
+            if dst is None:
+                continue
+            ddef = catalog.get(dst.type)
+            inp = ddef.input(c.to_socket)
+            if inp is None or inp.wire_type not in _PREVIEWABLE:
+                continue  # fed into a data/inspector input
+            if ddef.outputs and ddef.outputs[0].wire_type in _PREVIEWABLE:
+                self._consumed.add(c.from_node)  # geometry genuinely continues
 
     def _previewed(self, node, ndef: catalog.NodeDef) -> bool:
         """Whether this node draws in the viewport. Per-node eye:
@@ -126,6 +141,19 @@ class Transpiler:
             out[p.name] = format_param(p, node.params.get(p.name, p.default))
         return out
 
+    def _guard(self, lines: list[str], body: list[str], node) -> None:
+        """Wrap a node's statement(s) in try/except so one node's runtime error
+        is recorded in __errors__ and doesn't abort the rest of the workflow."""
+        lines.append("try:")
+        for bl in body:
+            if bl:
+                lines.append("    " + bl)
+        lines.append("except Exception as _e:")
+        var = self.var_of.get(node.id)
+        if var:
+            lines.append(f"    {var} = None")
+        lines.append(f"    __errors__[{node.id!r}] = f\"{{type(_e).__name__}}: {{_e}}\"")
+
     def _emit_codeblock(self, node, lines: list[str]) -> None:
         ndef = catalog.get(node.type)
         var = self._new_var(node.id)
@@ -137,9 +165,10 @@ class Transpiler:
         for raw in user_code.splitlines() or ["result = None"]:
             lines.append("    " + raw)
         lines.append("    return result")
-        lines.append(f"{var} = {fn}({args}){_annot(node)}")
+        body = [f"{var} = {fn}({args}){_annot(node)}"]
         if self._previewed(node, ndef):
-            lines.append(f"__previews__[{node.id!r}] = {var}")
+            body.append(f"__previews__[{node.id!r}] = {var}")
+        self._guard(lines, body, node)
 
     def _emit_simple(self, node, lines: list[str]) -> None:
         ndef = catalog.get(node.type)
@@ -155,44 +184,46 @@ class Transpiler:
 
         if ndef.outputs:
             var = self._new_var(node.id)
-            lines.append(f"{var} = {expr}{_annot(node)}")
+            body = [f"{var} = {expr}{_annot(node)}"]
             if self._previewed(node, ndef):
-                lines.append(f"__previews__[{node.id!r}] = {var}")
+                body.append(f"__previews__[{node.id!r}] = {var}")
+            self._guard(lines, body, node)
         else:  # export / sink statement
-            lines.append(f"{expr}{_annot(node)}")
+            self._guard(lines, [f"{expr}{_annot(node)}"], node)
 
     def _emit_group(self, node, lines: list[str], indent: str = "") -> None:
         ndef = catalog.get(node.type)
         self._counter += 1
         ctx = f"__ctx_{self._counter}"
+        var = f"__out_{self._counter}"
+        self.var_of[node.id] = var
         values = self._param_values(node, ndef)
         values.update(self._input_values(node.id, ndef))
         values["ctx"] = ctx
         header = _substitute(ndef.code_template["builder"], values)
-        lines.append(indent + header + _annot(node))
 
+        # Build the block at relative indent; _guard shifts it under try/except.
+        body = [header + _annot(node)]
         children = self.graph.children_of(node.id)
         child_order = toposort([c.id for c in children],
                                [(c.from_node, c.to_node) for c in self.graph.connections
                                 if c.from_node in {x.id for x in children}
                                 and c.to_node in {x.id for x in children}])
-        body_indent = indent + "    "
         for cid in child_order:
             child = self.graph.node(cid)
             cdef = catalog.get(child.type)
             cvals = self._param_values(child, cdef)
             cvals.update(self._input_values(child.id, cdef))
             tmpl = cdef.code_template.get("builder") or cdef.code_template.get("algebra", "")
-            lines.append(body_indent + _substitute(tmpl, cvals) + _annot(child))
+            body.append("    " + _substitute(tmpl, cvals) + _annot(child))
         if not children:
-            lines.append(body_indent + "pass")
+            body.append("    pass")
 
-        var = self.var_of.setdefault(node.id, f"__out_{self._counter}")
-        self.var_of[node.id] = var
         attr = {"part": "part", "sketch": "sketch", "line": "line"}.get(ndef.group_kind, "part")
-        lines.append(f"{var} = {ctx}.{attr}{_annot(node)}")
+        body.append(f"{var} = {ctx}.{attr}{_annot(node)}")
         if self._previewed(node, ndef):
-            lines.append(f"__previews__[{node.id!r}] = {var}")
+            body.append(f"__previews__[{node.id!r}] = {var}")
+        self._guard(lines, body, node)
 
     def _pick_result(self, order: list[str]) -> str | None:
         used_as_source = {c.from_node for c in self.graph.connections}

@@ -856,7 +856,12 @@ Allineamenti alla realtà del codice:
 > ricalcola" (Live/Run) sono ortogonali; l'occhio applica subito.
 - `graph.Node.preview` tri-stato: `None`=auto, `True`/`False`=esplicito.
 - transpiler: `_previewed()` emette `__previews__[id] = var` per i nodi disegnati;
-  auto = output non consumato da altri nodi (terminale).
+  auto = estremità = la geometria non è passata a un input geometrico di un nodo
+  che la continua (Panel/inspector con input data, o Export senza output, non
+  contano → quei nodi restano visibili).
+- Esecuzione **best-effort per nodo**: ogni nodo in `try/except`, errori raccolti
+  in `__errors__` → `view.node_errors`. Un nodo (anche staccato) che fallisce non
+  blocca il resto; il frontend evidenzia i colpevoli e renderizza ciò che riesce.
 - `mesh_extractor`: tassella ogni shape in `__previews__` →
   `view["previews"] = {id: {kind, bbox, volume, mesh}}`, ognuno in try/except.
 - Three.js disegna N mesh da `view.previews`, colore stabile per nodo; fallback

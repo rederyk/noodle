@@ -113,7 +113,7 @@ _EPILOGUE = """
 import sys as _sys
 _sys.path.insert(0, {repo_root!r})
 from cad_nodes.mesh_extractor import extract_and_write
-extract_and_write(__result__, {stl!r}, {view!r}, __panels__, __previews__, {lin}, {ang})
+extract_and_write(__result__, {stl!r}, {view!r}, __panels__, __previews__, {lin}, {ang}, __errors__)
 """
 
 # Tessellation level-of-detail: (linear_frac of bbox diagonal, angular tol rad).
@@ -228,7 +228,11 @@ def _timeout_result(code: str, timeout: float) -> dict:
 
 def _finalize(code: str, script_text: str, stdout: str, stderr,
               view_path: Path, stl_path: Path) -> dict:
-    """Build the result dict from a finished run (warm or cold)."""
+    """Build the result dict from a finished run (warm or cold).
+
+    Execution is best-effort per node: a single node's runtime error is caught
+    (recorded in view["node_errors"]) and never blocks the rest of the graph.
+    """
     view = None
     if view_path.exists():
         try:
@@ -236,34 +240,59 @@ def _finalize(code: str, script_text: str, stdout: str, stderr,
         except Exception:
             view = None
 
-    success = stderr is None and view is not None and view.get("success")
+    ran = stderr is None
+    raw_errors = (view or {}).get("node_errors") or {}
+    has_geo = bool(view and (view.get("success") or view.get("previews")))
+
     result = {
-        "success": bool(success),
+        "success": bool(ran and has_geo),
         "code": code,
         "stdout": stdout,
         "errors": stderr,
         "view": view,
         "warnings": [],
+        "node_errors": {},
         "stl": str(stl_path) if stl_path.exists() else None,
     }
 
-    if not success:
+    # Per-node errors: humanise, surface as warnings, but don't block.
+    for nid, raw in raw_errors.items():
+        msg, hint = _humanize(raw)
+        result["node_errors"][nid] = {"exception": raw, "message": msg, "hint": hint}
+    if raw_errors:
+        result["warnings"].append(
+            f"{len(raw_errors)} nodo/i in errore (workflow continuato): "
+            + ", ".join(sorted(raw_errors)))
+
+    if not ran:
+        # Hard failure: a top-level traceback (e.g. bad generated code).
         detail = _diagnose(stderr or "", script_text)
-        # Ran cleanly but produced no shape: not a Python traceback.
-        if not detail["exception"]:
-            err = (view or {}).get("error", "Il grafo non produce geometria.")
-            detail["message"] = (
-                "Nessun risultato da visualizzare: collega un nodo che produce "
-                "geometria (o un Export) all'uscita finale.")
-            detail["exception"] = err
         result["error_detail"] = detail
         if not result["errors"]:
             result["errors"] = detail["message"]
-    else:
-        warn = _degenerate_warning(view)
-        if warn:
-            result["warnings"].append(warn)
+        return result
 
+    if not has_geo:
+        # Ran, but nothing drawable came out.
+        if raw_errors:
+            nid, raw = next(iter(raw_errors.items()))
+            msg, hint = _humanize(raw)
+            result["error_detail"] = {"node_id": nid, "node_type": None,
+                                      "culprit": None, "exception": raw,
+                                      "message": msg, "hint": hint}
+        else:
+            result["error_detail"] = {
+                "node_id": None, "node_type": None, "culprit": None,
+                "exception": (view or {}).get("error", ""),
+                "message": "Nessun risultato da visualizzare: collega un nodo "
+                           "che produce geometria a un'estremità.",
+                "hint": ""}
+        result["errors"] = result["error_detail"]["message"]
+        return result
+
+    warn = _degenerate_warning(view)
+    if warn:
+        result["warnings"].append(warn)
     return result
 
 

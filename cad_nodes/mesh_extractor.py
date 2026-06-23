@@ -157,10 +157,12 @@ def _preview_of(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict 
 
 def extract_and_write(result, stl_path: str, view_path: str, panels=None,
                       previews=None, linear_frac: float = 0.02,
-                      angular: float = 0.4) -> dict:
+                      angular: float = 0.4, errors=None) -> dict:
     """Write STL + view.json. Returns the view dict."""
     shape = _as_shape(result)
     view = extract_view(shape, linear_frac, angular)
+    if errors:
+        view["node_errors"] = dict(errors)
 
     if shape is not None and stl_path:
         try:

@@ -432,10 +432,14 @@ window.runGraph = async function(){
   document.getElementById('body-code').textContent = data.code || '';
   document.getElementById('body-view').textContent = JSON.stringify(stripMesh(data.view), null, 2);
   renderPanels(data.view);
-  renderPreviews(data.view);   // draw Preview-node meshes (or fall back to the result STL)
-  const warns = data.warnings || [];
-  for (const w of warns) log('⚠ '+w, 'warn');
-  if (warns.length){ setStatus('done ⚠ '+warns.length+' warning(s)','err'); }
+  renderPreviews(data.view);   // draw whatever succeeded
+  // per-node errors: flag the culprits but keep the rest of the graph rendered
+  const nerr = data.node_errors || {};
+  const nids = Object.keys(nerr);
+  for (const id of nids){ highlightNode(id); log(`✖ ${id}: ${nerr[id].message}`, 'err'); }
+  for (const w of (data.warnings || [])) log('⚠ '+w, 'warn');
+  if (nids.length){ setStatus(`done · ${nids.length} node error(s)`, 'err'); }
+  else if ((data.warnings||[]).length){ setStatus('done ⚠','err'); }
   else { setStatus('done ✓','ok'); }
   log('executed '+currentName,'ok');
 };
