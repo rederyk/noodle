@@ -827,3 +827,65 @@ esiste già (`mcp_server.py`): gli stessi tool (`cad_add_node`, `cad_connect`,
 - ⚠️ Map automatico su liste (stile Grasshopper) non ancora implementato.
 - ⚠️ Esecuzione non sandboxata (CodeBlock/Expression = codice arbitrario):
   da chiudere prima di esporre la porta o l'MCP a terzi.
+
+---
+
+## Live Preview Roadmap (cambio di filosofia: stile Grasshopper)
+
+> Da "Run → un risultato → Export" a "ogni nodo mostra il suo risultato in
+> preview, live; il modello reale si materializza con Bake/Export".
+
+Allineamenti alla realtà del codice:
+- I "nodi che renderizzano" si determinano **automaticamente** dal `wire_type`
+  dell'output (`geometry`/`sketch`/`curve`); data/math/plane/vector/panel non
+  disegnano. Niente classificazione manuale.
+- Preview on/off = flag booleano **per-nodo** nel graph JSON (come `parent`),
+  non un parametro di catalogo. Default ON per i nodi-geometria.
+- Real-time richiede un **worker persistente** (build123d resta importato): il
+  subprocess a freddo (~1-3s/run) non basta per la fluidità per-keystroke.
+- "Bake" = materializzare su file il nodo designato come Output; non esiste una
+  scena persistente tipo Rhino. Preview = effimero; Bake/Export = reale.
+- Costo onesto: meshare ogni nodo a ogni modifica è caro su grafi grandi →
+  mitigazione (cache + incrementale + solo-preview-ON) va in LP6, non all'inizio.
+
+### LP1 — Dati di preview multi-nodo (backend, nessun cambio UX)
+- Transpiler: emette `__previews__["<id>"] = __out_N` per ogni nodo con output
+  geometrico (rispettando il flag preview, default-on); `__previews__ = {}` nel
+  PREAMBLE.
+- `mesh_extractor`: tassella ogni shape in `__previews__` →
+  `view["previews"] = {id: {kind, bbox, volume, mesh}}`, ognuno in try/except.
+  `__result__` resta per l'export.
+
+### LP2 — Viewer multi-mesh + toggle preview per nodo (frontend)
+- Three.js disegna N mesh da `view.previews`, colore stabile per nodo.
+- Icona occhio sul nodo → flag preview nel graph JSON → mostra/nasconde mesh.
+- Selezione nodo ↔ evidenzia mesh.
+
+### LP3 — Auto-run debounced (sull'executor attuale)
+- Debounce ~400ms su cambio widget/connessione/nodo → save+execute, con
+  `AbortController` per annullare il run in volo. Toggle "Live" on/off + Run
+  manuale.
+
+### LP4 — Worker di esecuzione persistente (vero real-time)
+- Processo Python long-lived con build123d pre-importato; WebSocket
+  `/ws/graph/{id}` che streamma stato, preview incrementali ed errori (riusa
+  `error_detail` + highlight). ⚠️ riemerge il tema sandbox.
+
+### LP5 — Output esplicito + allineamento Bake/Export
+- Sostituisce l'euristica `_pick_result` con un flag/nodo "Output" esplicito;
+  Export ed endpoint STEP puntano a quello. "Bake" = esporta il nodo Output.
+
+### LP6 — Performance: incrementale + cache
+- Hash per nodo (tipo+param+hash monte); ri-tassella solo il sotto-grafo
+  cambiato; cache mesh; mesh solo dei nodi con preview ON; LOD (grezzo live,
+  fine all'export).
+
+### Decisioni prese
+- Live **opt-in** con toggle (default off finché non c'è LP4).
+- Bake = **nodo/flag Output esplicito + Export** (riusa ciò che esiste).
+
+### Backlog QoL (dopo la live preview)
+- Bypass node (muta un nodo, pass-through).
+- Group node (Litegraph groups + wiring builder-mode via `parent`).
+- Input+slider unificato e fluido che si apre col valore già selezionato.
+- Auto-fix raggio fillet (bisection su min/max); chat AI (C).
