@@ -848,18 +848,18 @@ Allineamenti alla realtà del codice:
 - Costo onesto: meshare ogni nodo a ogni modifica è caro su grafi grandi →
   mitigazione (cache + incrementale + solo-preview-ON) va in LP6, non all'inizio.
 
-### LP1 — Dati di preview multi-nodo (backend, nessun cambio UX)
-- Transpiler: emette `__previews__["<id>"] = __out_N` per ogni nodo con output
-  geometrico (rispettando il flag preview, default-on); `__previews__ = {}` nel
-  PREAMBLE.
+### LP1+LP2 — Nodo Preview esplicito + viewer multi-mesh ✅
+> Design rivisto: invece dell'auto-preview di ogni nodo, un **nodo `Preview`**
+> esplicito (come il Custom Preview di Grasshopper). Tutto resta a nodi e si
+> debugga facilmente: vedi solo ciò che colleghi a un Preview.
+- Runtime helper `_preview(id, value)` (come `_panel`); il nodo `Preview`
+  (passthrough) registra il suo input in `__previews__`.
 - `mesh_extractor`: tassella ogni shape in `__previews__` →
   `view["previews"] = {id: {kind, bbox, volume, mesh}}`, ognuno in try/except.
   `__result__` resta per l'export.
-
-### LP2 — Viewer multi-mesh + toggle preview per nodo (frontend)
-- Three.js disegna N mesh da `view.previews`, colore stabile per nodo.
-- Icona occhio sul nodo → flag preview nel graph JSON → mostra/nasconde mesh.
-- Selezione nodo ↔ evidenzia mesh.
+- Three.js disegna N mesh da `view.previews`, colore stabile per nodo; fallback
+  all'STL del risultato se non c'è nessun Preview (compatibilità grafi vecchi).
+- Possibili estensioni: selezione nodo ↔ evidenzia mesh; più Preview con colori.
 
 ### LP3 — Auto-run debounced (sull'executor attuale)
 - Debounce ~400ms su cambio widget/connessione/nodo → save+execute, con

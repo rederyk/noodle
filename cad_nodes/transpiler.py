@@ -43,19 +43,12 @@ __previews__ = {}
 def _panel(_id, _value):
     __panels__[_id] = _value
     return _value
+
+
+def _preview(_id, _value):
+    __previews__[_id] = _value
+    return _value
 """
-
-# Output wire types that yield a drawable mesh (mirrors the catalog).
-_PREVIEWABLE = {catalog.WIRE_GEOMETRY, catalog.WIRE_SKETCH, catalog.WIRE_CURVE}
-
-
-def _is_previewable(node, ndef: catalog.NodeDef) -> bool:
-    """Whether this node should register its result for live preview."""
-    if getattr(node, "preview", True) is False:
-        return False
-    if node.type == "CodeBlock":  # may return geometry; let the extractor try
-        return True
-    return bool(ndef.outputs) and ndef.outputs[0].wire_type in _PREVIEWABLE
 
 
 def format_param(pdef: catalog.Param, value) -> str:
@@ -130,8 +123,6 @@ class Transpiler:
             lines.append("    " + raw)
         lines.append("    return result")
         lines.append(f"{var} = {fn}({args}){_annot(node)}")
-        if _is_previewable(node, ndef):
-            lines.append(f"__previews__[{node.id!r}] = {var}")
 
     def _emit_simple(self, node, lines: list[str]) -> None:
         ndef = catalog.get(node.type)
@@ -148,8 +139,6 @@ class Transpiler:
         if ndef.outputs:
             var = self._new_var(node.id)
             lines.append(f"{var} = {expr}{_annot(node)}")
-            if _is_previewable(node, ndef):
-                lines.append(f"__previews__[{node.id!r}] = {var}")
         else:  # export / sink statement
             lines.append(f"{expr}{_annot(node)}")
 
@@ -183,8 +172,6 @@ class Transpiler:
         self.var_of[node.id] = var
         attr = {"part": "part", "sketch": "sketch", "line": "line"}.get(ndef.group_kind, "part")
         lines.append(f"{var} = {ctx}.{attr}{_annot(node)}")
-        if _is_previewable(node, ndef):
-            lines.append(f"__previews__[{node.id!r}] = {var}")
 
     def _pick_result(self, order: list[str]) -> str | None:
         used_as_source = {c.from_node for c in self.graph.connections}

@@ -487,6 +487,13 @@ register(NodeDef("BoundingBox", "panel", "Bounding Box",
     code_template={"algebra": "{shape}.bounding_box()"},
     description="Bounding box of a shape."))
 
+register(NodeDef("Preview", "panel", "Preview",
+    inputs=[Socket("shape", WIRE_GEOMETRY)],
+    outputs=[Socket("shape", WIRE_GEOMETRY)],
+    code_template={"algebra": "_preview({node_id!r}, {shape})"},
+    description="Draw the wired geometry in the 3D viewport (passes it through). "
+                "Like a Grasshopper preview: only what you wire here is shown."))
+
 # ===========================================================================
 # 12. Inputs / parameters
 # ===========================================================================

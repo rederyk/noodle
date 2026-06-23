@@ -36,7 +36,6 @@ class Node:
     params: dict[str, Any] = field(default_factory=dict)
     position: tuple[float, float] = (0.0, 0.0)
     parent: Optional[str] = None  # id of a group node, if nested
-    preview: bool = True          # draw this node's result in the live preview
 
     def to_dict(self) -> dict:
         return {
@@ -45,7 +44,6 @@ class Node:
             "params": self.params,
             "position": list(self.position),
             "parent": self.parent,
-            "preview": self.preview,
         }
 
     @staticmethod
@@ -57,7 +55,6 @@ class Node:
             params=dict(d.get("params", {})),
             position=(pos[0], pos[1]) if pos else (0.0, 0.0),
             parent=d.get("parent"),
-            preview=d.get("preview", True),
         )
 
 

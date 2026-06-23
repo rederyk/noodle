@@ -339,7 +339,7 @@ window.runGraph = async function(){
   document.getElementById('body-code').textContent = data.code || '';
   document.getElementById('body-view').textContent = JSON.stringify(stripMesh(data.view), null, 2);
   renderPanels(data.view);
-  loadSTL(`${API}/api/projects/${currentName}/download?t=`+Date.now());
+  renderPreviews(data.view);   // draw Preview-node meshes (or fall back to the result STL)
   const warns = data.warnings || [];
   for (const w of warns) log('⚠ '+w, 'warn');
   if (warns.length){ setStatus('done ⚠ '+warns.length+' warning(s)','err'); }
@@ -440,12 +440,13 @@ function highlightNode(graphId){
 }
 
 // ── Three.js viewer (same setup as the code UI) ──
-let scene, camera, renderer, controls, currentMesh, stlLoader;
+let scene, camera, renderer, controls, currentMesh, stlLoader, previewGroup;
 function initViewer(){
   const canvas = document.getElementById('viewer-canvas');
   const c = canvas.parentElement;
   scene = new THREE.Scene(); scene.background = new THREE.Color(0x0b0e14);
   scene.add(new THREE.GridHelper(100,50,0x1e2738,0x151a22));
+  previewGroup = new THREE.Group(); scene.add(previewGroup);
   const ax = new THREE.AxesHelper(25); ax.material.transparent=true; ax.material.opacity=.5; scene.add(ax);
   scene.add(new THREE.AmbientLight(0x404060,2.5));
   const key=new THREE.DirectionalLight(0xffffff,2); key.position.set(40,60,40); scene.add(key);
@@ -477,6 +478,53 @@ function loadSTL(url){
     st.innerHTML = `${(size.x).toFixed(1)} × ${(size.y).toFixed(1)} × ${(size.z).toFixed(1)} mm`;
     st.classList.add('visible');
   }, undefined, (err)=>{ setStatus('STL load failed','err'); log('stl: '+err.message,'err'); });
+}
+
+// ── multi-mesh preview (from view.previews — one mesh per Preview node) ──
+function hashColor(s){
+  let h=0; for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0;
+  return new THREE.Color(`hsl(${h%360},62%,60%)`);
+}
+function meshFromData(m, color){
+  const g = new THREE.BufferGeometry();
+  const verts=m.vertices, tris=m.triangles;
+  const pos = new Float32Array(verts.length*3);
+  for(let i=0;i<verts.length;i++){ pos[3*i]=verts[i][0]; pos[3*i+1]=verts[i][1]; pos[3*i+2]=verts[i][2]; }
+  g.setAttribute('position', new THREE.BufferAttribute(pos,3));
+  const idx = new Uint32Array(tris.length*3);
+  for(let i=0;i<tris.length;i++){ idx[3*i]=tris[i][0]; idx[3*i+1]=tris[i][1]; idx[3*i+2]=tris[i][2]; }
+  g.setIndex(new THREE.BufferAttribute(idx,1));
+  g.computeVertexNormals();
+  return new THREE.Mesh(g, new THREE.MeshStandardMaterial({color, roughness:.4, metalness:.12, side:THREE.DoubleSide}));
+}
+function clearPreviewGroup(){
+  for(let i=previewGroup.children.length-1;i>=0;i--){
+    const c=previewGroup.children[i]; previewGroup.remove(c);
+    c.geometry.dispose(); c.material.dispose();
+  }
+  previewGroup.position.set(0,0,0);
+}
+function renderPreviews(view){
+  clearPreviewGroup();
+  const previews = (view && view.previews) || {};
+  const ids = Object.keys(previews).filter(k => previews[k] && previews[k].mesh);
+  if(!ids.length){
+    // No Preview node wired: fall back to the exported result STL.
+    loadSTL(`${API}/api/projects/${currentName}/download?t=`+Date.now());
+    return;
+  }
+  if(currentMesh){ scene.remove(currentMesh); currentMesh.geometry.dispose(); currentMesh.material.dispose(); currentMesh=null; }
+  for(const id of ids) previewGroup.add(meshFromData(previews[id].mesh, hashColor(id)));
+  // centre + fit camera to the combined bounds
+  const box = new THREE.Box3().setFromObject(previewGroup);
+  const ctr = new THREE.Vector3(); box.getCenter(ctr);
+  const size = new THREE.Vector3(); box.getSize(size);
+  previewGroup.position.sub(ctr);
+  const md = Math.max(size.x,size.y,size.z) || 10, d = md*2.2;
+  camera.position.set(d*.6, d*.45, d*.6); controls.target.set(0,0,0); controls.update();
+  const st = document.getElementById('viewer-stats');
+  st.innerHTML = `${ids.length} preview · ${size.x.toFixed(1)} × ${size.y.toFixed(1)} × ${size.z.toFixed(1)} mm`;
+  st.classList.add('visible');
 }
 
 // ── Litegraph init ──
