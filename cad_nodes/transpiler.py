@@ -126,6 +126,13 @@ class Transpiler:
 
     def _emit_simple(self, node, lines: list[str]) -> None:
         ndef = catalog.get(node.type)
+        # A muted Preview node (eye off) passes its input through without
+        # registering a mesh — so it's neither tessellated nor drawn.
+        if node.type == "Preview" and getattr(node, "preview", True) is False:
+            src = self._input_values(node.id, ndef).get("shape", "None")
+            var = self._new_var(node.id)
+            lines.append(f"{var} = {src}{_annot(node)}")
+            return
         values = {}
         values.update(self._param_values(node, ndef))
         values.update(self._input_values(node.id, ndef))

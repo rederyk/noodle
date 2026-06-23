@@ -169,6 +169,12 @@ function registerNodes(defs){
         this.addOutput(s.name, s.wire_type);
       }
       for (const p of (def.params||[])) addWidget(this, p);
+      // Preview nodes get an eye toggle: turn one off to drop it from the
+      // viewport (and skip its mesh) without unwiring it.
+      if (def.type === 'Preview'){
+        const ew = this.addWidget('toggle', '👁 show', true, ()=>{ scheduleLive(); });
+        ew.isPreviewToggle = true;
+      }
       this.size = this.computeSize();
       this.size[0] = Math.max(this.size[0], 150);
     };
@@ -244,8 +250,12 @@ function toGraphJSON(name){
   for (const n of lgraph._nodes){
     const id = 'n'+n.id; idMap[n.id] = id; nodeIndex[id] = n;
     const params = {};
-    if (n.widgets) for (const w of n.widgets) if (w.cadParam) params[w.cadParam] = w.value;
-    nodes.push({id, type:n.cadType, params, position:[Math.round(n.pos[0]),Math.round(n.pos[1])]});
+    const nd = {id, type:n.cadType, params, position:[Math.round(n.pos[0]),Math.round(n.pos[1])]};
+    if (n.widgets) for (const w of n.widgets){
+      if (w.cadParam) params[w.cadParam] = w.value;
+      if (w.isPreviewToggle) nd.preview = !!w.value;
+    }
+    nodes.push(nd);
   }
   for (const k in lgraph.links){
     const l = lgraph.links[k]; if(!l) continue;
@@ -274,6 +284,7 @@ function fromGraphJSON(data){
         w.value = nd.params[w.cadParam];
         node.properties[w.cadParam] = w.value;
       }
+      if (w.isPreviewToggle && nd.preview !== undefined) w.value = !!nd.preview;
     }
     lgraph.add(node);
     map[nd.id] = node;
