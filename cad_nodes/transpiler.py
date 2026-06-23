@@ -154,6 +154,30 @@ class Transpiler:
             lines.append(f"    {var} = None")
         lines.append(f"    __errors__[{node.id!r}] = f\"{{type(_e).__name__}}: {{_e}}\"")
 
+    def _emit_bypass(self, node, lines: list[str]) -> None:
+        """Bypassed node: skip its operation and pass an upstream value straight
+        through to its output (Grasshopper/ComfyUI semantics). Prefer an input
+        whose wire type matches the first output; else the first connected input.
+        A node with no output simply disappears from the program."""
+        ndef = catalog.get(node.type)
+        if not ndef.outputs:
+            return
+        var = self._new_var(node.id)
+        out_wt = ndef.outputs[0].wire_type
+        inputs = self._input_values(node.id, ndef)
+        chosen = None
+        for sock in ndef.inputs:
+            v = inputs.get(sock.name, "None")
+            if not v or v == "None":
+                continue
+            v = v.split(",")[0].strip()  # passthrough takes the first feed
+            if sock.wire_type == out_wt:
+                chosen = v
+                break
+            if chosen is None:
+                chosen = v
+        lines.append(f"{var} = {chosen or 'None'}{_annot(node)}  # bypassed")
+
     def _emit_codeblock(self, node, lines: list[str]) -> None:
         ndef = catalog.get(node.type)
         var = self._new_var(node.id)
@@ -251,6 +275,9 @@ class Transpiler:
             node = self.graph.node(nid)
             if node.parent is not None:
                 continue  # emitted inside its group
+            if getattr(node, "bypassed", False):
+                self._emit_bypass(node, body)
+                continue
             ndef = catalog.get(node.type)
             if ndef.is_group:
                 self._emit_group(node, body)

@@ -38,6 +38,9 @@ class Node:
     parent: Optional[str] = None  # id of a group node, if nested
     # Per-node preview eye: None=auto (show terminals only), True=on, False=off.
     preview: Optional[bool] = None
+    # Bypassed (Grasshopper/ComfyUI style): node is skipped, its first matching
+    # geometry input passes straight through to its output.
+    bypassed: bool = False
 
     def to_dict(self) -> dict:
         d = {
@@ -49,6 +52,8 @@ class Node:
         }
         if self.preview is not None:   # only serialise explicit on/off
             d["preview"] = self.preview
+        if self.bypassed:
+            d["bypassed"] = True
         return d
 
     @staticmethod
@@ -61,6 +66,7 @@ class Node:
             position=(pos[0], pos[1]) if pos else (0.0, 0.0),
             parent=d.get("parent"),
             preview=d.get("preview"),
+            bypassed=bool(d.get("bypassed", False)),
         )
 
 

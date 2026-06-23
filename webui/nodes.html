@@ -54,6 +54,17 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 .panel-row .pval{white-space:pre-wrap;word-break:break-word;}
 .statusbar{background:var(--bg-1);border-top:1px solid var(--border);display:flex;align-items:center;gap:12px;padding:0 12px;font-size:11px;color:var(--text-dim);}
 .hint{font-size:10px;color:var(--text-dim);}
+/* floating selection toolbar (ComfyUI-style) */
+#sel-toolbar{position:fixed;z-index:50;display:none;gap:2px;padding:3px;background:var(--bg-2);
+  border:1px solid var(--border);border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.45);
+  transform:translateX(-50%);}
+#sel-toolbar button{display:inline-flex;align-items:center;gap:4px;border:none;background:transparent;
+  color:var(--text);font-size:12px;padding:5px 9px;border-radius:5px;cursor:pointer;white-space:nowrap;}
+#sel-toolbar button:hover{background:var(--bg-3);}
+#sel-toolbar button.active{background:var(--orange);color:#000;}
+#sel-toolbar button.danger:hover{background:var(--accent);color:#fff;}
+#sel-toolbar .sep{width:1px;background:var(--border);margin:3px 1px;}
+#sel-toolbar .count{font-size:10px;color:var(--text-dim);padding:0 6px;align-self:center;}
 </style>
 </head>
 <body>
@@ -68,7 +79,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
     <button class="tb-btn" id="btn-live" onclick="toggleLive()" title="Auto-run on every change">○ Live</button>
     <button class="tb-btn" id="btn-fast" onclick="toggleFastDrag()" title="Drag Move/Rotate/Scale = instant local preview, exact on release">○ Drag</button>
     <button class="tb-btn" onclick="exportStep()">⬇ STEP</button>
-    <span class="hint">right-click canvas → Add Node · double-click = search</span>
+    <span class="hint">dbl-click = search · Ctrl+G group · Ctrl+B bypass · Del delete · Ctrl+C/V copy</span>
     <div class="spacer"></div>
     <a class="tb-btn" href="/ui">Code UI</a>
     <div class="status-pill" id="status">Ready</div>
@@ -178,6 +189,26 @@ function registerNodes(defs){
         addEyeWidget(this);
       this.size = this.computeSize();
       this.size[0] = Math.max(this.size[0], 150);
+      // bypass overlay: dim + diagonal slash + label across the node body
+      this.onDrawForeground = function(ctx){
+        if (!this.bypassed || this.flags.collapsed) return;
+        ctx.save();
+        ctx.fillStyle = 'rgba(11,14,20,.45)';
+        ctx.fillRect(0, 0, this.size[0], this.size[1]);
+        ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(this.size[0], this.size[1]); ctx.stroke();
+        ctx.fillStyle = '#f59e0b'; ctx.font = 'bold 10px sans-serif';
+        ctx.fillText('⊘ BYPASS', 7, -8);
+        ctx.restore();
+      };
+      // append our actions to the per-node right-click menu
+      this.getExtraMenuOptions = function(){
+        return [
+          {content: this.bypassed ? '✓ Bypass' : '⊘ Bypass  (Ctrl+B)',
+           callback: ()=> setBypass(this, !this.bypassed)},
+          {content: '▣ Group selected  (Ctrl+G)', callback: ()=> groupSelected()},
+        ];
+      };
     };
     ctor.title = def.label || def.type;
     ctor.desc = def.description || '';
@@ -269,6 +300,7 @@ function toGraphJSON(name){
     if (n.widgets) for (const w of n.widgets) if (w.cadParam) params[w.cadParam] = w.value;
     if (n.previewMode === 'on') nd.preview = true;
     else if (n.previewMode === 'off') nd.preview = false;   // 'auto' -> omitted
+    if (n.bypassed) nd.bypassed = true;
     nodes.push(nd);
   }
   for (const k in lgraph.links){
@@ -294,6 +326,7 @@ function fromGraphJSON(data){
     const node = LiteGraph.createNode('cad/'+def.category+'/'+nd.type);
     node.pos = nd.position || [120, 120];
     node.previewMode = nd.preview === true ? 'on' : nd.preview === false ? 'off' : 'auto';
+    if (nd.bypassed){ node.bypassed = true; node.mode = LiteGraph.NEVER; }
     if (node.widgets) for (const w of node.widgets){
       if (w.cadParam && nd.params && w.cadParam in nd.params){
         w.value = nd.params[w.cadParam];
@@ -359,6 +392,132 @@ window.toggleFastDrag = function(){
   b.classList.toggle('primary', fastDrag);
   b.textContent = fastDrag ? '⚡ Drag' : '○ Drag';
 };
+
+// ── selection actions (shared by keyboard, context menu, floating toolbar) ──
+// Selected nodes, or — if only a group is selected — the nodes inside it.
+function selectedNodes(){
+  const ns = Object.values((lcanvas && lcanvas.selected_nodes) || {});
+  if (ns.length) return ns;
+  const g = lcanvas && lcanvas.selected_group;
+  if (g){ if (g.recomputeInsideNodes) g.recomputeInsideNodes(); return (g._nodes || []).slice(); }
+  return [];
+}
+
+// Bypass = skip the node, pass an upstream value through (Grasshopper/ComfyUI).
+function setBypass(node, on){
+  node.bypassed = on;
+  node.mode = on ? LiteGraph.NEVER : LiteGraph.ALWAYS;
+  lcanvas.setDirty(true, true);
+  scheduleLive();
+}
+function toggleBypassSelected(){
+  const ns = selectedNodes(); if (!ns.length) return;
+  const turnOn = !ns.every(n => n.bypassed);   // any active -> bypass all; else clear
+  for (const n of ns) setBypass(n, turnOn);
+}
+
+// Wrap the selection in a LiteGraph group box (Ctrl+G).
+function groupSelected(){
+  const ns = selectedNodes(); if (!ns.length) return;
+  let x0=Infinity, y0=Infinity, x1=-Infinity, y1=-Infinity;
+  for (const n of ns){
+    const top = n.pos[1] - LiteGraph.NODE_TITLE_HEIGHT;
+    x0 = Math.min(x0, n.pos[0]);           y0 = Math.min(y0, top);
+    x1 = Math.max(x1, n.pos[0]+n.size[0]); y1 = Math.max(y1, n.pos[1]+n.size[1]);
+  }
+  const pad = 24, head = 26;
+  const GroupCtor = window.LGraphGroup || LiteGraph.LGraphGroup;
+  if (!GroupCtor){ setStatus('groups unavailable','err'); return; }
+  const g = new GroupCtor();
+  g.title = 'Group';
+  g.pos  = [x0-pad, y0-pad-head];
+  g.size = [(x1-x0)+pad*2, (y1-y0)+pad*2+head];
+  lgraph.add(g);
+  lcanvas.setDirty(true, true);
+  setStatus('grouped '+ns.length+' node(s)','ok');
+}
+
+function cloneSelected(){
+  const ns = selectedNodes(); if (!ns.length) return;
+  const clones = [];
+  for (const n of ns){
+    const c = n.clone(); if (!c) continue;
+    c.pos = [n.pos[0]+28, n.pos[1]+28];
+    lgraph.add(c); clones.push(c);
+  }
+  if (clones.length){ lcanvas.selectNodes(clones); lcanvas.setDirty(true, true); }
+}
+
+function deleteSelected(){
+  const ns = selectedNodes(); if (!ns.length) return;
+  for (const n of ns) lgraph.remove(n);
+  lcanvas.selected_nodes = {};
+  lcanvas.setDirty(true, true);
+}
+
+// ── keyboard shortcuts (ignored while typing in a field) ──
+document.addEventListener('keydown', (e)=>{
+  const t = e.target, tag = (t && t.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || (t && t.isContentEditable)) return;
+  const k = (e.key || '').toLowerCase();
+  if (e.ctrlKey && !e.shiftKey && k === 'g'){ e.preventDefault(); groupSelected(); }
+  else if (e.ctrlKey && !e.shiftKey && k === 'b'){ e.preventDefault(); toggleBypassSelected(); }
+  else if (k === 'delete'){ e.preventDefault(); deleteSelected(); }
+});
+
+// ── floating selection toolbar (anchored above the selection) ──
+(function initSelToolbar(){
+  const bar = document.createElement('div'); bar.id = 'sel-toolbar';
+  bar.innerHTML =
+    '<span class="count"></span>'+
+    '<button data-act="bypass" title="Toggle bypass (Ctrl+B)">⊘ Bypass</button>'+
+    '<button data-act="group"  title="Group selection (Ctrl+G)">▣ Group</button>'+
+    '<button data-act="clone"  title="Duplicate">⧉ Clone</button>'+
+    '<span class="sep"></span>'+
+    '<button data-act="delete" class="danger" title="Delete (Del)">🗑 Delete</button>';
+  document.body.appendChild(bar);
+  // don't let toolbar clicks fall through to the canvas / clear the selection
+  bar.addEventListener('pointerdown', e=> e.stopPropagation());
+  bar.addEventListener('click', e=>{
+    const act = e.target.closest('button') && e.target.closest('button').dataset.act;
+    if (act === 'bypass') toggleBypassSelected();
+    else if (act === 'group')  groupSelected();
+    else if (act === 'clone')  cloneSelected();
+    else if (act === 'delete') deleteSelected();
+  });
+  const countEl = bar.querySelector('.count');
+  const bypassBtn = bar.querySelector('[data-act="bypass"]');
+  (function loop(){
+    requestAnimationFrame(loop);
+    if (!lcanvas){ bar.style.display = 'none'; return; }
+    // only for a real multi-selection (2+ nodes) or a selected group
+    const selNodes = Object.values(lcanvas.selected_nodes || {});
+    const grp = lcanvas.selected_group;
+    if (selNodes.length < 2 && !grp){ bar.style.display = 'none'; return; }
+    // bounding rectangle of the selection (group box, or the nodes)
+    let x0, x1, yTop;
+    if (selNodes.length >= 2){
+      x0=Infinity; x1=-Infinity; yTop=Infinity;
+      for (const n of selNodes){
+        x0 = Math.min(x0, n.pos[0]); x1 = Math.max(x1, n.pos[0]+n.size[0]);
+        yTop = Math.min(yTop, n.pos[1] - LiteGraph.NODE_TITLE_HEIGHT);
+      }
+    } else {
+      x0 = grp.pos[0]; x1 = grp.pos[0] + grp.size[0]; yTop = grp.pos[1];
+    }
+    const ds = lcanvas.ds, r = lcanvas.canvas.getBoundingClientRect();
+    let cx = ((x0+x1)/2 + ds.offset[0]) * ds.scale + r.left;   // top-centre
+    let cy = (yTop + ds.offset[1]) * ds.scale + r.top - 8;
+    cx = Math.max(r.left+60, Math.min(r.right-60, cx));
+    cy = Math.max(r.top+34, cy);
+    bar.style.display = 'flex';
+    bar.style.left = cx + 'px';
+    bar.style.top  = cy + 'px';
+    const ns = selectedNodes();
+    countEl.textContent = ns.length + (ns.length===1 ? ' node' : ' nodes');
+    bypassBtn.classList.toggle('active', ns.length>0 && ns.every(n=>n.bypassed));
+  })();
+})();
 
 // A param changed on `node`: fast local transform (if enabled & applicable),
 // otherwise/also the debounced exact recompute.

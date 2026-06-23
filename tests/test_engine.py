@@ -129,6 +129,36 @@ def test_transpile_boolean_operators():
     assert " * " not in code  # '*' is for Locations, not intersection
 
 
+def test_transpile_bypass_passes_input_through():
+    # A bypassed node is skipped; its first matching geometry input passes
+    # straight through to its output, so downstream nodes see the upstream value.
+    g = Graph.from_dict({
+        "nodes": [
+            {"id": "b", "type": "Box"},
+            {"id": "f", "type": "Fillet", "bypassed": True},
+            {"id": "m", "type": "Move"},
+        ],
+        "connections": [
+            {"id": "1", "from_node": "b", "from_socket": "result", "to_node": "f", "to_socket": "part"},
+            {"id": "2", "from_node": "f", "from_socket": "result", "to_node": "m", "to_socket": "shape"},
+        ],
+    })
+    code = transpile(g)
+    assert "__out_2 = __out_1" in code          # Fillet output == Box output
+    assert "# bypassed" in code
+    assert ".fillet" not in code.lower()         # the fillet op is not emitted
+
+
+def test_bypass_flag_round_trips():
+    g = Graph.from_dict({"nodes": [{"id": "f", "type": "Fillet", "bypassed": True}],
+                         "connections": []})
+    assert g.node("f").bypassed is True
+    assert g.node("f").to_dict()["bypassed"] is True
+    # default omitted when not bypassed
+    g2 = Graph.from_dict({"nodes": [{"id": "b", "type": "Box"}], "connections": []})
+    assert "bypassed" not in g2.node("b").to_dict()
+
+
 def test_transpile_codeblock():
     g = Graph.from_dict({
         "nodes": [{"id": "cb", "type": "CodeBlock",
