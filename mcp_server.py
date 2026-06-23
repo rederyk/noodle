@@ -30,6 +30,22 @@ def _safe(fn, *args, **kwargs):
         return {"error": f"{type(e).__name__}: {e}"}
 
 
+def _lean_view(view, keep_mesh: bool = False):
+    """Drop heavy tessellated meshes (top-level + per-node previews) so the
+    agent gets summaries, not megabytes of triangles."""
+    if not isinstance(view, dict):
+        return view
+    v = dict(view)
+    if not keep_mesh:
+        v.pop("mesh", None)
+        if isinstance(v.get("previews"), dict):
+            v["previews"] = {
+                nid: {k: val for k, val in entry.items() if k != "mesh"}
+                for nid, entry in v["previews"].items()
+            }
+    return v
+
+
 # ===========================================================================
 # Tools — graph lifecycle
 # ===========================================================================
@@ -103,9 +119,7 @@ def cad_execute(graph_id: str) -> dict:
     (bbox/volume/area/counts; the heavy mesh is omitted — use cad_get_view)."""
     result = _safe(api.execute, STORE, graph_id)
     if isinstance(result, dict) and result.get("view"):
-        view = dict(result["view"])
-        view.pop("mesh", None)
-        result = {**result, "view": view}
+        result = {**result, "view": _lean_view(result["view"])}
     return result
 
 
@@ -116,9 +130,7 @@ def cad_get_view(graph_id: str, fmt: str = "json") -> dict:
     view = api.get_view(STORE, graph_id)
     if view is None:
         return {"error": "No view yet; call cad_execute first."}
-    if fmt != "mesh":
-        view = {k: v for k, v in view.items() if k != "mesh"}
-    return view
+    return _lean_view(view, keep_mesh=(fmt == "mesh"))
 
 
 @mcp.tool()

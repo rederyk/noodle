@@ -111,7 +111,7 @@ _EPILOGUE = """
 import sys as _sys
 _sys.path.insert(0, {repo_root!r})
 from cad_nodes.mesh_extractor import extract_and_write
-extract_and_write(__result__, {stl!r}, {view!r}, __panels__)
+extract_and_write(__result__, {stl!r}, {view!r}, __panels__, __previews__)
 """
 
 

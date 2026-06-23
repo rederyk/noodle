@@ -353,7 +353,18 @@ window.exportStep = function(){
   window.open(`${API}/api/graph/${currentName}/export/step`, '_blank');
 };
 
-function stripMesh(v){ if(!v) return v; const c={...v}; if(c.mesh) c.mesh = `(${(c.mesh.triangles||[]).length} triangles)`; return c; }
+function stripMesh(v){
+  if(!v) return v;
+  const c={...v};
+  if(c.mesh) c.mesh = `(${(c.mesh.triangles||[]).length} triangles)`;
+  if(c.previews){
+    const p={};
+    for(const k in c.previews){ const e=c.previews[k];
+      p[k] = {kind:e.kind, volume:e.volume, triangles:((e.mesh&&e.mesh.triangles)||[]).length}; }
+    c.previews = p;
+  }
+  return c;
+}
 
 async function refreshGraphList(){
   const res = await fetch(`${API}/api/projects`);

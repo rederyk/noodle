@@ -118,7 +118,34 @@ def extract_view(shape) -> dict:
     return view
 
 
-def extract_and_write(result, stl_path: str, view_path: str, panels=None) -> dict:
+def _preview_of(value) -> dict | None:
+    """Compact per-node preview: kind, bbox, volume and a tessellated mesh.
+    Returns None if the value isn't drawable geometry."""
+    shape = _as_shape(value)
+    if shape is None:
+        return None
+    try:
+        verts, tris = shape.tessellate(0.2)
+    except Exception:
+        return None  # not a meshable shape (e.g. a bare number that slipped in)
+    if not verts or not tris:
+        return None
+    entry: dict = {"kind": type(shape).__name__,
+                   "mesh": {"vertices": [[v.X, v.Y, v.Z] for v in verts],
+                            "triangles": [list(t) for t in tris]}}
+    try:
+        bb = shape.bounding_box()
+        entry["bbox"] = {"min": [bb.min.X, bb.min.Y, bb.min.Z],
+                         "max": [bb.max.X, bb.max.Y, bb.max.Z],
+                         "size": [bb.size.X, bb.size.Y, bb.size.Z]}
+    except Exception:
+        entry["bbox"] = None
+    entry["volume"] = _num(lambda: shape.volume)
+    return entry
+
+
+def extract_and_write(result, stl_path: str, view_path: str, panels=None,
+                      previews=None) -> dict:
     """Write STL + view.json. Returns the view dict."""
     shape = _as_shape(result)
     view = extract_view(shape)
@@ -133,6 +160,18 @@ def extract_and_write(result, stl_path: str, view_path: str, panels=None) -> dic
 
     if panels:
         view["panels"] = {k: _summarize(v) for k, v in panels.items()}
+
+    if previews:
+        out: dict = {}
+        for nid, val in previews.items():
+            try:
+                entry = _preview_of(val)
+            except Exception:
+                entry = None
+            if entry:
+                out[nid] = entry
+        if out:
+            view["previews"] = out
 
     if view_path:
         with open(view_path, "w") as f:
