@@ -169,12 +169,10 @@ function registerNodes(defs){
         this.addOutput(s.name, s.wire_type);
       }
       for (const p of (def.params||[])) addWidget(this, p);
-      // Preview nodes get an eye toggle: turn one off to drop it from the
-      // viewport (and skip its mesh) without unwiring it.
-      if (def.type === 'Preview'){
-        const ew = this.addWidget('toggle', '👁 show', true, ()=>{ scheduleLive(); });
-        ew.isPreviewToggle = true;
-      }
+      // Eye on every geometry node (auto/on/off). Data/math/panel nodes can't draw.
+      const ow = (def.outputs||[])[0];
+      if ((ow && ['geometry','sketch','curve'].includes(ow.wire_type)) || def.type === 'CodeBlock')
+        addEyeWidget(this);
       this.size = this.computeSize();
       this.size[0] = Math.max(this.size[0], 150);
     };
@@ -243,6 +241,20 @@ function addWidget(node, p){
   field.cadParam = p.name;
 }
 
+// ── per-node preview eye: auto (terminals only) / on / off ──
+function eyeLabel(mode){ return mode==='on' ? '👁 on' : mode==='off' ? '🚫 off' : '👁 auto'; }
+function addEyeWidget(node){
+  node.previewMode = 'auto';
+  const w = node.addWidget('button', eyeLabel('auto'), null, ()=>{
+    node.previewMode = node.previewMode==='auto' ? 'on'
+                     : node.previewMode==='on'   ? 'off' : 'auto';
+    w.name = eyeLabel(node.previewMode);
+    lcanvas.setDirty(true, true);
+    window.runGraph();   // a view command: apply immediately, regardless of Live
+  });
+  w.isEye = true;
+}
+
 // ── serialize Litegraph -> our graph JSON ──
 function toGraphJSON(name){
   const nodes = [], connections = [], idMap = {};
@@ -251,10 +263,9 @@ function toGraphJSON(name){
     const id = 'n'+n.id; idMap[n.id] = id; nodeIndex[id] = n;
     const params = {};
     const nd = {id, type:n.cadType, params, position:[Math.round(n.pos[0]),Math.round(n.pos[1])]};
-    if (n.widgets) for (const w of n.widgets){
-      if (w.cadParam) params[w.cadParam] = w.value;
-      if (w.isPreviewToggle) nd.preview = !!w.value;
-    }
+    if (n.widgets) for (const w of n.widgets) if (w.cadParam) params[w.cadParam] = w.value;
+    if (n.previewMode === 'on') nd.preview = true;
+    else if (n.previewMode === 'off') nd.preview = false;   // 'auto' -> omitted
     nodes.push(nd);
   }
   for (const k in lgraph.links){
@@ -279,12 +290,13 @@ function fromGraphJSON(data){
     const def = catalog[nd.type]; if(!def){ log('unknown node type '+nd.type,'err'); continue; }
     const node = LiteGraph.createNode('cad/'+def.category+'/'+nd.type);
     node.pos = nd.position || [120, 120];
+    node.previewMode = nd.preview === true ? 'on' : nd.preview === false ? 'off' : 'auto';
     if (node.widgets) for (const w of node.widgets){
       if (w.cadParam && nd.params && w.cadParam in nd.params){
         w.value = nd.params[w.cadParam];
         node.properties[w.cadParam] = w.value;
       }
-      if (w.isPreviewToggle && nd.preview !== undefined) w.value = !!nd.preview;
+      if (w.isEye) w.name = eyeLabel(node.previewMode);
     }
     lgraph.add(node);
     map[nd.id] = node;

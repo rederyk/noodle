@@ -43,12 +43,10 @@ __previews__ = {}
 def _panel(_id, _value):
     __panels__[_id] = _value
     return _value
-
-
-def _preview(_id, _value):
-    __previews__[_id] = _value
-    return _value
 """
+
+# Output wire types that yield a drawable mesh (mirrors the catalog).
+_PREVIEWABLE = {catalog.WIRE_GEOMETRY, catalog.WIRE_SKETCH, catalog.WIRE_CURVE}
 
 
 def format_param(pdef: catalog.Param, value) -> str:
@@ -85,6 +83,23 @@ class Transpiler:
         self.graph = graph
         self.var_of: dict[str, str] = {}
         self._counter = 0
+        # Nodes used as a source by some connection (so we can tell terminals).
+        self._consumed = {c.from_node for c in graph.connections}
+
+    def _previewed(self, node, ndef: catalog.NodeDef) -> bool:
+        """Whether this node draws in the viewport. Per-node eye:
+        True/False force it; None (auto) shows only terminal geometry nodes
+        (those whose output isn't consumed downstream)."""
+        previewable = (node.type == "CodeBlock" or
+                       (ndef.outputs and ndef.outputs[0].wire_type in _PREVIEWABLE))
+        if not previewable:
+            return False
+        eye = getattr(node, "preview", None)
+        if eye is True:
+            return True
+        if eye is False:
+            return False
+        return node.id not in self._consumed  # auto: terminal only
 
     def _new_var(self, node_id: str, prefix: str = "__out_") -> str:
         self._counter += 1
@@ -123,16 +138,11 @@ class Transpiler:
             lines.append("    " + raw)
         lines.append("    return result")
         lines.append(f"{var} = {fn}({args}){_annot(node)}")
+        if self._previewed(node, ndef):
+            lines.append(f"__previews__[{node.id!r}] = {var}")
 
     def _emit_simple(self, node, lines: list[str]) -> None:
         ndef = catalog.get(node.type)
-        # A muted Preview node (eye off) passes its input through without
-        # registering a mesh — so it's neither tessellated nor drawn.
-        if node.type == "Preview" and getattr(node, "preview", True) is False:
-            src = self._input_values(node.id, ndef).get("shape", "None")
-            var = self._new_var(node.id)
-            lines.append(f"{var} = {src}{_annot(node)}")
-            return
         values = {}
         values.update(self._param_values(node, ndef))
         values.update(self._input_values(node.id, ndef))
@@ -146,6 +156,8 @@ class Transpiler:
         if ndef.outputs:
             var = self._new_var(node.id)
             lines.append(f"{var} = {expr}{_annot(node)}")
+            if self._previewed(node, ndef):
+                lines.append(f"__previews__[{node.id!r}] = {var}")
         else:  # export / sink statement
             lines.append(f"{expr}{_annot(node)}")
 
@@ -179,6 +191,8 @@ class Transpiler:
         self.var_of[node.id] = var
         attr = {"part": "part", "sketch": "sketch", "line": "line"}.get(ndef.group_kind, "part")
         lines.append(f"{var} = {ctx}.{attr}{_annot(node)}")
+        if self._previewed(node, ndef):
+            lines.append(f"__previews__[{node.id!r}] = {var}")
 
     def _pick_result(self, order: list[str]) -> str | None:
         used_as_source = {c.from_node for c in self.graph.connections}
