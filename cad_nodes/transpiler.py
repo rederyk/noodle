@@ -23,6 +23,15 @@ from .toposort import toposort
 
 _PLACEHOLDER = re.compile(r"\{(\w+)(![rs])?\}")
 
+
+def _annot(node) -> str:
+    """Trailing marker so a runtime traceback line maps back to its node.
+
+    Parsed by the executor (see `_NODE_MARK`); kept as a Python comment so it
+    never affects execution.
+    """
+    return f"  # @node:{node.id} ({node.type})"
+
 PREAMBLE = """\
 from build123d import *
 
@@ -107,7 +116,7 @@ class Transpiler:
         for raw in user_code.splitlines() or ["result = None"]:
             lines.append("    " + raw)
         lines.append("    return result")
-        lines.append(f"{var} = {fn}({args})")
+        lines.append(f"{var} = {fn}({args}){_annot(node)}")
 
     def _emit_simple(self, node, lines: list[str]) -> None:
         ndef = catalog.get(node.type)
@@ -123,9 +132,9 @@ class Transpiler:
 
         if ndef.outputs:
             var = self._new_var(node.id)
-            lines.append(f"{var} = {expr}  # {node.type}")
+            lines.append(f"{var} = {expr}{_annot(node)}")
         else:  # export / sink statement
-            lines.append(f"{expr}  # {node.type}")
+            lines.append(f"{expr}{_annot(node)}")
 
     def _emit_group(self, node, lines: list[str], indent: str = "") -> None:
         ndef = catalog.get(node.type)
@@ -135,7 +144,7 @@ class Transpiler:
         values.update(self._input_values(node.id, ndef))
         values["ctx"] = ctx
         header = _substitute(ndef.code_template["builder"], values)
-        lines.append(indent + header)
+        lines.append(indent + header + _annot(node))
 
         children = self.graph.children_of(node.id)
         child_order = toposort([c.id for c in children],
@@ -149,14 +158,14 @@ class Transpiler:
             cvals = self._param_values(child, cdef)
             cvals.update(self._input_values(child.id, cdef))
             tmpl = cdef.code_template.get("builder") or cdef.code_template.get("algebra", "")
-            lines.append(body_indent + _substitute(tmpl, cvals))
+            lines.append(body_indent + _substitute(tmpl, cvals) + _annot(child))
         if not children:
             lines.append(body_indent + "pass")
 
         var = self.var_of.setdefault(node.id, f"__out_{self._counter}")
         self.var_of[node.id] = var
         attr = {"part": "part", "sketch": "sketch", "line": "line"}.get(ndef.group_kind, "part")
-        lines.append(f"{var} = {ctx}.{attr}")
+        lines.append(f"{var} = {ctx}.{attr}{_annot(node)}")
 
     def _pick_result(self, order: list[str]) -> str | None:
         used_as_source = {c.from_node for c in self.graph.connections}

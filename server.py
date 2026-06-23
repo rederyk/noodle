@@ -365,12 +365,14 @@ async def execute_graph_project(name: str):
         raise HTTPException(400, {
             "message": "Graph execution failed",
             "errors": result.get("errors"),
+            "error_detail": result.get("error_detail"),
             "code": result.get("code"),
         })
     return {
         "status": "executed",
         "view": result["view"],
         "code": result["code"],
+        "warnings": result.get("warnings", []),
         "stl": f"/api/projects/{name}/download" if result.get("stl") else None,
     }
 

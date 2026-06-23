@@ -118,6 +118,8 @@ const LiteGraph = window.LiteGraph;
 let catalog = {};          // type -> NodeDef
 let lgraph, lcanvas;
 let currentName = null;
+let nodeIndex = {};        // our graph node-id -> Litegraph node (set on serialize)
+let highlighted = [];      // nodes currently flagged with an error
 
 // ── wire-type colors + input accept-lists (mirrors catalog.WIRE_COMPATIBLE) ──
 const WIRE_COLORS = {
@@ -192,8 +194,9 @@ function addWidget(node, p){
 // ── serialize Litegraph -> our graph JSON ──
 function toGraphJSON(name){
   const nodes = [], connections = [], idMap = {};
+  nodeIndex = {};
   for (const n of lgraph._nodes){
-    const id = 'n'+n.id; idMap[n.id] = id;
+    const id = 'n'+n.id; idMap[n.id] = id; nodeIndex[id] = n;
     const params = {};
     if (n.widgets) for (const w of n.widgets) if (w.cadParam) params[w.cadParam] = w.value;
     nodes.push({id, type:n.cadType, params, position:[Math.round(n.pos[0]),Math.round(n.pos[1])]});
@@ -266,15 +269,30 @@ window.saveGraph = async function(){
 window.runGraph = async function(){
   await window.saveGraph();
   if(!currentName) return;
+  clearHighlights();
   setStatus('running…');
   const res = await fetch(`${API}/api/graph/${currentName}/execute`, {method:'POST'});
   if(!res.ok){
     const e = await res.json();
     const d = e.detail || e;
-    setStatus('execution failed','err');
+    const det = d.error_detail;
     document.getElementById('body-code').textContent = (d.code||'');
-    document.getElementById('body-view').textContent = (d.errors||JSON.stringify(d,null,2));
-    showTab('view'); log('execute failed','err');
+    let txt;
+    if (det){
+      const tag = det.node_type ? `${det.node_type}${det.node_id?' ('+det.node_id+')':''}` : 'graph';
+      const found = det.node_id ? highlightNode(det.node_id) : false;
+      txt = `✖ ${tag}\n\n${det.message||d.errors||''}`;
+      if (det.hint)    txt += `\n\n→ ${det.hint}`;
+      if (det.culprit) txt += `\n\ncode: ${det.culprit}`;
+      if (det.exception) txt += `\n\n(${det.exception})`;
+      setStatus(found ? `error in ${tag}` : 'execution failed', 'err');
+      log(`error: ${tag} — ${det.message||det.exception||''}`, 'err');
+    } else {
+      txt = d.errors || JSON.stringify(d, null, 2);
+      setStatus('execution failed','err'); log('execute failed','err');
+    }
+    document.getElementById('body-view').textContent = txt;
+    showTab('view');
     return;
   }
   const data = await res.json();
@@ -282,7 +300,11 @@ window.runGraph = async function(){
   document.getElementById('body-view').textContent = JSON.stringify(stripMesh(data.view), null, 2);
   renderPanels(data.view);
   loadSTL(`${API}/api/projects/${currentName}/download?t=`+Date.now());
-  setStatus('done ✓','ok'); log('executed '+currentName,'ok');
+  const warns = data.warnings || [];
+  for (const w of warns) log('⚠ '+w, 'warn');
+  if (warns.length){ setStatus('done ⚠ '+warns.length+' warning(s)','err'); }
+  else { setStatus('done ✓','ok'); }
+  log('executed '+currentName,'ok');
 };
 
 window.exportStep = function(){
@@ -349,6 +371,21 @@ function renderPanels(view){
 function fmtPanel(v){
   if (v === null || typeof v !== 'object') return String(v);
   return JSON.stringify(v, null, 2);
+}
+
+// ── error node highlighting ──
+function clearHighlights(){
+  for (const n of highlighted){ n.color = undefined; n.bgcolor = undefined; }
+  highlighted = [];
+  if (lcanvas) lcanvas.setDirty(true, true);
+}
+function highlightNode(graphId){
+  const n = nodeIndex[graphId];
+  if (!n) return false;
+  n.color = '#e94560'; n.bgcolor = '#3a1422';     // red title + dark-red body
+  highlighted.push(n);
+  lcanvas.setDirty(true, true);
+  return true;
 }
 
 // ── Three.js viewer (same setup as the code UI) ──
