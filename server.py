@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from cad_nodes import catalog
 from cad_nodes.graph import Graph, ValidationError
 from cad_nodes.transpiler import transpile
-from cad_nodes.executor import execute_graph, export_graph
+from cad_nodes.executor import execute_graph, export_graph, extract_subshapes_for_node
 
 # ---------------------------------------------------------------------------
 # Config
@@ -376,6 +376,24 @@ async def execute_graph_project(name: str):
         "node_errors": result.get("node_errors", {}),
         "stl": f"/api/projects/{name}/download" if result.get("stl") else None,
     }
+
+
+@app.post("/api/graph/{name}/subshapes/{node_id}")
+async def graph_subshapes(name: str, node_id: str, kind: str = "edge"):
+    """Pickable sub-shapes (edges/faces/vertices) of a node's output shape,
+    for the interactive selection picker."""
+    if kind not in ("edge", "face", "vertex"):
+        raise HTTPException(400, f"Unknown kind {kind!r}")
+    d = require_project(name)
+    graph = _load_graph(name)
+    try:
+        data = extract_subshapes_for_node(graph, node_id, kind, d)
+    except ValidationError as e:
+        raise HTTPException(400, str(e))
+    if not data.get("success"):
+        raise HTTPException(400, {"message": "Sub-shape extraction failed",
+                                  "error": data.get("error")})
+    return data
 
 
 @app.get("/api/graph/{name}/view")

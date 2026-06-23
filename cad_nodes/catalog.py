@@ -31,6 +31,7 @@ WIRE_DATA = "data"          # list, float, int, str
 WIRE_TREE = "tree"          # data tree
 WIRE_PLANE = "plane"        # Plane / Location
 WIRE_VECTOR = "vector"      # Vector / Point
+WIRE_SELECTION = "selection"  # a set of sub-shapes (edges/faces/vertices) picked off a parent
 
 # Which wire types may legally connect to which (output -> accepted inputs).
 # Geometry-ish types are kept distinct but `data` is the permissive fallback.
@@ -42,6 +43,7 @@ WIRE_COMPATIBLE: dict[str, set[str]] = {
     WIRE_TREE: {WIRE_TREE, WIRE_DATA},
     WIRE_PLANE: {WIRE_PLANE, WIRE_DATA},
     WIRE_VECTOR: {WIRE_VECTOR, WIRE_DATA},
+    WIRE_SELECTION: {WIRE_SELECTION},
 }
 
 
@@ -322,6 +324,26 @@ register(NodeDef("Chamfer", "modifiers", "Chamfer",
     outputs=_geo(),
     code_template={"algebra": "chamfer({part}.edges(), length={length})"},
     description="Bevel all edges of a part."))
+
+# ===========================================================================
+# 5b. Sub-shape selection (pick edges/faces in the 3D picker, operate on them)
+# ===========================================================================
+# SelectEdge carries the picked set in params["selection"] = {kind, indices,
+# sigs}; the transpiler special-cases it (see _emit_select) and resolves the
+# set at run time by nearest-anchor matching, so it survives param tweaks.
+register(NodeDef("SelectEdge", "select", "Select Edge",
+    inputs=[Socket("geometry", WIRE_GEOMETRY)],
+    outputs=[Socket("selection", WIRE_SELECTION)],
+    code_template={"algebra": ""},  # handled by the transpiler, not a template
+    description="Pick specific edges of a shape in the 3D picker; outputs the "
+                "selected edges for a targeted operation."))
+
+register(NodeDef("FilletSelectedEdges", "modifiers", "Fillet Selected Edges",
+    inputs=[Socket("part", WIRE_GEOMETRY), Socket("edges", WIRE_SELECTION)],
+    params=[_f("radius", 2, 0.05, 100)],
+    outputs=_geo(),
+    code_template={"algebra": "fillet({edges}, radius={radius})"},
+    description="Round only the edges chosen by a Select Edge node."))
 
 register(NodeDef("Shell", "modifiers", "Shell",
     inputs=[Socket("part", WIRE_GEOMETRY)],

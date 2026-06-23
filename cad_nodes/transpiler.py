@@ -44,6 +44,53 @@ __errors__ = {}
 def _panel(_id, _value):
     __panels__[_id] = _value
     return _value
+
+
+def _select_subshapes(_shape, _kind, _indices, _sigs):
+    \"\"\"Resolve a picked sub-shape set against a (possibly recomputed) shape.
+
+    Matching is by nearest anchor point (edge midpoint / face centre / vertex),
+    so a selection survives upstream parameter tweaks even when OCC re-orders
+    the sub-shapes. Falls back to raw indices when no signatures were stored.\"\"\"
+    if _shape is None:
+        return ShapeList([])
+    _get = {"edge": getattr(_shape, "edges", None),
+            "face": getattr(_shape, "faces", None),
+            "vertex": getattr(_shape, "vertices", None)}.get(_kind)
+    subs = list(_get()) if _get else []
+
+    def _anchor(s):
+        try:
+            if _kind == "edge":
+                v = s @ 0.5
+            elif _kind == "face":
+                v = s.center()
+            else:
+                v = s
+            return (v.X, v.Y, v.Z)
+        except Exception:
+            return None
+
+    anchors = [_anchor(s) for s in subs]
+    chosen, used = [], set()
+    for want in (_sigs or []):
+        wx, wy, wz = want[0], want[1], want[2]
+        best, best_d = None, None
+        for j, a in enumerate(anchors):
+            if j in used or a is None:
+                continue
+            d = (a[0] - wx) ** 2 + (a[1] - wy) ** 2 + (a[2] - wz) ** 2
+            if best_d is None or d < best_d:
+                best_d, best = d, j
+        if best is not None:
+            used.add(best)
+            chosen.append(subs[best])
+    if not _sigs:
+        for idx in (_indices or []):
+            if 0 <= idx < len(subs) and idx not in used:
+                used.add(idx)
+                chosen.append(subs[idx])
+    return ShapeList(chosen)
 """
 
 # Output wire types that yield a drawable mesh (mirrors the catalog).
@@ -178,6 +225,19 @@ class Transpiler:
                 chosen = v
         lines.append(f"{var} = {chosen or 'None'}{_annot(node)}  # bypassed")
 
+    def _emit_select(self, node, lines: list[str]) -> None:
+        """Sub-shape selector (SelectEdge/Face/Vertex): resolve the picked set
+        against the upstream shape at run time via the injected helper."""
+        ndef = catalog.get(node.type)
+        var = self._new_var(node.id)
+        src = self._input_values(node.id, ndef).get("geometry", "None")
+        sel = node.params.get("selection") or {}
+        kind = sel.get("kind", "edge")
+        indices = sel.get("indices", []) or []
+        sigs = sel.get("sigs", []) or []
+        body = [f"{var} = _select_subshapes({src}, {kind!r}, {indices!r}, {sigs!r}){_annot(node)}"]
+        self._guard(lines, body, node)
+
     def _emit_codeblock(self, node, lines: list[str]) -> None:
         ndef = catalog.get(node.type)
         var = self._new_var(node.id)
@@ -283,6 +343,8 @@ class Transpiler:
                 self._emit_group(node, body)
             elif node.type == "CodeBlock":
                 self._emit_codeblock(node, body)
+            elif node.type in ("SelectEdge", "SelectFace", "SelectVertex"):
+                self._emit_select(node, body)
             else:
                 self._emit_simple(node, body)
 

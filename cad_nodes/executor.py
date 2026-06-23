@@ -343,6 +343,74 @@ def execute_graph(graph: Graph, workdir: Path, timeout: int = 120,
     return execute_code(code, workdir, timeout=timeout, quality=quality)
 
 
+_SUBSHAPE_EPILOGUE = """
+
+# --- sub-shape extraction (injected by executor) ---
+import sys as _sys, json as _json
+_sys.path.insert(0, {repo_root!r})
+from cad_nodes.mesh_extractor import extract_subshapes as _extract_sub
+_shp = __previews__.get({node_id!r})
+if _shp is None:
+    _shp = __result__
+try:
+    _data = _extract_sub(_shp, {kind!r})
+except Exception as _e:
+    _data = {{"success": False, "error": str(_e)}}
+with open({out!r}, "w") as _f:
+    _json.dump(_data, _f)
+"""
+
+
+def extract_subshapes_for_node(graph: Graph, node_id: str, kind: str,
+                               workdir: Path, timeout: int = 60) -> dict:
+    """Run the graph and return the pickable sub-shapes (edges/faces/vertices)
+    of `node_id`'s output shape, for the interactive selection picker."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    # Force-preview the target so its shape lands in __previews__[node_id].
+    try:
+        graph.node(node_id).preview = True
+    except KeyError:
+        return {"success": False, "error": f"no node {node_id!r}"}
+
+    code = transpile(graph)
+    out_path = workdir / "subshapes.json"
+    script_path = workdir / "_subshapes.py"
+    if out_path.exists():
+        out_path.unlink()
+    script_path.write_text(code + _SUBSHAPE_EPILOGUE.format(
+        repo_root=_REPO_ROOT, node_id=node_id, kind=kind, out=str(out_path)))
+
+    def _read():
+        if out_path.exists():
+            try:
+                return json.loads(out_path.read_text())
+            except Exception:
+                return None
+        return None
+
+    if _USE_WARM:
+        try:
+            res = _WORKER.run(script_path, workdir, timeout)
+            if not res.get("timeout"):
+                data = _read()
+                if data is not None:
+                    return data
+                return {"success": False, "error": (res.get("error") or "no output")[:600]}
+        except Exception:
+            pass  # fall back to a cold subprocess
+
+    try:
+        proc = subprocess.run([sys.executable, str(script_path)],
+                              capture_output=True, text=True,
+                              timeout=timeout, cwd=str(workdir))
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": f"timed out after {timeout}s"}
+    data = _read()
+    if data is not None:
+        return data
+    return {"success": False, "error": (proc.stderr or "no output")[:600]}
+
+
 _EXPORTERS = {
     "step": ("export_step", "step"),
     "stl": ("export_stl", "stl"),

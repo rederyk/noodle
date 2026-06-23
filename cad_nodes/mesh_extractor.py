@@ -155,6 +155,67 @@ def _preview_of(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict 
     return entry
 
 
+def extract_subshapes(shape, kind: str = "edge",
+                      linear_frac: float = 0.01, angular: float = 0.3) -> dict:
+    """For the interactive picker: a context mesh of `shape` plus its sub-shapes
+    (edges as polylines, faces as triangle groups, vertices as points), each
+    tagged with an index and a geometric signature for stable re-selection.
+
+    Signature layout (all keep [x,y,z] anchor first, used for nearest-match):
+      edge   -> [mid.x, mid.y, mid.z, length, dir.x, dir.y, dir.z]
+      face   -> [c.x, c.y, c.z, area, n.x, n.y, n.z]
+      vertex -> [x, y, z]
+    """
+    shape = _as_shape(shape)
+    if shape is None:
+        return {"success": False, "error": "no shape"}
+    out: dict = {"success": True, "kind": kind}
+
+    try:
+        verts, tris = shape.tessellate(_deflection(shape, linear_frac), angular)
+        out["mesh"] = {"vertices": [[v.X, v.Y, v.Z] for v in verts],
+                       "triangles": [list(t) for t in tris]}
+    except Exception:
+        out["mesh"] = None
+
+    items: list[dict] = []
+    if kind == "edge":
+        for i, e in enumerate(shape.edges()):
+            try:
+                n = 18
+                poly = [[(e @ (k / n)).X, (e @ (k / n)).Y, (e @ (k / n)).Z]
+                        for k in range(n + 1)]
+                mid, d = e @ 0.5, e % 0.5
+                items.append({"index": i, "polyline": poly,
+                              "sig": [mid.X, mid.Y, mid.Z, float(e.length),
+                                      d.X, d.Y, d.Z]})
+            except Exception:
+                continue
+    elif kind == "face":
+        for i, f in enumerate(shape.faces()):
+            try:
+                fv, ft = f.tessellate(_deflection(shape, linear_frac), angular)
+                c = f.center(); nrm = f.normal_at(c)
+                items.append({"index": i,
+                              "mesh": {"vertices": [[v.X, v.Y, v.Z] for v in fv],
+                                       "triangles": [list(t) for t in ft]},
+                              "sig": [c.X, c.Y, c.Z, float(f.area),
+                                      nrm.X, nrm.Y, nrm.Z]})
+            except Exception:
+                continue
+    elif kind == "vertex":
+        for i, v in enumerate(shape.vertices()):
+            try:
+                items.append({"index": i, "point": [v.X, v.Y, v.Z],
+                              "sig": [v.X, v.Y, v.Z]})
+            except Exception:
+                continue
+
+    out["items"] = items
+    out["count"] = len(items)
+    return out
+
+
 def extract_and_write(result, stl_path: str, view_path: str, panels=None,
                       previews=None, linear_frac: float = 0.02,
                       angular: float = 0.4, errors=None) -> dict:

@@ -159,6 +159,30 @@ def test_bypass_flag_round_trips():
     assert "bypassed" not in g2.node("b").to_dict()
 
 
+def test_transpile_select_edge_and_targeted_fillet():
+    # SelectEdge resolves its picked set at run time; FilletSelectedEdges rounds
+    # only those edges (vs Fillet which rounds all).
+    g = Graph.from_dict({
+        "nodes": [
+            {"id": "b", "type": "Box"},
+            {"id": "s", "type": "SelectEdge",
+             "params": {"selection": {"kind": "edge", "indices": [0, 2],
+                                      "sigs": [[5, 0, 5, 10, 0, 0, 1]]}}},
+            {"id": "fl", "type": "FilletSelectedEdges", "params": {"radius": 1.5}},
+        ],
+        "connections": [
+            {"id": "1", "from_node": "b", "from_socket": "result", "to_node": "s", "to_socket": "geometry"},
+            {"id": "2", "from_node": "b", "from_socket": "result", "to_node": "fl", "to_socket": "part"},
+            {"id": "3", "from_node": "s", "from_socket": "selection", "to_node": "fl", "to_socket": "edges"},
+        ],
+    })
+    code = transpile(g)
+    assert "def _select_subshapes(" in code          # helper injected
+    assert "_select_subshapes(__out_1, 'edge'" in code
+    assert "[[5, 0, 5, 10, 0, 0, 1]]" in code        # signatures passed through
+    assert "fillet(__out_2, radius=1.5)" in code      # operates on the selection var
+
+
 def test_transpile_codeblock():
     g = Graph.from_dict({
         "nodes": [{"id": "cb", "type": "CodeBlock",

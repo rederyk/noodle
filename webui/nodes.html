@@ -65,6 +65,17 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 #sel-toolbar button.danger:hover{background:var(--accent);color:#fff;}
 #sel-toolbar .sep{width:1px;background:var(--border);margin:3px 1px;}
 #sel-toolbar .count{font-size:10px;color:var(--text-dim);padding:0 6px;align-self:center;}
+/* sub-shape selection picker (modal) */
+.picker-overlay{position:fixed;inset:0;z-index:100;background:rgba(5,7,11,.85);
+  display:none;flex-direction:column;}
+.picker-overlay.open{display:flex;}
+.picker-bar{height:48px;display:flex;align-items:center;gap:12px;padding:0 14px;
+  background:var(--bg-1);border-bottom:1px solid var(--border);}
+.picker-title{font-weight:700;color:var(--accent);letter-spacing:.3px;}
+.picker-hint{font-size:11px;color:var(--text-dim);}
+.picker-count{font-size:12px;color:var(--orange);font-weight:600;}
+.picker-view{flex:1;position:relative;min-height:0;}
+#picker-canvas{width:100%;height:100%;display:block;cursor:crosshair;}
 </style>
 </head>
 <body>
@@ -114,6 +125,19 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
   </div>
 </div>
 
+<div id="picker" class="picker-overlay">
+  <div class="picker-bar">
+    <span class="picker-title" id="picker-title">Select edges</span>
+    <span class="picker-hint">click an edge to toggle · drag to orbit · scroll to zoom</span>
+    <span class="picker-count" id="picker-count">0 selected</span>
+    <span style="flex:1"></span>
+    <button class="tb-btn" id="picker-clear">Clear</button>
+    <button class="tb-btn" id="picker-cancel">Cancel</button>
+    <button class="tb-btn primary" id="picker-confirm">✓ Confirm</button>
+  </div>
+  <div class="picker-view"><canvas id="picker-canvas"></canvas></div>
+</div>
+
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
@@ -144,6 +168,7 @@ let previewMeshes = {};    // graph node-id -> THREE.Mesh currently shown
 const WIRE_COLORS = {
   geometry:'#2dd4a0', sketch:'#3b82f6', curve:'#f59e0b',
   data:'#8a93a3', tree:'#a855f7', plane:'#fb923c', vector:'#ef4444',
+  selection:'#e879f9',
 };
 // for an input of type T, which output types may feed it
 const INPUT_ACCEPTS = {
@@ -154,6 +179,7 @@ const INPUT_ACCEPTS = {
   tree:['tree'],
   plane:['plane'],
   vector:['vector'],
+  selection:['selection'],
 };
 
 function log(msg, cls=''){
@@ -187,6 +213,12 @@ function registerNodes(defs){
       const ow = (def.outputs||[])[0];
       if ((ow && ['geometry','sketch','curve'].includes(ow.wire_type)) || def.type === 'CodeBlock')
         addEyeWidget(this);
+      // sub-shape selector: button opens the 3D picker
+      if (def.type === 'SelectEdge'){
+        const sb = this.addWidget('button', '✎ Select edges', null, ()=> openSelectionPicker(this, 'edge'));
+        sb.isSelectBtn = true;
+        this._selKind = 'edge';
+      }
       this.size = this.computeSize();
       this.size[0] = Math.max(this.size[0], 150);
       // bypass overlay: dim + diagonal slash + label across the node body
@@ -298,6 +330,7 @@ function toGraphJSON(name){
     const params = {};
     const nd = {id, type:n.cadType, params, position:[Math.round(n.pos[0]),Math.round(n.pos[1])]};
     if (n.widgets) for (const w of n.widgets) if (w.cadParam) params[w.cadParam] = w.value;
+    if (n.selectionData) params.selection = n.selectionData;   // SelectEdge picks
     if (n.previewMode === 'on') nd.preview = true;
     else if (n.previewMode === 'off') nd.preview = false;   // 'auto' -> omitted
     if (n.bypassed) nd.bypassed = true;
@@ -327,6 +360,7 @@ function fromGraphJSON(data){
     node.pos = nd.position || [120, 120];
     node.previewMode = nd.preview === true ? 'on' : nd.preview === false ? 'off' : 'auto';
     if (nd.bypassed){ node.bypassed = true; node.mode = LiteGraph.NEVER; }
+    if (nd.params && nd.params.selection){ node.selectionData = nd.params.selection; updateSelectBtn(node); }
     if (node.widgets) for (const w of node.widgets){
       if (w.cadParam && nd.params && w.cadParam in nd.params){
         w.value = nd.params[w.cadParam];
@@ -792,6 +826,164 @@ function renderPreviews(view){
   st.classList.add('visible');
 }
 
+// ── sub-shape selection picker (modal 3D viewer) ───────────────────────────
+const picker = { ready:false, node:null, kind:'edge', sel:new Map(), lines:[], raf:null };
+
+function updateSelectBtn(node){
+  if (!node || !node.widgets) return;
+  const w = node.widgets.find(w=>w.isSelectBtn); if (!w) return;
+  const n = (node.selectionData && node.selectionData.sigs && node.selectionData.sigs.length) || 0;
+  w.name = n ? `✎ ${n} edge${n>1?'s':''} selected` : '✎ Select edges';
+  lcanvas && lcanvas.setDirty(true, true);
+}
+
+function ensurePicker(){
+  if (picker.ready) return;
+  const canvas = document.getElementById('picker-canvas');
+  picker.scene = new THREE.Scene(); picker.scene.background = new THREE.Color(0x0b0e14);
+  picker.scene.add(new THREE.GridHelper(200,40,0x1e2738,0x141925));
+  picker.content = new THREE.Group(); picker.scene.add(picker.content);
+  picker.scene.add(new THREE.AmbientLight(0x506070, 2.4));
+  const key = new THREE.DirectionalLight(0xffffff,1.6); key.position.set(40,60,40); picker.scene.add(key);
+  picker.camera = new THREE.PerspectiveCamera(40, 1, .1, 5000); picker.camera.position.set(60,45,60);
+  picker.renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+  picker.renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  picker.controls = new OrbitControls(picker.camera, canvas);
+  picker.controls.enableDamping = true; picker.controls.dampingFactor = .08;
+  picker.raycaster = new THREE.Raycaster();
+  picker.mouse = new THREE.Vector2();
+  picker.meshMat = new THREE.MeshStandardMaterial({color:0x3a4a5c, transparent:true, opacity:.6, roughness:.65, metalness:.05, side:THREE.DoubleSide});
+  picker.edgeMat = new THREE.LineBasicMaterial({color:0x7c8aa0, transparent:true, opacity:.85, depthTest:false});
+  picker.selMat  = new THREE.LineBasicMaterial({color:0xf59e0b, depthTest:false});
+  // click-to-pick with a drag guard so orbiting doesn't toggle edges
+  let down = null;
+  canvas.addEventListener('pointerdown', e=>{ down = [e.clientX, e.clientY]; });
+  canvas.addEventListener('pointerup', e=>{
+    if (!down) return;
+    const moved = Math.hypot(e.clientX-down[0], e.clientY-down[1]); down = null;
+    if (moved > 5) return;                 // a drag (orbit), not a pick
+    pickAt(e);
+  });
+  picker.ready = true;
+}
+
+function pickAt(e){
+  const canvas = picker.renderer.domElement, r = canvas.getBoundingClientRect();
+  picker.mouse.x = ((e.clientX-r.left)/r.width)*2-1;
+  picker.mouse.y = -((e.clientY-r.top)/r.height)*2+1;
+  picker.raycaster.setFromCamera(picker.mouse, picker.camera);
+  picker.raycaster.params.Line.threshold = picker.threshold || 0.6;
+  const hits = picker.raycaster.intersectObjects(picker.lines, false);
+  if (!hits.length) return;
+  const line = hits[0].object, idx = line.userData.index;
+  if (picker.sel.has(idx)){ picker.sel.delete(idx); line.material = picker.edgeMat; }
+  else { picker.sel.set(idx, line.userData.sig); line.material = picker.selMat; }
+  document.getElementById('picker-count').textContent = picker.sel.size + ' selected';
+}
+
+function clearPickerContent(){
+  for (let i=picker.content.children.length-1;i>=0;i--){
+    const c=picker.content.children[i]; picker.content.remove(c);
+    if (c.geometry) c.geometry.dispose();
+  }
+  picker.content.position.set(0,0,0); picker.lines = []; picker.sel.clear();
+}
+
+window.openSelectionPicker = async function(node, kind){
+  const src = node.getInputNode(0);   // slot 0 = geometry input
+  if (!src){ setStatus('connect geometry into Select Edge first','err'); log('select: no geometry input'); return; }
+  await saveGraph();
+  if (!currentName) return;
+  const srcId = 'n'+src.id;
+  setStatus('loading edges…');
+  let data;
+  try {
+    const res = await fetch(`${API}/api/graph/${currentName}/subshapes/${srcId}?kind=${kind}`, {method:'POST'});
+    if (!res.ok){ const e=await res.json().catch(()=>({})); setStatus('picker failed','err'); log('picker: '+JSON.stringify(e.detail||e)); return; }
+    data = await res.json();
+  } catch(e){ setStatus('picker failed','err'); log('picker: '+e.message,'err'); return; }
+  ensurePicker();
+  picker.node = node; picker.kind = kind;
+  renderPickerData(data, node.selectionData);
+  document.getElementById('picker-title').textContent = 'Select edges — '+(src.title||src.cadType);
+  document.getElementById('picker').classList.add('open');
+  startPickerLoop();
+  setStatus('picking edges');
+};
+
+function renderPickerData(data, stored){
+  clearPickerContent();
+  // context solid (translucent) so edges read against it
+  if (data.mesh && data.mesh.vertices && data.mesh.vertices.length){
+    const m = meshFromData(data.mesh, 0x3a4a5c); m.material = picker.meshMat;
+    picker.content.add(m);
+  }
+  // edges as pickable polylines
+  for (const it of (data.items||[])){
+    if (!it.polyline) continue;
+    const g = new THREE.BufferGeometry();
+    const pts = new Float32Array(it.polyline.length*3);
+    for (let i=0;i<it.polyline.length;i++){ pts[3*i]=it.polyline[i][0]; pts[3*i+1]=it.polyline[i][1]; pts[3*i+2]=it.polyline[i][2]; }
+    g.setAttribute('position', new THREE.BufferAttribute(pts,3));
+    const line = new THREE.Line(g, picker.edgeMat); line.renderOrder = 3;
+    line.userData = {index:it.index, sig:it.sig};
+    picker.content.add(line); picker.lines.push(line);
+  }
+  // centre + fit, set pick threshold relative to size
+  const box = new THREE.Box3().setFromObject(picker.content);
+  const ctr = new THREE.Vector3(); box.getCenter(ctr);
+  const size = new THREE.Vector3(); box.getSize(size);
+  picker.content.position.sub(ctr);
+  const md = Math.max(size.x,size.y,size.z) || 10, d = md*2.0;
+  picker.threshold = md*0.012;
+  picker.camera.position.set(d*.7, d*.5, d*.7);
+  picker.controls.target.set(0,0,0); picker.controls.update();
+  // pre-select previously stored edges by nearest anchor (signatures are in the
+  // shape's own coordinates, matching line.userData.sig — independent of the
+  // content group's centring offset)
+  if (stored && stored.sigs){
+    for (const sig of stored.sigs){
+      let best=null, bd=Infinity;
+      for (const line of picker.lines){
+        const a=line.userData.sig;
+        const dd=(a[0]-sig[0])**2+(a[1]-sig[1])**2+(a[2]-sig[2])**2;
+        if (dd<bd){ bd=dd; best=line; }
+      }
+      if (best){ picker.sel.set(best.userData.index, best.userData.sig); best.material = picker.selMat; }
+    }
+  }
+  document.getElementById('picker-count').textContent = picker.sel.size + ' selected';
+}
+
+function startPickerLoop(){
+  const canvas = picker.renderer.domElement;
+  (function loop(){
+    picker.raf = requestAnimationFrame(loop);
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (canvas.width !== w || canvas.height !== h){
+      picker.renderer.setSize(w, h, false);
+      picker.camera.aspect = w/h; picker.camera.updateProjectionMatrix();
+    }
+    picker.controls.update();
+    picker.renderer.render(picker.scene, picker.camera);
+  })();
+}
+
+window.closePicker = function(commit){
+  if (commit && picker.node){
+    picker.node.selectionData = {
+      kind: picker.kind,
+      indices: [...picker.sel.keys()],
+      sigs: [...picker.sel.values()],
+    };
+    updateSelectBtn(picker.node);
+  }
+  document.getElementById('picker').classList.remove('open');
+  if (picker.raf){ cancelAnimationFrame(picker.raf); picker.raf = null; }
+  const node = picker.node; picker.node = null;
+  if (commit && node) runGraph();
+};
+
 // ── Litegraph init ──
 function initGraph(){
   lgraph = new LGraph();
@@ -827,6 +1019,18 @@ function resizeGraph(){
 })();
 window.addEventListener('resize', ()=>{ resizeGraph(); resizeViewer(); });
 document.getElementById('sel-graph').addEventListener('change', e=>openGraph(e.target.value));
+// picker modal controls
+document.getElementById('picker-confirm').addEventListener('click', ()=>closePicker(true));
+document.getElementById('picker-cancel').addEventListener('click', ()=>closePicker(false));
+document.getElementById('picker-clear').addEventListener('click', ()=>{
+  for (const line of picker.lines) line.material = picker.edgeMat;
+  picker.sel.clear(); document.getElementById('picker-count').textContent = '0 selected';
+});
+document.addEventListener('keydown', e=>{   // Esc cancels, Enter confirms the picker
+  if (!document.getElementById('picker').classList.contains('open')) return;
+  if (e.key === 'Escape'){ e.preventDefault(); closePicker(false); }
+  else if (e.key === 'Enter'){ e.preventDefault(); closePicker(true); }
+});
 
 // ── boot ──
 (async function(){
