@@ -9,9 +9,11 @@ wrapper script, run `python3` with a timeout, capture stdout/stderr.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from .graph import Graph
@@ -121,33 +123,101 @@ def build_script(code: str, stl_path: Path, view_path: Path) -> str:
     )
 
 
-def execute_code(code: str, workdir: Path, timeout: int = 120) -> dict:
-    """Execute already-transpiled code. Returns a result dict."""
-    workdir.mkdir(parents=True, exist_ok=True)
-    stl_path = workdir / "output.stl"
-    view_path = workdir / "view.json"
-    script_path = workdir / "_run.py"
+# ---------------------------------------------------------------------------
+# Warm worker — keeps build123d imported across runs (the cold import is ~2.7s,
+# the actual build+tessellate is 5-165ms). A separate process keeps the web
+# server build123d-free and isolated from OCCT crashes; it runs one job at a
+# time (serialised by a lock) and is respawned if it dies or times out.
+# ---------------------------------------------------------------------------
+_WORKER_PATH = str(Path(__file__).resolve().parent / "worker.py")
+_SENTINEL = "@@CADWORKER@@"
+_USE_WARM = os.environ.get("CAD_WARM_WORKER", "1") != "0"
 
-    if view_path.exists():
-        view_path.unlink()
 
-    script_text = build_script(code, stl_path, view_path)
-    script_path.write_text(script_text)
+class WarmWorker:
+    def __init__(self):
+        self._proc = None
+        self._lock = threading.Lock()
 
-    try:
-        proc = subprocess.run(
-            [sys.executable, str(script_path)],
-            capture_output=True, text=True, timeout=timeout, cwd=str(workdir),
+    def _alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def _kill(self) -> None:
+        if self._proc is not None:
+            try:
+                self._proc.kill()
+            except Exception:
+                pass
+            self._proc = None
+
+    def _read_sentinel(self, timeout: float):
+        """Read worker stdout until a SENTINEL line; ignore other noise.
+        Returns the parsed dict, or None on timeout."""
+        box: dict = {}
+        proc = self._proc
+
+        def reader():
+            for line in proc.stdout:
+                if line.startswith(_SENTINEL):
+                    try:
+                        box["v"] = json.loads(line[len(_SENTINEL):])
+                    except Exception:
+                        box["v"] = None
+                    return
+
+        t = threading.Thread(target=reader, daemon=True)
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            return None
+        return box.get("v")
+
+    def _spawn(self) -> None:
+        self._proc = subprocess.Popen(
+            [sys.executable, "-u", _WORKER_PATH],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, cwd=_REPO_ROOT,
         )
-    except subprocess.TimeoutExpired:
-        return {"success": False, "code": code, "warnings": [],
-                "errors": f"Execution timed out after {timeout}s", "view": None,
-                "error_detail": {
-                    "node_id": None, "node_type": None, "culprit": None,
-                    "exception": "TimeoutExpired",
-                    "message": f"Esecuzione interrotta dopo {timeout}s.",
-                    "hint": "Il grafo è troppo pesante o un'operazione si è bloccata."}}
+        ready = self._read_sentinel(timeout=120)
+        if not ready or not ready.get("ready"):
+            self._kill()
+            raise RuntimeError("warm worker failed to import build123d")
 
+    def run(self, script_path: Path, cwd: Path, timeout: float) -> dict:
+        with self._lock:
+            if not self._alive():
+                self._spawn()
+            job = json.dumps({"cmd": "run", "script_path": str(script_path),
+                              "cwd": str(cwd)})
+            try:
+                self._proc.stdin.write(job + "\n")
+                self._proc.stdin.flush()
+            except (BrokenPipeError, OSError):
+                self._kill()
+                raise
+            res = self._read_sentinel(timeout)
+            if res is None:                 # timed out or crashed mid-job
+                self._kill()
+                return {"timeout": True}
+            return res
+
+
+_WORKER = WarmWorker()
+
+
+def _timeout_result(code: str, timeout: float) -> dict:
+    return {"success": False, "code": code, "warnings": [],
+            "errors": f"Execution timed out after {timeout}s", "view": None,
+            "error_detail": {
+                "node_id": None, "node_type": None, "culprit": None,
+                "exception": "Timeout",
+                "message": f"Esecuzione interrotta dopo {timeout}s.",
+                "hint": "Il grafo è troppo pesante o un'operazione si è bloccata."}}
+
+
+def _finalize(code: str, script_text: str, stdout: str, stderr,
+              view_path: Path, stl_path: Path) -> dict:
+    """Build the result dict from a finished run (warm or cold)."""
     view = None
     if view_path.exists():
         try:
@@ -155,21 +225,21 @@ def execute_code(code: str, workdir: Path, timeout: int = 120) -> dict:
         except Exception:
             view = None
 
-    success = proc.returncode == 0 and view is not None and view.get("success")
+    success = stderr is None and view is not None and view.get("success")
     result = {
         "success": bool(success),
         "code": code,
-        "stdout": proc.stdout,
-        "errors": proc.stderr if proc.returncode != 0 else None,
+        "stdout": stdout,
+        "errors": stderr,
         "view": view,
         "warnings": [],
         "stl": str(stl_path) if stl_path.exists() else None,
     }
 
     if not success:
-        detail = _diagnose(proc.stderr or "", script_text)
-        # Subprocess exited 0 but produced no shape: not a Python traceback.
-        if proc.returncode == 0 and not detail["exception"]:
+        detail = _diagnose(stderr or "", script_text)
+        # Ran cleanly but produced no shape: not a Python traceback.
+        if not detail["exception"]:
             err = (view or {}).get("error", "Il grafo non produce geometria.")
             detail["message"] = (
                 "Nessun risultato da visualizzare: collega un nodo che produce "
@@ -184,6 +254,45 @@ def execute_code(code: str, workdir: Path, timeout: int = 120) -> dict:
             result["warnings"].append(warn)
 
     return result
+
+
+def execute_code(code: str, workdir: Path, timeout: int = 120) -> dict:
+    """Execute already-transpiled code. Uses the warm worker (build123d kept
+    loaded) with a fallback to a cold subprocess. Returns a result dict."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    stl_path = workdir / "output.stl"
+    view_path = workdir / "view.json"
+    script_path = workdir / "_run.py"
+
+    if view_path.exists():
+        view_path.unlink()
+
+    script_text = build_script(code, stl_path, view_path)
+    script_path.write_text(script_text)
+
+    # --- warm path -------------------------------------------------------
+    if _USE_WARM:
+        try:
+            res = _WORKER.run(script_path, workdir, timeout)
+            if res.get("timeout"):
+                return _timeout_result(code, timeout)
+            stderr = (res.get("error") or "").strip() or None
+            return _finalize(code, script_text, res.get("stdout", ""),
+                             stderr, view_path, stl_path)
+        except Exception:
+            pass  # worker unavailable → fall back to a cold subprocess
+
+    # --- cold fallback ---------------------------------------------------
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script_path)],
+            capture_output=True, text=True, timeout=timeout, cwd=str(workdir),
+        )
+    except subprocess.TimeoutExpired:
+        return _timeout_result(code, timeout)
+
+    stderr = proc.stderr if proc.returncode != 0 else None
+    return _finalize(code, script_text, proc.stdout, stderr, view_path, stl_path)
 
 
 def execute_graph(graph: Graph, workdir: Path, timeout: int = 120) -> dict:
