@@ -65,6 +65,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
     <button class="tb-btn" onclick="newGraph()">＋ New</button>
     <button class="tb-btn" onclick="saveGraph()">💾 Save</button>
     <button class="tb-btn primary" onclick="runGraph()">▶ Run</button>
+    <button class="tb-btn" id="btn-live" onclick="toggleLive()" title="Auto-run on every change">○ Live</button>
     <button class="tb-btn" onclick="exportStep()">⬇ STEP</button>
     <span class="hint">right-click canvas → Add Node · double-click = search</span>
     <div class="spacer"></div>
@@ -120,6 +121,10 @@ let lgraph, lcanvas;
 let currentName = null;
 let nodeIndex = {};        // our graph node-id -> Litegraph node (set on serialize)
 let highlighted = [];      // nodes currently flagged with an error
+let liveMode = false;      // auto-run on every change
+let liveTimer = null;      // debounce handle
+let runAbort = null;       // AbortController for the in-flight run
+let loadingGraph = false;  // suppress live triggers while rebuilding the graph
 
 // ── wire-type colors + input accept-lists (mirrors catalog.WIRE_COMPATIBLE) ──
 const WIRE_COLORS = {
@@ -196,17 +201,17 @@ function evalNum(raw){
 function addWidget(node, p){
   if (p.type === 'bool'){
     node.properties[p.name] = !!p.default;
-    const w = node.addWidget('toggle', p.name, !!p.default, v=>{ node.properties[p.name] = v; });
+    const w = node.addWidget('toggle', p.name, !!p.default, v=>{ node.properties[p.name] = v; scheduleLive(); });
     w.cadParam = p.name; return;
   }
   if (p.type === 'select'){
     node.properties[p.name] = p.default;
-    const w = node.addWidget('combo', p.name, p.default, v=>{ node.properties[p.name] = v; }, {values:p.options||[]});
+    const w = node.addWidget('combo', p.name, p.default, v=>{ node.properties[p.name] = v; scheduleLive(); }, {values:p.options||[]});
     w.cadParam = p.name; return;
   }
   if (p.type === 'str'){
     node.properties[p.name] = p.default ?? '';
-    const w = node.addWidget('text', p.name, p.default ?? '', v=>{ node.properties[p.name] = v; });
+    const w = node.addWidget('text', p.name, p.default ?? '', v=>{ node.properties[p.name] = v; scheduleLive(); });
     w.cadParam = p.name; return;
   }
 
@@ -222,6 +227,7 @@ function addWidget(node, p){
     node.properties[p.name] = v;
     if (slider) slider.value = v;
     if (field)  field.value  = v;     // numeric; Litegraph stringifies for display
+    scheduleLive();
   };
   if (hasRange){
     slider = node.addWidget('slider', `${p.name} (${p.min}–${p.max})`, init, apply, {min:p.min, max:p.max});
@@ -256,6 +262,7 @@ function toGraphJSON(name){
 
 // ── rebuild Litegraph from our graph JSON (round-trip, incl. MCP-made graphs) ──
 function fromGraphJSON(data){
+  loadingGraph = true;
   lgraph.clear();
   const map = {};
   for (const nd of (data.nodes||[])){
@@ -278,6 +285,7 @@ function fromGraphJSON(data){
     if (os>=0 && is>=0) on.connect(os, tn, is);
   }
   lgraph.setDirtyCanvas(true,true);
+  loadingGraph = false;
 }
 
 // ── API actions ──
@@ -306,12 +314,35 @@ window.saveGraph = async function(){
   setStatus('saved ✓','ok');
 };
 
+// ── live mode: debounced auto-run on any graph change ──
+function scheduleLive(){
+  if(!liveMode || loadingGraph) return;
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(()=>{ runGraph(); }, 400);
+}
+window.toggleLive = function(){
+  liveMode = !liveMode;
+  const b = document.getElementById('btn-live');
+  b.classList.toggle('primary', liveMode);
+  b.textContent = liveMode ? '● Live' : '○ Live';
+  if(liveMode) scheduleLive();
+};
+
 window.runGraph = async function(){
   await window.saveGraph();
   if(!currentName) return;
+  if(runAbort) runAbort.abort();          // supersede any in-flight run
+  runAbort = new AbortController();
+  const signal = runAbort.signal;
   clearHighlights();
-  setStatus('running…');
-  const res = await fetch(`${API}/api/graph/${currentName}/execute`, {method:'POST'});
+  setStatus(liveMode ? 'live…' : 'running…');
+  let res;
+  try {
+    res = await fetch(`${API}/api/graph/${currentName}/execute`, {method:'POST', signal});
+  } catch(e){
+    if(e.name === 'AbortError') return;    // a newer change took over
+    setStatus('execution failed','err'); log('execute: '+e.message,'err'); return;
+  }
   if(!res.ok){
     const e = await res.json();
     const d = e.detail || e;
@@ -335,7 +366,9 @@ window.runGraph = async function(){
     showTab('view');
     return;
   }
-  const data = await res.json();
+  let data;
+  try { data = await res.json(); }
+  catch(e){ if(e.name === 'AbortError') return; throw e; }
   document.getElementById('body-code').textContent = data.code || '';
   document.getElementById('body-view').textContent = JSON.stringify(stripMesh(data.view), null, 2);
   renderPanels(data.view);
@@ -533,6 +566,10 @@ function initGraph(){
   const canvas = document.getElementById('graph-canvas');
   lcanvas = new LGraphCanvas(canvas, lgraph);
   lcanvas.background_image = null;
+  // live triggers on structural changes (guarded while loading a graph)
+  lgraph.onNodeAdded = ()=>scheduleLive();
+  lgraph.onNodeRemoved = ()=>scheduleLive();
+  lgraph.onConnectionChange = ()=>scheduleLive();
   lgraph.start();
   resizeGraph();
 }
