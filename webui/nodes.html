@@ -182,38 +182,53 @@ function clampNum(v, p){
   if (isNaN(v)) v = (typeof p.default === 'number') ? p.default : 0;
   if (p.min != null) v = Math.max(p.min, v);
   if (p.max != null) v = Math.min(p.max, v);
-  if (p.type === 'int') v = Math.round(v);
-  return v;
+  if (p.type === 'int') return Math.round(v);
+  return Math.round(v * 1e4) / 1e4;   // tidy float precision
+}
+// Parse a typed field value; allow simple arithmetic like "10+5" / "20/3".
+function evalNum(raw){
+  if (typeof raw === 'number') return raw;
+  const s = String(raw).trim();
+  if (/^[-+*/().\d\s]+$/.test(s)){ try { return Function('"use strict";return ('+s+')')(); } catch(e){} }
+  return parseFloat(s);
 }
 
 function addWidget(node, p){
-  node.properties[p.name] = p.default;
-  let w;
   if (p.type === 'bool'){
-    w = node.addWidget('toggle', p.name, !!p.default, v=>{ node.properties[p.name] = v; });
-  } else if (p.type === 'select'){
-    w = node.addWidget('combo', p.name, p.default, v=>{ node.properties[p.name] = v; }, {values:p.options||[]});
-  } else if (p.type === 'str'){
-    w = node.addWidget('text', p.name, p.default ?? '', v=>{ node.properties[p.name] = v; });
-  } else {
-    // float / int: the 'number' widget is keyboard-editable (click the value to
-    // type — it even accepts expressions like 10+5), drag-to-scrub, and ± arrows.
-    // We clamp every change to the catalog min/max so it stays in range.
-    const cb = (v)=>{
-      v = clampNum(v, p);
-      if (w) w.value = v;          // reflect the clamp back (esp. after typing)
-      node.properties[p.name] = v;
-    };
-    w = node.addWidget('number', p.name, clampNum(p.default, p), cb, {
-      min: (p.min != null ? p.min : undefined),
-      max: (p.max != null ? p.max : undefined),
-      step: (p.step || (p.type === 'int' ? 1 : 0.5)) * 10,
-      precision: p.type === 'int' ? 0 : 2,
-    });
-    // surface the allowed range on the node so the bounds are visible when typing
-    if (p.min != null && p.max != null) w.name = `${p.name} (${p.min}–${p.max})`;
+    node.properties[p.name] = !!p.default;
+    const w = node.addWidget('toggle', p.name, !!p.default, v=>{ node.properties[p.name] = v; });
+    w.cadParam = p.name; return;
   }
-  w.cadParam = p.name;
+  if (p.type === 'select'){
+    node.properties[p.name] = p.default;
+    const w = node.addWidget('combo', p.name, p.default, v=>{ node.properties[p.name] = v; }, {values:p.options||[]});
+    w.cadParam = p.name; return;
+  }
+  if (p.type === 'str'){
+    node.properties[p.name] = p.default ?? '';
+    const w = node.addWidget('text', p.name, p.default ?? '', v=>{ node.properties[p.name] = v; });
+    w.cadParam = p.name; return;
+  }
+
+  // float / int — dual control: a bounded slider (when min/max are known) plus a
+  // keyboard-editable text field (the 'text' widget prompts on click, no arrows).
+  // Both carry cadParam and are kept in sync, so save/load round-trips a number.
+  const hasRange = (p.min != null && p.max != null);
+  const init = clampNum(p.default, p);
+  node.properties[p.name] = init;
+  let slider = null, field = null;
+  const apply = (raw)=>{
+    const v = clampNum(evalNum(raw), p);
+    node.properties[p.name] = v;
+    if (slider) slider.value = v;
+    if (field)  field.value  = v;     // numeric; Litegraph stringifies for display
+  };
+  if (hasRange){
+    slider = node.addWidget('slider', `${p.name} (${p.min}–${p.max})`, init, apply, {min:p.min, max:p.max});
+    slider.cadParam = p.name;
+  }
+  field = node.addWidget('text', hasRange ? '✎' : p.name, init, apply);
+  field.cadParam = p.name;
 }
 
 // ── serialize Litegraph -> our graph JSON ──
