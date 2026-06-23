@@ -341,7 +341,7 @@ window.saveGraph = async function(){
 function scheduleLive(){
   if(!liveMode || loadingGraph) return;
   clearTimeout(liveTimer);
-  liveTimer = setTimeout(()=>{ runGraph(); }, 400);
+  liveTimer = setTimeout(()=>{ runGraph(); }, 120);
 }
 window.toggleLive = function(){
   liveMode = !liveMode;

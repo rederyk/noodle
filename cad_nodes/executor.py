@@ -113,13 +113,24 @@ _EPILOGUE = """
 import sys as _sys
 _sys.path.insert(0, {repo_root!r})
 from cad_nodes.mesh_extractor import extract_and_write
-extract_and_write(__result__, {stl!r}, {view!r}, __panels__, __previews__)
+extract_and_write(__result__, {stl!r}, {view!r}, __panels__, __previews__, {lin}, {ang})
 """
 
+# Tessellation level-of-detail: (linear_frac of bbox diagonal, angular tol rad).
+# Live preview is coarse (~10-30x fewer triangles, ~10x smaller payload); the
+# STEP/STL bake path (export_graph) is unaffected and stays exact/fine.
+_QUALITY = {
+    "live": (0.02, 0.4),
+    "fine": (0.004, 0.15),
+}
 
-def build_script(code: str, stl_path: Path, view_path: Path) -> str:
+
+def build_script(code: str, stl_path: Path, view_path: Path,
+                 quality: str = "live") -> str:
+    lin, ang = _QUALITY.get(quality, _QUALITY["live"])
     return code + _EPILOGUE.format(
-        repo_root=_REPO_ROOT, stl=str(stl_path), view=str(view_path)
+        repo_root=_REPO_ROOT, stl=str(stl_path), view=str(view_path),
+        lin=lin, ang=ang,
     )
 
 
@@ -256,7 +267,8 @@ def _finalize(code: str, script_text: str, stdout: str, stderr,
     return result
 
 
-def execute_code(code: str, workdir: Path, timeout: int = 120) -> dict:
+def execute_code(code: str, workdir: Path, timeout: int = 120,
+                 quality: str = "live") -> dict:
     """Execute already-transpiled code. Uses the warm worker (build123d kept
     loaded) with a fallback to a cold subprocess. Returns a result dict."""
     workdir.mkdir(parents=True, exist_ok=True)
@@ -267,7 +279,7 @@ def execute_code(code: str, workdir: Path, timeout: int = 120) -> dict:
     if view_path.exists():
         view_path.unlink()
 
-    script_text = build_script(code, stl_path, view_path)
+    script_text = build_script(code, stl_path, view_path, quality)
     script_path.write_text(script_text)
 
     # --- warm path -------------------------------------------------------
@@ -295,10 +307,11 @@ def execute_code(code: str, workdir: Path, timeout: int = 120) -> dict:
     return _finalize(code, script_text, proc.stdout, stderr, view_path, stl_path)
 
 
-def execute_graph(graph: Graph, workdir: Path, timeout: int = 120) -> dict:
+def execute_graph(graph: Graph, workdir: Path, timeout: int = 120,
+                  quality: str = "live") -> dict:
     """Transpile + execute a graph end-to-end."""
     code = transpile(graph)
-    return execute_code(code, workdir, timeout=timeout)
+    return execute_code(code, workdir, timeout=timeout, quality=quality)
 
 
 _EXPORTERS = {

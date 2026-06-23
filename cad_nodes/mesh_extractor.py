@@ -49,6 +49,17 @@ def _count(shape, attr):
         return None
 
 
+def _deflection(shape, linear_frac: float) -> float:
+    """Linear tessellation deflection scaled to the shape size, so big and
+    small parts get comparable visual quality (and triangle counts)."""
+    try:
+        bb = shape.bounding_box()
+        diag = (bb.size.X ** 2 + bb.size.Y ** 2 + bb.size.Z ** 2) ** 0.5
+        return max(diag * linear_frac, 0.05)
+    except Exception:
+        return 0.5
+
+
 def _summarize(value):
     """JSON-safe summary of an arbitrary panel value."""
     try:
@@ -70,7 +81,7 @@ def _summarize(value):
         return {"type": "unknown", "repr": repr(value)[:120]}
 
 
-def extract_view(shape) -> dict:
+def extract_view(shape, linear_frac: float = 0.02, angular: float = 0.4) -> dict:
     shape = _as_shape(shape)
     if shape is None:
         return {"success": False, "error": "no result shape"}
@@ -104,9 +115,9 @@ def extract_view(shape) -> dict:
         "solids": _count(shape, "solids"),
     }
 
-    # Tessellated mesh
+    # Tessellated mesh (LOD: coarse for live preview, scaled to part size)
     try:
-        verts, tris = shape.tessellate(0.2)
+        verts, tris = shape.tessellate(_deflection(shape, linear_frac), angular)
         view["mesh"] = {
             "vertices": [[v.X, v.Y, v.Z] for v in verts],
             "triangles": [list(t) for t in tris],
@@ -118,14 +129,14 @@ def extract_view(shape) -> dict:
     return view
 
 
-def _preview_of(value) -> dict | None:
+def _preview_of(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict | None:
     """Compact per-node preview: kind, bbox, volume and a tessellated mesh.
     Returns None if the value isn't drawable geometry."""
     shape = _as_shape(value)
     if shape is None:
         return None
     try:
-        verts, tris = shape.tessellate(0.2)
+        verts, tris = shape.tessellate(_deflection(shape, linear_frac), angular)
     except Exception:
         return None  # not a meshable shape (e.g. a bare number that slipped in)
     if not verts or not tris:
@@ -145,10 +156,11 @@ def _preview_of(value) -> dict | None:
 
 
 def extract_and_write(result, stl_path: str, view_path: str, panels=None,
-                      previews=None) -> dict:
+                      previews=None, linear_frac: float = 0.02,
+                      angular: float = 0.4) -> dict:
     """Write STL + view.json. Returns the view dict."""
     shape = _as_shape(result)
-    view = extract_view(shape)
+    view = extract_view(shape, linear_frac, angular)
 
     if shape is not None and stl_path:
         try:
@@ -165,7 +177,7 @@ def extract_and_write(result, stl_path: str, view_path: str, panels=None,
         out: dict = {}
         for nid, val in previews.items():
             try:
-                entry = _preview_of(val)
+                entry = _preview_of(val, linear_frac, angular)
             except Exception:
                 entry = None
             if entry:
