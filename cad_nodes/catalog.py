@@ -413,13 +413,14 @@ register(NodeDef("Offset", "modifiers", "Offset",
     description="Offset a shape outward/inward."))
 
 register(NodeDef("Section", "modifiers", "Section",
-    inputs=[Socket("shape", WIRE_GEOMETRY)],
-    params=[Param("plane", "select", "plane", "XY", widget="select",
-                  options=["XY", "XZ", "YZ"],
-                  code_map={"XY": "Plane.XY", "XZ": "Plane.XZ", "YZ": "Plane.YZ"})],
+    inputs=[Socket("shape", WIRE_GEOMETRY),
+            Socket("plane", WIRE_PLANE, required=False)],
     outputs=_sk(),
-    code_template={"algebra": "section({shape}, section_by={plane})"},
-    description="Planar cross-section of a shape."))
+    code_template={"algebra": "_section({shape}, {plane})"},
+    description="Planar cross-section of a shape, cut by the Plane wired into "
+                "`plane` (e.g. from a Bounding Plane node, which sets both "
+                "orientation and position). Defaults to the XY plane through the "
+                "global origin when nothing is wired."))
 
 # ===========================================================================
 # 6. Transforms
@@ -475,6 +476,19 @@ register(NodeDef("PlaneOrigin", "plane", "Plane (origin)",
     outputs=[Socket("plane", WIRE_PLANE)],
     code_template={"algebra": "{plane}"},
     description="A base plane."))
+
+register(NodeDef("BoundingPlane", "plane", "Bounding Plane",
+    inputs=[Socket("shape", WIRE_GEOMETRY)],
+    params=[Param("orientation", "select", "orientation", "XY", widget="select",
+                  options=["XY", "XZ", "YZ"],
+                  code_map={"XY": "Plane.XY", "XZ": "Plane.XZ", "YZ": "Plane.YZ"}),
+            _f("position", 0.5, 0.0, 1.0, 0.01, label="position")],
+    outputs=[Socket("plane", WIRE_PLANE)],
+    code_template={"algebra": "_bbox_plane({shape}, {orientation}, {position})"},
+    description="A Plane parallel to the chosen base plane (XY/XZ/YZ), centred on "
+                "the input geometry's bounding box and slid along its normal by "
+                "position (0=min, 0.5=centre, 1=max). A real plane on the wire — "
+                "feed it to Section or any plane input; works for any geometry."))
 
 # ===========================================================================
 # 8. Vectors & points

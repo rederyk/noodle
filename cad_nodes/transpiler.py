@@ -132,6 +132,39 @@ def _pushpull(_part, _faces, _amount):
         return _part
     prism = extrude(_faces, amount=_amount)
     return (_part + prism) if _amount > 0 else (_part - prism)
+
+
+def _bbox_plane(_shape, _plane, _t=0.5):
+    \"\"\"A reusable Plane, parallel to the chosen base plane (XY/XZ/YZ), centred
+    on _shape's bounding box and slid along its own normal to the _t position
+    in [0,1] (0 = min side, 0.5 = centre, 1 = max side). This is a first-class
+    Plane on the wire — feed it to Section, BuildSketch, or anything that takes
+    a plane. Works for any geometry, since the position comes from its box.\"\"\"
+    pl = _plane if isinstance(_plane, Plane) else Plane(_plane)
+    if _shape is None:
+        return pl
+    try:
+        bb = _shape.bounding_box()
+        n = pl.z_dir
+        lo, hi = Vector(bb.min), Vector(bb.max)
+        c = (lo + hi) * 0.5
+        target = lo.dot(n) + (hi.dot(n) - lo.dot(n)) * float(_t)
+        pl = Plane(origin=(c.X, c.Y, c.Z), x_dir=pl.x_dir, z_dir=pl.z_dir)
+        pl = pl.offset(target - pl.origin.dot(n))
+    except Exception:
+        pass  # degenerate / empty shape: fall back to the base plane
+    return pl
+
+
+def _section(_shape, _plane=None):
+    \"\"\"Planar cross-section of _shape, cut by the Plane wired into _plane
+    (e.g. from a Bounding Plane node, which carries both orientation and
+    position). Defaults to Plane.XY through the global origin when nothing is
+    wired.\"\"\"
+    if _shape is None:
+        return None
+    pl = _plane if isinstance(_plane, Plane) else Plane.XY
+    return section(_shape, section_by=pl)
 """
 
 # Output wire types that yield a drawable mesh (mirrors the catalog).
