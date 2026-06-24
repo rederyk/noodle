@@ -126,7 +126,10 @@ def test_transpile_boolean_operators():
     })
     code = transpile(g)
     assert "(__out_1 & __out_2)" in code
-    assert " * " not in code  # '*' is for Locations, not intersection
+    # '*' is for Locations, not intersection. Check the node body only — the
+    # fixed runtime PREAMBLE legitimately contains '*' in its helpers.
+    body = code.split("# --- nodes ---", 1)[1]
+    assert " * " not in body
 
 
 def test_transpile_bypass_passes_input_through():

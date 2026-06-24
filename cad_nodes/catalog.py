@@ -42,7 +42,11 @@ WIRE_COMPATIBLE: dict[str, set[str]] = {
     WIRE_GEOMETRY: {WIRE_GEOMETRY, WIRE_DATA, WIRE_PLANE},
     WIRE_SKETCH: {WIRE_SKETCH, WIRE_GEOMETRY, WIRE_DATA},
     WIRE_CURVE: {WIRE_CURVE, WIRE_SKETCH, WIRE_DATA},
-    WIRE_DATA: {WIRE_DATA},
+    # `data` is the universal wire: it already accepts anything as a sink, and
+    # is also accepted everywhere as a source — so a list manipulated by the
+    # List/Sort/Item nodes can flow back into a geometry/vector/plane input.
+    # Mismatches (a number into a solid op) surface as a guarded per-node error.
+    WIRE_DATA: {WIRE_DATA, WIRE_GEOMETRY, WIRE_SKETCH, WIRE_CURVE, WIRE_VECTOR, WIRE_PLANE},
     WIRE_TREE: {WIRE_TREE, WIRE_DATA},
     WIRE_PLANE: {WIRE_PLANE, WIRE_DATA, WIRE_GEOMETRY},
     WIRE_VECTOR: {WIRE_VECTOR, WIRE_DATA},
@@ -65,6 +69,11 @@ class Socket:
     wire_type: str = WIRE_DATA
     required: bool = True
     multiple: bool = False  # accepts many connections (e.g. ListCreate, Loft)
+    # Grasshopper-style data access. Item-access inputs FAN OUT: a list on the
+    # wire (from several connections, or a list-producing upstream) runs the node
+    # once per item -> a list output. list_access inputs consume the whole list
+    # as one value (List/Sort/Item… and every `multiple` collector).
+    list_access: bool = False
 
 
 @dataclass
@@ -521,17 +530,66 @@ register(NodeDef("ListRange", "data", "Range",
     description="Numeric series start, start+step, ..."))
 
 register(NodeDef("ListItem", "data", "List Item",
-    inputs=[Socket("list", WIRE_DATA)],
+    inputs=[Socket("list", WIRE_DATA, list_access=True)],
     params=[_i("index", 0, 0, 100000, widget="input")],
     outputs=_data(),
     code_template={"algebra": "{list}[{index}]"},
-    description="Pick an item by index."))
+    description="Pick an item by index (negative counts from the end)."))
 
 register(NodeDef("ListLength", "data", "List Length",
-    inputs=[Socket("list", WIRE_DATA)],
+    inputs=[Socket("list", WIRE_DATA, list_access=True)],
     outputs=_data(),
     code_template={"algebra": "len({list})"},
     description="Number of items in a list."))
+
+register(NodeDef("ListFirst", "data", "List First",
+    inputs=[Socket("list", WIRE_DATA, list_access=True)],
+    outputs=_data(),
+    code_template={"algebra": "{list}[0]"},
+    description="The first item."))
+
+register(NodeDef("ListLast", "data", "List Last",
+    inputs=[Socket("list", WIRE_DATA, list_access=True)],
+    outputs=_data(),
+    code_template={"algebra": "{list}[-1]"},
+    description="The last item."))
+
+register(NodeDef("ListReverse", "data", "List Reverse",
+    inputs=[Socket("list", WIRE_DATA, list_access=True)],
+    outputs=_data(),
+    code_template={"algebra": "list(reversed({list}))"},
+    description="Reverse the order of a list."))
+
+register(NodeDef("ListSlice", "data", "List Slice",
+    inputs=[Socket("list", WIRE_DATA, list_access=True)],
+    params=[_i("start", 0, -100000, 100000, widget="input"),
+            _i("stop", 0, -100000, 100000, widget="input"),
+            _i("step", 1, -100000, 100000, widget="input")],
+    outputs=_data(),
+    code_template={"algebra": "_slice({list}, {start}, {stop}, {step})"},
+    description="Sub-list list[start:stop:step]. stop=0 means 'to the end'."))
+
+register(NodeDef("ListFlatten", "data", "List Flatten",
+    inputs=[Socket("list", WIRE_DATA, list_access=True)],
+    outputs=_data(),
+    code_template={"algebra": "_flatten({list})"},
+    description="Flatten nested lists into one flat list."))
+
+register(NodeDef("ListSort", "data", "List Sort",
+    inputs=[Socket("list", WIRE_DATA, list_access=True)],
+    params=[Param("by", "select", "by", "X", widget="select",
+                  options=["X", "Y", "Z", "length", "area", "volume", "radius", "value"])],
+    outputs=_data(),
+    code_template={"algebra": "_sort({list}, {by})"},
+    description="Sort a list. Shapes sort by position (X/Y/Z) or metric "
+                "(length/area/volume/radius); points by component; numbers by value."))
+
+register(NodeDef("Concat", "data", "Concat",
+    inputs=[Socket("a", WIRE_DATA, list_access=True),
+            Socket("b", WIRE_DATA, list_access=True)],
+    outputs=_data(),
+    code_template={"algebra": "(list({a}) + list({b}))"},
+    description="Join two lists end to end."))
 
 # ===========================================================================
 # 10. Math

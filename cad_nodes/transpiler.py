@@ -175,10 +175,88 @@ def _rotate(_obj, _axis, _angle):
         return None
     d = _axis.direction
     return Rot(d.X * _angle, d.Y * _angle, d.Z * _angle) * _obj
+
+
+def _is_seq(_v):
+    \"\"\"A value the engine should iterate over for fan-out. Lists/tuples and
+    build123d ShapeLists count; a single Vector/Shape/Plane does NOT (a Vector
+    is itself iterable, so test for the list-like containers explicitly).\"\"\"
+    return isinstance(_v, (list, tuple, ShapeList))
+
+
+def _fanout(_fn, _kw):
+    \"\"\"Grasshopper-style data matching. _kw maps each item-access input name to
+    its value. Any value that is a sequence makes the node run once per item;
+    scalars are broadcast to every run; shorter lists reuse their last item
+    (longest-list match). Returns a single value when nothing was a list, else a
+    list of results.\"\"\"
+    cols = {k: list(v) for k, v in _kw.items() if _is_seq(v)}
+    if not cols:
+        return _fn(**_kw)
+    n = max((len(v) for v in cols.values()), default=0)
+    out = []
+    for i in range(n):
+        call = {}
+        for k, v in _kw.items():
+            if k in cols:
+                seq = cols[k]
+                call[k] = seq[i] if i < len(seq) else (seq[-1] if seq else None)
+            else:
+                call[k] = v
+        out.append(_fn(**call))
+    return out
+
+
+def _flatten(_x):
+    out = []
+    for it in (_x or []):
+        out.extend(_flatten(it)) if _is_seq(it) else out.append(it)
+    return out
+
+
+def _slice(_lst, _start, _stop, _step):
+    _lst = list(_lst or [])
+    stop = None if _stop == 0 else _stop
+    return _lst[_start:stop:(_step or 1)]
+
+
+def _sort(_items, _by="X"):
+    \"\"\"Sort a list. build123d shapes use ShapeList ordering (by position along
+    an axis, or by a metric); points sort by component; anything else by value.\"\"\"
+    items = list(_items or [])
+    if not items:
+        return items
+    head = items[0]
+    if hasattr(head, "wrapped") or hasattr(head, "volume") or hasattr(head, "center"):
+        axis = {"X": Axis.X, "Y": Axis.Y, "Z": Axis.Z}.get(_by)
+        metric = {"length": SortBy.LENGTH, "area": SortBy.AREA,
+                  "volume": SortBy.VOLUME, "radius": SortBy.RADIUS}.get(_by)
+        try:
+            if axis is not None:
+                return ShapeList(items).sort_by(axis)
+            if metric is not None:
+                return ShapeList(items).sort_by(metric)
+        except Exception:
+            pass
+    if hasattr(head, "X") and hasattr(head, "Y") and hasattr(head, "Z"):
+        comp = {"X": "X", "Y": "Y", "Z": "Z"}.get(_by, "X")
+        return sorted(items, key=lambda v: getattr(v, comp))
+    try:
+        return sorted(items)
+    except Exception:
+        return items
 """
 
 # Output wire types that yield a drawable mesh (mirrors the catalog).
 _PREVIEWABLE = {catalog.WIRE_GEOMETRY, catalog.WIRE_SKETCH, catalog.WIRE_CURVE}
+
+# Node types whose output is always a Python list at runtime. Feeding one of
+# these into an item-access input makes the consumer fan out. (A fanned node is
+# added to this set dynamically as the graph is walked, so lists propagate.)
+_LIST_PRODUCERS = {
+    "ArrayLinear", "ListCreate", "ListRange", "ListSeries", "ListRepeat",
+    "ListSlice", "ListReverse", "ListSort", "ListFlatten", "Concat",
+}
 
 
 def format_param(pdef: catalog.Param, value) -> str:
@@ -215,6 +293,9 @@ class Transpiler:
         self.graph = graph
         self.var_of: dict[str, str] = {}
         self._counter = 0
+        # node ids whose output is a list at runtime (static producers + any node
+        # that gets fanned out). Filled as nodes are emitted in topological order.
+        self._produces_list: set[str] = set()
         # A node is an "extremity" unless its geometry is passed onward to a node
         # that *continues* the geometry (feeds a geometry-class input AND itself
         # produces geometry). Feeding a Panel/inspector (data input) or an Export
@@ -341,21 +422,50 @@ class Transpiler:
 
     def _emit_simple(self, node, lines: list[str]) -> None:
         ndef = catalog.get(node.type)
-        values = {}
-        values.update(self._param_values(node, ndef))
-        values.update(self._input_values(node.id, ndef))
-        values["node_id"] = node.id
+        feeds = self.graph.inputs_of(node.id)
+
+        # Classify each input. Item-access inputs that may carry a list at run
+        # time (>=2 connections, or fed by a list-producing node) FAN OUT: they
+        # become lambda parameters and _fanout maps the node over the items.
+        subs = self._param_values(node, ndef)
+        subs["node_id"] = node.id
+        fan: dict[str, str] = {}  # input name -> value expr passed to _fanout
+        for sock in ndef.inputs:
+            srcs = feeds.get(sock.name, [])
+            vars_ = [self.var_of.get(fn, "None") for (fn, _fs) in srcs]
+            if sock.multiple:                       # collector: whole list
+                subs[sock.name] = ", ".join(vars_)
+            elif sock.list_access:                  # consumes the list as-is
+                subs[sock.name] = vars_[0] if vars_ else "None"
+            elif not vars_:
+                subs[sock.name] = "None"
+            else:
+                maybe_list = len(vars_) >= 2 or any(
+                    fn in self._produces_list for (fn, _fs) in srcs)
+                if maybe_list:
+                    fan[sock.name] = f"[{', '.join(vars_)}]" if len(vars_) >= 2 else vars_[0]
+                    subs[sock.name] = sock.name     # bound by the lambda
+                else:
+                    subs[sock.name] = vars_[0]
 
         template = ndef.code_template.get("algebra")
         if template is None:
             raise ValueError(f"Node {node.type} has no algebra template")
-        expr = _substitute(template, values)
+        expr = _substitute(template, subs)
 
-        # Optional `origin` input: position the result (point, or a Compound at
-        # each of several points). Only wraps when actually connected.
-        origin = values.get("origin")
+        # Optional `origin` input positions the result; it is item-access too, so
+        # it may be a lambda-bound name (fanned) or a direct value.
+        origin = subs.get("origin")
         if origin and origin != "None":
             expr = f"_at({expr}, {origin})"
+
+        if fan:
+            lam = f"lambda {', '.join(fan)}: {expr}"
+            kw = "{" + ", ".join(f"{n!r}: {v}" for n, v in fan.items()) + "}"
+            expr = f"_fanout({lam}, {kw})"
+            self._produces_list.add(node.id)        # fanned -> output is a list
+        elif node.type in _LIST_PRODUCERS:
+            self._produces_list.add(node.id)
 
         if ndef.outputs:
             var = self._new_var(node.id)

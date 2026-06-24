@@ -128,9 +128,28 @@ that **must stay in sync**:
   the inverse), which decides whether a wire can be dragged.
 
 Types: `geometry` (solids), `sketch` (2D), `curve`, `plane`, `vector` (points),
-`selection` (picked sub-shapes), `data`, `tree`. `data` is the permissive
-fallback. Note `geometry` and `plane` are intentionally interchangeable so the
-transform nodes treat a plane like any geometry.
+`selection` (picked sub-shapes), `data`, `tree`. `data` is the universal wire
+(accepts anything AND feeds anything). `geometry` and `plane` are interchangeable
+so transforms treat a plane like any geometry.
+
+## 5b. Lists & fan-out (Grasshopper-style)
+
+Inputs have a data-access mode (`Socket.list_access`):
+
+- **item-access** (default): the input FANS OUT. Wire several connections into it
+  (shift-drag in the editor) — or feed it a list-producing node — and the node
+  runs once per item, producing a **list** output. Two points → one Circle → two
+  circles. Scalars broadcast; shorter lists reuse their last item (longest-match).
+- **list_access** (`Socket("list", …, list_access=True)`) and every `multiple`
+  collector: consume the whole list as one value (List/Sort/Item/Slice…, Loft).
+
+The transpiler wraps a fanned node as `_fanout(lambda …: <expr>, {…})` and tracks
+which node outputs are lists (`_produces_list` + `_LIST_PRODUCERS`) so lists
+propagate down a chain. List nodes live in the `data` category (ListCreate,
+ListSort, ListItem, ListReverse, ListSlice, First/Last, Flatten, Concat, …);
+`_sort` uses build123d `ShapeList.sort_by` for shapes, Python `sorted` otherwise.
+Frontend multi-connect = dynamic input slots sharing one socket name (see
+`onConnectionsChange` + `fromGraphJSON` in `nodes.html`).
 
 ## 6. How to change things
 

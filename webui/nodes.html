@@ -204,16 +204,25 @@ const WIRE_COLORS = {
   selection:'#e879f9',
 };
 // for an input of type T, which output types may feed it
+// `data` is the universal wire (mirrors catalog.WIRE_COMPATIBLE): it both
+// accepts anything and can feed anything, so List/Sort/Item outputs flow back
+// into geometry/vector/plane inputs. Mismatches surface as guarded node errors.
 const INPUT_ACCEPTS = {
-  geometry:['geometry','sketch','plane'],   // transforms treat a plane like geometry
-  sketch:['sketch'],
-  curve:['curve'],
+  geometry:['geometry','sketch','plane','data'],   // transforms treat a plane like geometry
+  sketch:['sketch','data'],
+  curve:['curve','data'],
   data:['geometry','sketch','curve','data','tree','plane','vector','selection'],
-  tree:['tree'],
-  plane:['plane','geometry'],               // a transformed plane flows back into a plane input
-  vector:['vector','selection'],
+  tree:['tree','data'],
+  plane:['plane','geometry','data'],               // a transformed plane flows back into a plane input
+  vector:['vector','selection','data'],
   selection:['selection'],
 };
+
+// Track Shift so a connection can choose to ADD a slot instead of replacing.
+window._cadShift = false;
+window.addEventListener('keydown', e => { if (e.key === 'Shift') window._cadShift = true; }, true);
+window.addEventListener('keyup',   e => { if (e.key === 'Shift') window._cadShift = false; }, true);
+window.addEventListener('blur',     () => { window._cadShift = false; });
 
 function log(msg, cls=''){
   const el = document.getElementById('body-log');
@@ -234,9 +243,16 @@ function registerNodes(defs){
     const ctor = function(){
       this.cadType = def.type;
       this.properties = {};
+      // cadInputs: per input name -> {accepts, grow}. A "grow" input can hold
+      // MANY connections (shift-drag adds a slot): every input fans out / is a
+      // collector EXCEPT list_access inputs, which take one whole list.
+      this.cadInputs = {};
       for (const s of (def.inputs||[])){
         const accepts = (INPUT_ACCEPTS[s.wire_type]||[s.wire_type]).join(',');
+        const grow = !!(s.multiple) || !s.list_access;
+        this.cadInputs[s.name] = {accepts, grow};
         this.addInput(s.name, accepts);
+        this.inputs[this.inputs.length-1].cadName = s.name;
       }
       for (const s of (def.outputs||[])){
         this.addOutput(s.name, s.wire_type);
@@ -253,6 +269,36 @@ function registerNodes(defs){
         sb.isSelectBtn = true;
         this._selKind = SEL_KIND;
       }
+      // Multi-input: shift-drag a second wire into a "grow" input to add a slot
+      // (two points → one Circle → two outputs). Slots share the socket name, so
+      // the backend collects them under that name and the node fans out.
+      this.onConnectionsChange = function(type, index, connected, link_info){
+        if (type !== LiteGraph.INPUT || loadingGraph) return;
+        const slot = this.inputs[index]; if (!slot) return;
+        const info = this.cadInputs[slot.cadName || slot.name];
+        if (!info || !info.grow) return;
+        if (connected && window._cadShift){
+          const spare = this.inputs.some(s => (s.cadName||s.name)===slot.cadName && s.link==null);
+          if (!spare){
+            this.addInput(slot.cadName, info.accepts);
+            this.inputs[this.inputs.length-1].cadName = slot.cadName;
+          }
+        }
+        if (!connected){
+          // drop surplus empty duplicates of this name — only ever the LAST slot,
+          // so no other slot's index (and no live link) shifts underneath us.
+          for (let guard=0; guard<32; guard++){
+            const last = this.inputs[this.inputs.length-1];
+            const dups = this.inputs.filter(s => (s.cadName||s.name)===last.cadName && s.link==null).length;
+            if (last.link==null && this.cadInputs[last.cadName] && dups>1)
+              this.removeInput(this.inputs.length-1);
+            else break;
+          }
+        }
+        this.size = this.computeSize();
+        this.size[0] = Math.max(this.size[0], 150);
+        scheduleLive && scheduleLive();
+      };
       this.size = this.computeSize();
       this.size[0] = Math.max(this.size[0], 150);
       // bypass overlay: dim + diagonal slash + label across the node body
@@ -424,11 +470,29 @@ function fromGraphJSON(data){
     lgraph.add(node);
     map[nd.id] = node;
   }
+  const grewInputs = [];   // [node, socketName] that received >=1 connection
   for (const c of (data.connections||[])){
     const on = map[c.from_node], tn = map[c.to_node]; if(!on||!tn) continue;
     const os = on.outputs.findIndex(s=>s.name===c.from_socket);
-    const is = tn.inputs.findIndex(s=>s.name===c.to_socket);
-    if (os>=0 && is>=0) on.connect(os, tn, is);
+    if (os<0) continue;
+    // attach to the next FREE slot of this name; grow one if all are taken so
+    // several connections to the same input round-trip into several slots.
+    let is = tn.inputs.findIndex(s=>(s.cadName||s.name)===c.to_socket && s.link==null);
+    if (is<0){
+      const info = tn.cadInputs && tn.cadInputs[c.to_socket];
+      if (info){ tn.addInput(c.to_socket, info.accepts); is = tn.inputs.length-1; tn.inputs[is].cadName=c.to_socket; }
+      else is = tn.inputs.findIndex(s=>(s.cadName||s.name)===c.to_socket);
+    }
+    if (os>=0 && is>=0){ on.connect(os, tn, is); grewInputs.push([tn, c.to_socket]); }
+  }
+  // leave one trailing empty spare on each grow input that got wired, so the
+  // user can shift-drag yet another connection without first freeing a slot.
+  for (const [tn, name] of grewInputs){
+    const info = tn.cadInputs && tn.cadInputs[name];
+    if (info && info.grow && !tn.inputs.some(s=>(s.cadName||s.name)===name && s.link==null)){
+      tn.addInput(name, info.accepts); tn.inputs[tn.inputs.length-1].cadName = name;
+    }
+    tn.size = tn.computeSize(); tn.size[0] = Math.max(tn.size[0], 150);
   }
   lgraph.setDirtyCanvas(true,true);
   loadingGraph = false;
