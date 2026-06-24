@@ -232,7 +232,8 @@ class Transpiler:
         var = self._new_var(node.id)
         src = self._input_values(node.id, ndef).get("geometry", "None")
         sel = node.params.get("selection") or {}
-        kind = sel.get("kind", "edge")
+        default_kind = {"SelectFace": "face", "SelectVertex": "vertex"}.get(node.type, "edge")
+        kind = sel.get("kind", default_kind)
         indices = sel.get("indices", []) or []
         sigs = sel.get("sigs", []) or []
         body = [f"{var} = _select_subshapes({src}, {kind!r}, {indices!r}, {sigs!r}){_annot(node)}"]

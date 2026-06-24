@@ -183,6 +183,26 @@ def test_transpile_select_edge_and_targeted_fillet():
     assert "fillet(__out_2, radius=1.5)" in code      # operates on the selection var
 
 
+def test_transpile_select_face_defaults_kind_and_extrudes():
+    # An unpicked SelectFace still transpiles, defaulting its kind to 'face';
+    # ExtrudeSelectedFace grows a boss from the selection var.
+    g = Graph.from_dict({
+        "nodes": [
+            {"id": "b", "type": "Box"},
+            {"id": "sf", "type": "SelectFace"},   # no selection picked yet
+            {"id": "ex", "type": "ExtrudeSelectedFace", "params": {"amount": 8}},
+        ],
+        "connections": [
+            {"id": "1", "from_node": "b", "from_socket": "result", "to_node": "sf", "to_socket": "geometry"},
+            {"id": "2", "from_node": "b", "from_socket": "result", "to_node": "ex", "to_socket": "part"},
+            {"id": "3", "from_node": "sf", "from_socket": "selection", "to_node": "ex", "to_socket": "faces"},
+        ],
+    })
+    code = transpile(g)
+    assert "_select_subshapes(__out_1, 'face'" in code     # kind inferred from node type
+    assert "extrude(__out_2, amount=8.0)" in code
+
+
 def test_transpile_codeblock():
     g = Graph.from_dict({
         "nodes": [{"id": "cb", "type": "CodeBlock",

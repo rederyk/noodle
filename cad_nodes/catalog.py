@@ -338,12 +338,40 @@ register(NodeDef("SelectEdge", "select", "Select Edge",
     description="Pick specific edges of a shape in the 3D picker; outputs the "
                 "selected edges for a targeted operation."))
 
+register(NodeDef("SelectFace", "select", "Select Face",
+    inputs=[Socket("geometry", WIRE_GEOMETRY)],
+    outputs=[Socket("selection", WIRE_SELECTION)],
+    code_template={"algebra": ""},  # handled by the transpiler, not a template
+    description="Pick specific faces of a shape in the 3D picker; outputs the "
+                "selected faces for a targeted operation."))
+
+register(NodeDef("SelectVertex", "select", "Select Vertex",
+    inputs=[Socket("geometry", WIRE_GEOMETRY)],
+    outputs=[Socket("selection", WIRE_SELECTION)],
+    code_template={"algebra": ""},  # handled by the transpiler, not a template
+    description="Pick specific vertices of a shape in the 3D picker; outputs the "
+                "selected vertices."))
+
 register(NodeDef("FilletSelectedEdges", "modifiers", "Fillet Selected Edges",
     inputs=[Socket("part", WIRE_GEOMETRY), Socket("edges", WIRE_SELECTION)],
     params=[_f("radius", 2, 0.05, 100)],
     outputs=_geo(),
     code_template={"algebra": "fillet({edges}, radius={radius})"},
     description="Round only the edges chosen by a Select Edge node."))
+
+register(NodeDef("ChamferSelectedEdges", "modifiers", "Chamfer Selected Edges",
+    inputs=[Socket("part", WIRE_GEOMETRY), Socket("edges", WIRE_SELECTION)],
+    params=[_f("length", 1.5, 0.05, 100)],
+    outputs=_geo(),
+    code_template={"algebra": "chamfer({edges}, length={length})"},
+    description="Bevel only the edges chosen by a Select Edge node."))
+
+register(NodeDef("ExtrudeSelectedFace", "modifiers", "Extrude Selected Face",
+    inputs=[Socket("part", WIRE_GEOMETRY), Socket("faces", WIRE_SELECTION)],
+    params=[_f("amount", 5, -200, 200)],
+    outputs=_geo(),
+    code_template={"algebra": "({part} + extrude({faces}, amount={amount}))"},
+    description="Grow a boss by extruding the faces chosen by a Select Face node."))
 
 register(NodeDef("Shell", "modifiers", "Shell",
     inputs=[Socket("part", WIRE_GEOMETRY)],
