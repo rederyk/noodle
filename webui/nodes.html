@@ -89,6 +89,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
     <button class="tb-btn primary" onclick="runGraph()">▶ Run</button>
     <button class="tb-btn" id="btn-live" onclick="toggleLive()" title="Auto-run on every change">○ Live</button>
     <button class="tb-btn" id="btn-fast" onclick="toggleFastDrag()" title="Drag Move/Rotate/Scale = instant local preview, exact on release">○ Drag</button>
+    <button class="tb-btn" onclick="frameView()" title="Frame geometry (F · dbl-click viewer)">⛶ Fit</button>
     <button class="tb-btn" onclick="exportStep()">⬇ STEP</button>
     <span class="hint">dbl-click = search · Ctrl+G group · Ctrl+B bypass · Del delete · Ctrl+C/V copy</span>
     <div class="spacer"></div>
@@ -149,6 +150,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 import * as THREE from 'three';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
 
 const API = '';
 const LiteGraph = window.LiteGraph;
@@ -386,7 +388,7 @@ function fromGraphJSON(data){
 window.newGraph = async function(){
   const name = (document.getElementById('inp-name').value || '').trim();
   if(!name){ setStatus('enter a name','err'); return; }
-  lgraph.clear();
+  lgraph.clear(); viewerFramed = false;
   await fetch(`${API}/api/graph/${name}`, {method:'POST',headers:{'Content-Type':'application/json'},
     body: JSON.stringify({name, nodes:[], connections:[]})});
   currentName = name;
@@ -498,6 +500,7 @@ document.addEventListener('keydown', (e)=>{
   if (e.ctrlKey && !e.shiftKey && k === 'g'){ e.preventDefault(); groupSelected(); }
   else if (e.ctrlKey && !e.shiftKey && k === 'b'){ e.preventDefault(); toggleBypassSelected(); }
   else if (k === 'delete'){ e.preventDefault(); deleteSelected(); }
+  else if (k === 'f' && !e.ctrlKey && !e.metaKey){ e.preventDefault(); frameView(); }
 });
 
 // ── floating selection toolbar (anchored above the selection) ──
@@ -675,7 +678,7 @@ window.openGraph = async function(name){
   if(!res.ok){ setStatus('open failed','err'); return; }
   const data = await res.json();
   fromGraphJSON(data);
-  currentName = name;
+  currentName = name; viewerFramed = false;   // frame the freshly opened graph once
   document.getElementById('inp-name').value = name;
   document.getElementById('sb-graph').textContent = name;
   setStatus('opened '+name,'ok');
@@ -732,24 +735,65 @@ function highlightNode(graphId){
 
 // ── Three.js viewer (same setup as the code UI) ──
 let scene, camera, renderer, controls, currentMesh, stlLoader, previewGroup;
+let viewHelper, viewClock, viewerFramed = false;
 function initViewer(){
   const canvas = document.getElementById('viewer-canvas');
   const c = canvas.parentElement;
   scene = new THREE.Scene(); scene.background = new THREE.Color(0x0b0e14);
-  scene.add(new THREE.GridHelper(100,50,0x1e2738,0x151a22));
+  // Z-up (build123d/CAD convention): the grid IS the XY construction plane,
+  // fixed at the world origin — it never follows the geometry.
+  const grid = new THREE.GridHelper(200,40,0x2a3346,0x161b25);
+  grid.rotation.x = Math.PI/2; scene.add(grid);
+  // origin marker so you always see where (0,0,0) is, even when shapes move off it
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.8,16,16),
+                             new THREE.MeshBasicMaterial({color:0xe94560}));
+  scene.add(dot);
   previewGroup = new THREE.Group(); scene.add(previewGroup);
-  const ax = new THREE.AxesHelper(25); ax.material.transparent=true; ax.material.opacity=.5; scene.add(ax);
+  const ax = new THREE.AxesHelper(20); ax.material.transparent=true; ax.material.opacity=.6; scene.add(ax);
   scene.add(new THREE.AmbientLight(0x404060,2.5));
-  const key=new THREE.DirectionalLight(0xffffff,2); key.position.set(40,60,40); scene.add(key);
-  const fill=new THREE.DirectionalLight(0x8888cc,.8); fill.position.set(-40,20,-40); scene.add(fill);
-  camera = new THREE.PerspectiveCamera(40, c.clientWidth/c.clientHeight, .1, 2000);
-  camera.position.set(50,35,50);
+  const key=new THREE.DirectionalLight(0xffffff,2); key.position.set(40,60,80); scene.add(key);
+  const fill=new THREE.DirectionalLight(0x8888cc,.8); fill.position.set(-40,-20,40); scene.add(fill);
+  camera = new THREE.PerspectiveCamera(40, c.clientWidth/c.clientHeight, .1, 5000);
+  camera.up.set(0,0,1);                 // Z is up
+  camera.position.set(60,-60,45);
   renderer = new THREE.WebGLRenderer({canvas, antialias:true});
   renderer.setSize(c.clientWidth, c.clientHeight); renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  renderer.autoClear = false;           // ViewHelper overlays after the main render
   controls = new OrbitControls(camera, canvas); controls.enableDamping=true; controls.dampingFactor=.08;
   stlLoader = new STLLoader();
-  (function loop(){ requestAnimationFrame(loop); controls.update(); renderer.render(scene,camera); })();
+  // navigation gizmo (click an axis to snap to that ortho view)
+  viewHelper = new ViewHelper(camera, canvas);
+  viewClock = new THREE.Clock();
+  canvas.addEventListener('dblclick', ()=> frameView());
+  canvas.addEventListener('pointerup', (e)=>{ viewHelper.center.copy(controls.target); viewHelper.handleClick(e); });
+  (function loop(){
+    requestAnimationFrame(loop);
+    const dt = viewClock.getDelta();
+    if (viewHelper.animating) viewHelper.update(dt);
+    controls.update();
+    renderer.clear();
+    renderer.render(scene,camera);
+    viewHelper.render(renderer);
+  })();
 }
+
+// Frame whatever geometry is shown WITHOUT moving it: keep the current view
+// direction, just re-target + re-distance the camera to fit the real bounds.
+window.frameView = function(){
+  const box = new THREE.Box3();
+  if (previewGroup.children.length) box.setFromObject(previewGroup);
+  else if (currentMesh) box.setFromObject(currentMesh);
+  if (box.isEmpty()) return;
+  const ctr = new THREE.Vector3(); box.getCenter(ctr);
+  const size = new THREE.Vector3(); box.getSize(size);
+  const md = Math.max(size.x,size.y,size.z) || 10, d = md*2.0;
+  let dir = new THREE.Vector3().subVectors(camera.position, controls.target);
+  if (dir.lengthSq() < 1e-6) dir.set(1,-1,0.8);
+  dir.normalize().multiplyScalar(d);
+  controls.target.copy(ctr);
+  camera.position.copy(ctr).add(dir);
+  controls.update();
+};
 function resizeViewer(){
   const c = document.getElementById('viewer-canvas').parentElement;
   camera.aspect = c.clientWidth/c.clientHeight; camera.updateProjectionMatrix();
@@ -760,11 +804,9 @@ function loadSTL(url){
     if(currentMesh){ scene.remove(currentMesh); currentMesh.geometry.dispose(); currentMesh.material.dispose(); }
     geo.computeVertexNormals();
     currentMesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color:0xe94560, roughness:.35, metalness:.15, side:THREE.DoubleSide}));
-    geo.computeBoundingBox(); const box=geo.boundingBox, ctr=new THREE.Vector3(); box.getCenter(ctr);
-    currentMesh.position.sub(ctr);
-    const size=new THREE.Vector3(); box.getSize(size); const md=Math.max(size.x,size.y,size.z), d=md*2.2;
-    camera.position.set(d*.6,d*.45,d*.6); controls.target.set(0,0,0); controls.update();
-    scene.add(currentMesh);
+    geo.computeBoundingBox(); const size=new THREE.Vector3(); geo.boundingBox.getSize(size);
+    scene.add(currentMesh);                    // real coords — no recentering
+    if(!viewerFramed){ frameView(); viewerFramed=true; }
     const st=document.getElementById('viewer-stats');
     st.innerHTML = `${(size.x).toFixed(1)} × ${(size.y).toFixed(1)} × ${(size.z).toFixed(1)} mm`;
     st.classList.add('visible');
@@ -815,13 +857,11 @@ function renderPreviews(view){
     const n = nodeIndex[id];
     if(n) n._baked = {...n.properties};
   }
-  // centre + fit camera to the combined bounds
+  // shapes stay at their real world coordinates (no recentering), so moving a
+  // node visibly moves it on the fixed grid. Frame once; then preserve the view.
   const box = new THREE.Box3().setFromObject(previewGroup);
-  const ctr = new THREE.Vector3(); box.getCenter(ctr);
   const size = new THREE.Vector3(); box.getSize(size);
-  previewGroup.position.sub(ctr);
-  const md = Math.max(size.x,size.y,size.z) || 10, d = md*2.2;
-  camera.position.set(d*.6, d*.45, d*.6); controls.target.set(0,0,0); controls.update();
+  if(!viewerFramed){ frameView(); viewerFramed = true; }
   const st = document.getElementById('viewer-stats');
   st.innerHTML = `${ids.length} preview · ${size.x.toFixed(1)} × ${size.y.toFixed(1)} × ${size.z.toFixed(1)} mm`;
   st.classList.add('visible');
@@ -845,11 +885,13 @@ function ensurePicker(){
   if (picker.ready) return;
   const canvas = document.getElementById('picker-canvas');
   picker.scene = new THREE.Scene(); picker.scene.background = new THREE.Color(0x0b0e14);
-  picker.scene.add(new THREE.GridHelper(200,40,0x1e2738,0x141925));
+  const pgrid = new THREE.GridHelper(200,40,0x2a3346,0x161b25); pgrid.rotation.x = Math.PI/2;
+  picker.scene.add(pgrid);                       // Z-up, matches the main viewer
   picker.content = new THREE.Group(); picker.scene.add(picker.content);
   picker.scene.add(new THREE.AmbientLight(0x506070, 2.4));
-  const key = new THREE.DirectionalLight(0xffffff,1.6); key.position.set(40,60,40); picker.scene.add(key);
-  picker.camera = new THREE.PerspectiveCamera(40, 1, .1, 5000); picker.camera.position.set(60,45,60);
+  const key = new THREE.DirectionalLight(0xffffff,1.6); key.position.set(40,60,80); picker.scene.add(key);
+  picker.camera = new THREE.PerspectiveCamera(40, 1, .1, 5000);
+  picker.camera.up.set(0,0,1); picker.camera.position.set(60,-60,45);
   picker.renderer = new THREE.WebGLRenderer({canvas, antialias:true});
   picker.renderer.setPixelRatio(Math.min(devicePixelRatio,2));
   picker.controls = new OrbitControls(picker.camera, canvas);
@@ -980,7 +1022,7 @@ function renderPickerData(data, stored){
   const ctr = new THREE.Vector3(); box.getCenter(ctr);
   picker.content.position.sub(ctr);
   const d = md * 2.0;
-  picker.camera.position.set(d*.7, d*.5, d*.7);
+  picker.camera.position.set(d*.7, -d*.7, d*.5);   // Z-up iso
   picker.controls.target.set(0,0,0); picker.controls.update();
 
   // pre-select previously stored picks by nearest anchor (signatures are in the

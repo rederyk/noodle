@@ -219,36 +219,42 @@ register(NodeDef("ConstructPoint", "vector", "Construct Point",
 # 2. Primitives 2D (sketch / curve)
 # ===========================================================================
 register(NodeDef("Rectangle", "primitives_2d", "Rectangle",
+    inputs=_origin_in(),
     params=[_f("width", 30, 0.1, 500), _f("height", 20, 0.1, 500)],
     outputs=_sk(),
     code_template={"algebra": "Rectangle({width}, {height})"},
     description="2D rectangle sketch."))
 
 register(NodeDef("RoundedRectangle", "primitives_2d", "Rounded Rectangle",
+    inputs=_origin_in(),
     params=[_f("width", 30, 0.1, 500), _f("height", 20, 0.1, 500), _f("radius", 3, 0, 250)],
     outputs=_sk(),
     code_template={"algebra": "RectangleRounded({width}, {height}, {radius})"},
     description="Rectangle with filleted corners."))
 
 register(NodeDef("Circle", "primitives_2d", "Circle",
+    inputs=_origin_in(),
     params=[_f("radius", 10, 0.1, 500)],
     outputs=_sk(),
     code_template={"algebra": "Circle({radius})"},
     description="2D circle sketch."))
 
 register(NodeDef("Ellipse", "primitives_2d", "Ellipse",
+    inputs=_origin_in(),
     params=[_f("x_radius", 8, 0.1, 500), _f("y_radius", 5, 0.1, 500)],
     outputs=_sk(),
     code_template={"algebra": "Ellipse({x_radius}, {y_radius})"},
     description="2D ellipse sketch."))
 
 register(NodeDef("Polygon", "primitives_2d", "Regular Polygon",
+    inputs=_origin_in(),
     params=[_f("radius", 10, 0.1, 500), _i("sides", 6, 3, 64)],
     outputs=_sk(),
     code_template={"algebra": "RegularPolygon({radius}, {sides})"},
     description="Regular N-sided polygon."))
 
 register(NodeDef("Text", "primitives_2d", "Text",
+    inputs=_origin_in(),
     params=[Param("text", "str", "text", "Hello", widget="input"),
             _f("font_size", 10, 0.1, 500)],
     outputs=_sk(),
