@@ -20,7 +20,7 @@ services:
       # For a keyed OpenAI-compatible provider instead, set COPILOT_BASE_URL +
       # COPILOT_API_KEY + COPILOT_MODEL (e.g. Groq / OpenRouter / Gemini).
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
-      - COPILOT_MODEL=${COPILOT_MODEL:-qwen2.5}
+      - COPILOT_MODEL=${COPILOT_MODEL:-qwen3.5:cloud}
       - COPILOT_BASE_URL=${COPILOT_BASE_URL:-}
       - COPILOT_API_KEY=${COPILOT_API_KEY:-}
     restart: unless-stopped
