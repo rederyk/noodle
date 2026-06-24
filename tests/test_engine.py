@@ -222,6 +222,20 @@ def test_transpile_origin_input_positions_primitive():
     assert "_at(" not in body
 
 
+def test_display_fields_round_trip():
+    # colour/wireframe are display-only: they persist but never affect geometry.
+    g = Graph.from_dict({"nodes": [
+        {"id": "b", "type": "Box", "color": "#44cc88", "wireframe": True},
+        {"id": "c", "type": "Cylinder"},
+    ], "connections": []})
+    assert g.node("b").color == "#44cc88" and g.node("b").wireframe is True
+    d = g.node("b").to_dict()
+    assert d["color"] == "#44cc88" and d["wireframe"] is True
+    assert "color" not in g.node("c").to_dict()       # default omitted
+    assert "wireframe" not in g.node("c").to_dict()
+    assert "44cc88" not in transpile(g)               # never leaks into the code
+
+
 def test_transpile_codeblock():
     g = Graph.from_dict({
         "nodes": [{"id": "cb", "type": "CodeBlock",

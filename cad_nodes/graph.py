@@ -41,6 +41,9 @@ class Node:
     # Bypassed (Grasshopper/ComfyUI style): node is skipped, its first matching
     # geometry input passes straight through to its output.
     bypassed: bool = False
+    # Display-only (don't affect geometry): preview colour (hex) and wireframe.
+    color: Optional[str] = None
+    wireframe: bool = False
 
     def to_dict(self) -> dict:
         d = {
@@ -54,6 +57,10 @@ class Node:
             d["preview"] = self.preview
         if self.bypassed:
             d["bypassed"] = True
+        if self.color:
+            d["color"] = self.color
+        if self.wireframe:
+            d["wireframe"] = True
         return d
 
     @staticmethod
@@ -67,6 +74,8 @@ class Node:
             parent=d.get("parent"),
             preview=d.get("preview"),
             bypassed=bool(d.get("bypassed", False)),
+            color=d.get("color"),
+            wireframe=bool(d.get("wireframe", False)),
         )
 
 

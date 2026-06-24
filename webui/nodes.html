@@ -40,6 +40,13 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 #viewer-canvas{width:100%;height:100%;display:block;}
 .viewer-stats{position:absolute;top:8px;right:8px;font-size:11px;color:var(--text-dim);background:var(--bg-1);padding:5px 9px;border-radius:6px;border:1px solid var(--border);display:none;}
 .viewer-stats.visible{display:block;}
+.viewer-legend{position:absolute;top:8px;left:8px;font-size:11px;background:var(--bg-1);
+  border:1px solid var(--border);border-radius:6px;padding:4px;display:none;max-height:60%;overflow:auto;}
+.viewer-legend.visible{display:block;}
+.leg-row{display:flex;align-items:center;gap:6px;padding:2px 5px;border-radius:4px;cursor:pointer;color:var(--text);}
+.leg-row:hover{background:var(--bg-3);}
+.leg-sw{width:11px;height:11px;border-radius:3px;flex-shrink:0;box-shadow:0 0 0 1px rgba(0,0,0,.4);}
+.leg-name{white-space:nowrap;}
 /* bottom tabs */
 .panel{height:220px;display:flex;flex-direction:column;background:var(--bg-1);}
 .tabs{display:flex;border-bottom:1px solid var(--border);}
@@ -90,6 +97,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
     <button class="tb-btn" id="btn-live" onclick="toggleLive()" title="Auto-run on every change">○ Live</button>
     <button class="tb-btn" id="btn-fast" onclick="toggleFastDrag()" title="Drag Move/Rotate/Scale = instant local preview, exact on release">○ Drag</button>
     <button class="tb-btn" onclick="frameView()" title="Frame geometry (F · dbl-click viewer)">⛶ Fit</button>
+    <button class="tb-btn primary" id="btn-grid" onclick="toggleGrid()" title="Show/hide the grid">▦ Grid</button>
     <button class="tb-btn" onclick="exportStep()">⬇ STEP</button>
     <span class="hint">dbl-click = search · Ctrl+G group · Ctrl+B bypass · Del delete · Ctrl+C/V copy</span>
     <div class="spacer"></div>
@@ -104,6 +112,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
       <div class="viewer-wrap">
         <canvas id="viewer-canvas"></canvas>
         <div class="viewer-stats" id="viewer-stats"></div>
+        <div class="viewer-legend" id="viewer-legend"></div>
       </div>
       <div class="panel">
         <div class="tabs">
@@ -165,6 +174,7 @@ let runAbort = null;       // AbortController for the in-flight run
 let loadingGraph = false;  // suppress live triggers while rebuilding the graph
 let fastDrag = false;      // local JS transform while dragging Move/Rotate/Scale
 let previewMeshes = {};    // graph node-id -> THREE.Mesh currently shown
+let lastView = null;       // last execution view (for instant display-only refresh)
 
 // ── wire-type colors + input accept-lists (mirrors catalog.WIRE_COMPATIBLE) ──
 const WIRE_COLORS = {
@@ -238,11 +248,26 @@ function registerNodes(defs){
       };
       // append our actions to the per-node right-click menu
       this.getExtraMenuOptions = function(){
-        return [
-          {content: this.bypassed ? '✓ Bypass' : '⊘ Bypass  (Ctrl+B)',
-           callback: ()=> setBypass(this, !this.bypassed)},
+        const self = this;
+        const opts = [
+          {content: self.bypassed ? '✓ Bypass' : '⊘ Bypass  (Ctrl+B)',
+           callback: ()=> setBypass(self, !self.bypassed)},
           {content: '▣ Group selected  (Ctrl+G)', callback: ()=> groupSelected()},
         ];
+        if (self.widgets && self.widgets.some(w=>w.isEye)){   // a node that renders geometry
+          opts.push({content: (self.wireframe?'✓ ':'')+'Wireframe',
+            callback: ()=>{ self.wireframe = !self.wireframe; refreshDisplay(); }});
+          opts.push({content: '🎨 Preview colour', has_submenu: true,
+            callback: (v,o,e,menu)=>{
+              const sw = c=>`<span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:${c};margin-right:6px;vertical-align:middle"></span>`;
+              const entries = [{content:'Auto (palette)', callback:()=>{ self.previewColor=null; refreshDisplay(); }}];
+              for(const c of PALETTE) entries.push({content: sw(c)+c, callback:()=>{ self.previewColor=c; refreshDisplay(); }});
+              entries.push({content:'Custom…', callback:()=>{ const x=prompt('Hex colour (e.g. #44cc88):', self.previewColor||'#44cc88'); if(x){ self.previewColor=x.trim(); refreshDisplay(); } }});
+              new LiteGraph.ContextMenu(entries, {event:e, parentMenu:menu, title:'Preview colour'});
+              return false;
+            }});
+        }
+        return opts;
       };
     };
     ctor.title = def.label || def.type;
@@ -337,6 +362,8 @@ function toGraphJSON(name){
     if (n.previewMode === 'on') nd.preview = true;
     else if (n.previewMode === 'off') nd.preview = false;   // 'auto' -> omitted
     if (n.bypassed) nd.bypassed = true;
+    if (n.previewColor) nd.color = n.previewColor;
+    if (n.wireframe) nd.wireframe = true;
     nodes.push(nd);
   }
   for (const k in lgraph.links){
@@ -363,6 +390,8 @@ function fromGraphJSON(data){
     node.pos = nd.position || [120, 120];
     node.previewMode = nd.preview === true ? 'on' : nd.preview === false ? 'off' : 'auto';
     if (nd.bypassed){ node.bypassed = true; node.mode = LiteGraph.NEVER; }
+    if (nd.color) node.previewColor = nd.color;
+    if (nd.wireframe) node.wireframe = true;
     if (nd.params && nd.params.selection){ node.selectionData = nd.params.selection; updateSelectBtn(node); }
     if (node.widgets) for (const w of node.widgets){
       if (w.cadParam && nd.params && w.cadParam in nd.params){
@@ -735,15 +764,15 @@ function highlightNode(graphId){
 
 // ── Three.js viewer (same setup as the code UI) ──
 let scene, camera, renderer, controls, currentMesh, stlLoader, previewGroup;
-let viewHelper, viewClock, viewerFramed = false;
+let viewHelper, viewClock, viewerFramed = false, gridHelper;
 function initViewer(){
   const canvas = document.getElementById('viewer-canvas');
   const c = canvas.parentElement;
   scene = new THREE.Scene(); scene.background = new THREE.Color(0x0b0e14);
   // Z-up (build123d/CAD convention): the grid IS the XY construction plane,
   // fixed at the world origin — it never follows the geometry.
-  const grid = new THREE.GridHelper(200,40,0x2a3346,0x161b25);
-  grid.rotation.x = Math.PI/2; scene.add(grid);
+  gridHelper = new THREE.GridHelper(200,40,0x2a3346,0x161b25);
+  gridHelper.rotation.x = Math.PI/2; scene.add(gridHelper);
   // origin marker so you always see where (0,0,0) is, even when shapes move off it
   const dot = new THREE.Mesh(new THREE.SphereGeometry(0.8,16,16),
                              new THREE.MeshBasicMaterial({color:0xe94560}));
@@ -764,8 +793,25 @@ function initViewer(){
   // navigation gizmo (click an axis to snap to that ortho view)
   viewHelper = new ViewHelper(camera, canvas);
   viewClock = new THREE.Clock();
+  const vRay = new THREE.Raycaster(); const vMouse = new THREE.Vector2();
   canvas.addEventListener('dblclick', ()=> frameView());
-  canvas.addEventListener('pointerup', (e)=>{ viewHelper.center.copy(controls.target); viewHelper.handleClick(e); });
+  let vDown = null;
+  canvas.addEventListener('pointerdown', e=>{ vDown=[e.clientX,e.clientY]; });
+  canvas.addEventListener('pointerup', (e)=>{
+    viewHelper.center.copy(controls.target);
+    if (viewHelper.handleClick(e)){ vDown=null; return; }   // gizmo consumed it
+    if (!vDown) return;
+    const moved = Math.hypot(e.clientX-vDown[0], e.clientY-vDown[1]); vDown=null;
+    if (moved > 5) return;                                   // a drag (orbit), not a pick
+    // click-to-select: raycast the previews, select the owning graph node
+    const r = canvas.getBoundingClientRect();
+    vMouse.x = ((e.clientX-r.left)/r.width)*2-1;
+    vMouse.y = -((e.clientY-r.top)/r.height)*2+1;
+    vRay.setFromCamera(vMouse, camera);
+    vRay.params.Line.threshold = 0.5;
+    const hits = vRay.intersectObjects(previewGroup.children, false);
+    if (hits.length && hits[0].object.userData.nodeId) selectNodeById(hits[0].object.userData.nodeId);
+  });
   (function loop(){
     requestAnimationFrame(loop);
     const dt = viewClock.getDelta();
@@ -794,6 +840,13 @@ window.frameView = function(){
   camera.position.copy(ctr).add(dir);
   controls.update();
 };
+
+window.toggleGrid = function(){
+  if(!gridHelper) return;
+  gridHelper.visible = !gridHelper.visible;
+  const b = document.getElementById('btn-grid');
+  if(b){ b.classList.toggle('primary', gridHelper.visible); b.textContent = (gridHelper.visible?'▦':'▢')+' Grid'; }
+};
 function resizeViewer(){
   const c = document.getElementById('viewer-canvas').parentElement;
   camera.aspect = c.clientWidth/c.clientHeight; camera.updateProjectionMatrix();
@@ -813,12 +866,20 @@ function loadSTL(url){
   }, undefined, (err)=>{ setStatus('STL load failed','err'); log('stl: '+err.message,'err'); });
 }
 
-// ── multi-mesh preview (from view.previews — one mesh per Preview node) ──
-function hashColor(s){
-  let h=0; for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0;
-  return new THREE.Color(`hsl(${h%360},62%,60%)`);
+// ── multi-mesh preview (one mesh per rendered terminal node) ──
+// distinct, legible-on-dark palette; terminals cycle through it by default
+const PALETTE = ['#2dd4a0','#3b82f6','#f59e0b','#e94560','#a855f7','#fb923c',
+  '#22d3ee','#84cc16','#ec4899','#eab308','#14b8a6','#8b5cf6','#f43f5e','#38bdf8'];
+function nodeNum(id){ const m=/(\d+)/.exec(id); return m?parseInt(m[1]):0; }
+// resolve a node's preview colour: explicit choice wins, else a stable palette
+// slot from its position among the rendered ids (so all terminals differ)
+function resolveColor(id, order){
+  const n = nodeIndex[id];
+  if (n && n.previewColor) return n.previewColor;
+  const i = order.indexOf(id);
+  return PALETTE[(i<0?nodeNum(id):i) % PALETTE.length];
 }
-function meshFromData(m, color){
+function geomFromData(m){
   const g = new THREE.BufferGeometry();
   const verts=m.vertices, tris=m.triangles;
   const pos = new Float32Array(verts.length*3);
@@ -828,7 +889,11 @@ function meshFromData(m, color){
   for(let i=0;i<tris.length;i++){ idx[3*i]=tris[i][0]; idx[3*i+1]=tris[i][1]; idx[3*i+2]=tris[i][2]; }
   g.setIndex(new THREE.BufferAttribute(idx,1));
   g.computeVertexNormals();
-  return new THREE.Mesh(g, new THREE.MeshStandardMaterial({color, roughness:.4, metalness:.12, side:THREE.DoubleSide}));
+  return g;
+}
+function meshFromData(m, color){
+  return new THREE.Mesh(geomFromData(m),
+    new THREE.MeshStandardMaterial({color, roughness:.4, metalness:.12, side:THREE.DoubleSide}));
 }
 function clearPreviewGroup(){
   for(let i=previewGroup.children.length-1;i>=0;i--){
@@ -838,25 +903,31 @@ function clearPreviewGroup(){
   previewGroup.position.set(0,0,0);
 }
 function renderPreviews(view){
+  lastView = view;                       // cache so colour/wireframe changes re-render instantly
   clearPreviewGroup();
   previewMeshes = {};
   const previews = (view && view.previews) || {};
-  const ids = Object.keys(previews).filter(k => previews[k] && previews[k].mesh);
+  const ids = Object.keys(previews).filter(k => previews[k] && previews[k].mesh)
+                    .sort((a,b)=>nodeNum(a)-nodeNum(b));   // stable order for colour slots
   if(!ids.length){
-    // Nothing previewed: fall back to the exported result STL.
+    renderLegend([]);
     loadSTL(`${API}/api/projects/${currentName}/download?t=`+Date.now());
     return;
   }
   if(currentMesh){ scene.remove(currentMesh); currentMesh.geometry.dispose(); currentMesh.material.dispose(); currentMesh=null; }
+  const legend = [];
   for(const id of ids){
-    const m = meshFromData(previews[id].mesh, hashColor(id));
-    m.userData.nodeId = id;
-    previewGroup.add(m);
-    previewMeshes[id] = m;
-    // snapshot the params baked into this mesh, for local-transform deltas
     const n = nodeIndex[id];
-    if(n) n._baked = {...n.properties};
+    const color = resolveColor(id, ids);
+    const obj = meshFromData(previews[id].mesh, color);
+    if (n && n.wireframe){ obj.material.wireframe = true; obj.material.metalness = 0; }
+    obj.userData.nodeId = id;
+    previewGroup.add(obj);
+    previewMeshes[id] = obj;
+    if(n) n._baked = {...n.properties};    // snapshot for local-transform deltas
+    legend.push({id, color, label:(n && (n.title||n.cadType)) || id, wire: !!(n && n.wireframe)});
   }
+  renderLegend(legend);
   // shapes stay at their real world coordinates (no recentering), so moving a
   // node visibly moves it on the fixed grid. Frame once; then preserve the view.
   const box = new THREE.Box3().setFromObject(previewGroup);
@@ -865,6 +936,33 @@ function renderPreviews(view){
   const st = document.getElementById('viewer-stats');
   st.innerHTML = `${ids.length} preview · ${size.x.toFixed(1)} × ${size.y.toFixed(1)} × ${size.z.toFixed(1)} mm`;
   st.classList.add('visible');
+}
+
+// instant display-only refresh (colour / wireframe) without re-executing
+function refreshDisplay(){ if(lastView) renderPreviews(lastView); }
+
+// ── colour legend (click a row to select+frame that node) ──
+function renderLegend(items){
+  const el = document.getElementById('viewer-legend');
+  if(!items.length){ el.classList.remove('visible'); el.innerHTML=''; return; }
+  el.innerHTML = '';
+  for(const it of items){
+    const row = document.createElement('div'); row.className='leg-row'; row.title='select '+it.label;
+    row.innerHTML = `<span class="leg-sw" style="background:${it.color}"></span>`+
+                    `<span class="leg-name">${it.label}${it.wire?' ▦':''}</span>`;
+    row.addEventListener('click', ()=> selectNodeById(it.id));
+    el.appendChild(row);
+  }
+  el.classList.add('visible');
+}
+
+// select + centre a graph node by our graph id (used by click-to-select + legend)
+function selectNodeById(id){
+  const n = nodeIndex[id]; if(!n) return;
+  lcanvas.deselectAllNodes && lcanvas.deselectAllNodes();
+  lcanvas.selectNode ? lcanvas.selectNode(n) : (lcanvas.selected_nodes={[n.id]:n});
+  if(lcanvas.centerOnNode) lcanvas.centerOnNode(n);
+  lcanvas.setDirty(true, true);
 }
 
 // ── sub-shape selection picker (modal 3D viewer) ───────────────────────────
