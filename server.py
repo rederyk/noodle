@@ -20,6 +20,8 @@ from cad_nodes import catalog
 from cad_nodes.graph import Graph, ValidationError
 from cad_nodes.transpiler import transpile
 from cad_nodes.executor import execute_graph, export_graph, extract_subshapes_for_node
+from cad_nodes.store import GraphStore
+from cad_nodes.copilot import run_chat, copilot_status
 
 # ---------------------------------------------------------------------------
 # Config
@@ -43,6 +45,11 @@ class CodePayload(BaseModel):
 
 class ParamsPayload(BaseModel):
     params: dict
+
+
+class CopilotPayload(BaseModel):
+    graph: str
+    messages: list   # [{role: "user"|"assistant", content: str}, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +401,21 @@ async def graph_subshapes(name: str, node_id: str, kind: str = "edge"):
         raise HTTPException(400, {"message": "Sub-shape extraction failed",
                                   "error": data.get("error")})
     return data
+
+
+@app.get("/api/copilot/status")
+async def copilot_status_route():
+    """Which LLM backend the copilot will use (provider/model/keyed)."""
+    return copilot_status()
+
+
+@app.post("/api/copilot/chat")
+async def copilot_chat(payload: CopilotPayload):
+    """Drive the natural-language copilot: it edits payload.graph via the api
+    tools and returns a reply plus whether the graph changed (UI should reload)."""
+    require_project(payload.graph)
+    result = run_chat(payload.graph, payload.messages, GraphStore(PROJECTS_DIR))
+    return result
 
 
 @app.get("/api/graph/{name}/view")

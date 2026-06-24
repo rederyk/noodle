@@ -47,6 +47,18 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 .leg-row:hover{background:var(--bg-3);}
 .leg-sw{width:11px;height:11px;border-radius:3px;flex-shrink:0;box-shadow:0 0 0 1px rgba(0,0,0,.4);}
 .leg-name{white-space:nowrap;}
+/* AI copilot chat panel */
+#body-ai{flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+.ai-hint{font-size:10px;color:var(--text-dim);padding:5px 10px;border-bottom:1px solid var(--border);}
+.ai-msgs{flex:1;overflow:auto;padding:8px 10px;display:flex;flex-direction:column;gap:6px;}
+.ai-msg{max-width:88%;padding:6px 9px;border-radius:8px;font-size:12px;white-space:pre-wrap;line-height:1.45;}
+.ai-msg.user{align-self:flex-end;background:var(--accent);color:#fff;}
+.ai-msg.assistant{align-self:flex-start;background:var(--bg-3);color:var(--text);border:1px solid var(--border);}
+.ai-msg.err{align-self:stretch;background:#3a1422;color:var(--accent-hover);border:1px solid var(--accent);}
+.ai-msg.thinking{align-self:flex-start;color:var(--text-dim);font-style:italic;}
+.ai-input-row{display:flex;gap:6px;padding:8px;border-top:1px solid var(--border);}
+.ai-input-row textarea{flex:1;resize:none;background:var(--bg-3);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-family:var(--font);font-size:12px;max-height:120px;}
+.ai-input-row textarea:focus{outline:none;border-color:var(--accent);}
 /* bottom tabs */
 .panel{height:220px;display:flex;flex-direction:column;background:var(--bg-1);}
 .tabs{display:flex;border-bottom:1px solid var(--border);}
@@ -120,11 +132,20 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
           <div class="tab" data-tab="view" onclick="showTab('view')">View / Data</div>
           <div class="tab" data-tab="panels" onclick="showTab('panels')">Panels <span id="panel-count" class="panel-badge"></span></div>
           <div class="tab" data-tab="log" onclick="showTab('log')">Log</div>
+          <div class="tab" data-tab="ai" onclick="showTab('ai')">🤖 AI</div>
         </div>
         <div class="tab-body code" id="body-code">// Run the graph to generate build123d code</div>
         <div class="tab-body" id="body-view" style="display:none">No execution yet.</div>
         <div class="tab-body" id="body-panels" style="display:none">No Panel nodes. Add a Panel node and wire a value into it.</div>
         <div class="tab-body" id="body-log" style="display:none"></div>
+        <div id="body-ai" style="display:none">
+          <div class="ai-hint" id="ai-hint">Copilot: describe what to build (e.g. "a 20mm cube with its top edges rounded 2mm").</div>
+          <div class="ai-msgs" id="ai-msgs"></div>
+          <div class="ai-input-row">
+            <textarea id="ai-input" placeholder="Ask the copilot to build or change the model…" rows="1"></textarea>
+            <button class="tb-btn primary" id="ai-send" onclick="sendCopilot()">Send</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -719,6 +740,56 @@ window.showTab = function(t){
   document.getElementById('body-view').style.display   = t==='view'?'block':'none';
   document.getElementById('body-panels').style.display = t==='panels'?'block':'none';
   document.getElementById('body-log').style.display    = t==='log'?'block':'none';
+  document.getElementById('body-ai').style.display     = t==='ai'?'flex':'none';
+  if (t==='ai') document.getElementById('ai-input').focus();
+};
+
+// ── AI copilot chat ──
+let copilotHistory = [];   // [{role, content}] sent to the backend
+function aiAppend(role, text){
+  const el = document.createElement('div');
+  el.className = 'ai-msg ' + role;
+  el.textContent = text;
+  const box = document.getElementById('ai-msgs');
+  box.appendChild(el); box.scrollTop = box.scrollHeight;
+  return el;
+}
+async function refreshCopilotStatus(){
+  try{
+    const s = await (await fetch(`${API}/api/copilot/status`)).json();
+    const tag = s.provider==='ollama' ? `Ollama · ${s.model}` : `${s.model}${s.keyed?' (keyed)':''}`;
+    document.getElementById('ai-hint').textContent =
+      `Copilot [${tag}] — describe what to build or change. It edits this graph and runs it.`;
+  }catch(e){}
+}
+window.sendCopilot = async function(){
+  const input = document.getElementById('ai-input');
+  const text = (input.value||'').trim();
+  if(!text) return;
+  if(!currentName){ aiAppend('err','Open or create a graph first (＋ New), then ask the copilot.'); return; }
+  input.value = '';
+  aiAppend('user', text);
+  copilotHistory.push({role:'user', content:text});
+  const btn = document.getElementById('ai-send'); btn.disabled = true;
+  const think = aiAppend('thinking', '… working (editing the graph)');
+  await window.saveGraph();   // make the on-disk graph match the canvas before the copilot edits it
+  let res;
+  try{
+    res = await (await fetch(`${API}/api/copilot/chat`, {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({graph: currentName, messages: copilotHistory})})).json();
+  }catch(e){ think.remove(); aiAppend('err','request failed: '+e.message); btn.disabled=false; return; }
+  think.remove();
+  if(res.error){ aiAppend('err', res.error); btn.disabled=false; return; }
+  const reply = res.reply || '(no reply)';
+  aiAppend('assistant', reply);
+  copilotHistory.push({role:'assistant', content:reply});
+  if(res.changed){
+    await openGraph(currentName);   // reload the copilot's edits onto the canvas
+    await runGraph();               // re-render the geometry
+    log('copilot updated the graph','ok');
+  }
+  btn.disabled = false;
 };
 
 // ── render Panel-node values from a view's `panels` dict ──
@@ -1223,6 +1294,14 @@ document.addEventListener('keydown', e=>{   // Esc cancels, Enter confirms the p
   if (e.key === 'Escape'){ e.preventDefault(); closePicker(false); }
   else if (e.key === 'Enter'){ e.preventDefault(); closePicker(true); }
 });
+// copilot input: Enter sends, Shift+Enter newline; auto-grow
+(function(){
+  const ta = document.getElementById('ai-input');
+  ta.addEventListener('keydown', e=>{
+    if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); sendCopilot(); }
+  });
+  ta.addEventListener('input', ()=>{ ta.style.height='auto'; ta.style.height=Math.min(ta.scrollHeight,120)+'px'; });
+})();
 
 // ── boot ──
 (async function(){
@@ -1233,6 +1312,7 @@ document.addEventListener('keydown', e=>{   // Esc cancels, Enter confirms the p
     registerNodes(defs);
     log(`registered ${defs.length} node types`);
     await refreshGraphList();
+    refreshCopilotStatus();
     setStatus('ready','ok');
   }catch(e){ setStatus('init failed','err'); log('init: '+e.message,'err'); }
 })();
