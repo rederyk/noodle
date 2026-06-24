@@ -902,15 +902,22 @@ function clearPreviewGroup(){
   }
   previewGroup.position.set(0,0,0);
 }
+// the title-bar dot (LiteGraph node.boxcolor) mirrors the preview colour, so each
+// node shows its own swatch — only for nodes actually rendered right now.
+function clearPreviewDots(){
+  if(lgraph) for(const n of lgraph._nodes) n.boxcolor = undefined;
+}
 function renderPreviews(view){
   lastView = view;                       // cache so colour/wireframe changes re-render instantly
   clearPreviewGroup();
+  clearPreviewDots();
   previewMeshes = {};
   const previews = (view && view.previews) || {};
   const ids = Object.keys(previews).filter(k => previews[k] && previews[k].mesh)
                     .sort((a,b)=>nodeNum(a)-nodeNum(b));   // stable order for colour slots
   if(!ids.length){
     renderLegend([]);
+    if(lcanvas) lcanvas.setDirty(true, true);
     loadSTL(`${API}/api/projects/${currentName}/download?t=`+Date.now());
     return;
   }
@@ -924,10 +931,11 @@ function renderPreviews(view){
     obj.userData.nodeId = id;
     previewGroup.add(obj);
     previewMeshes[id] = obj;
-    if(n) n._baked = {...n.properties};    // snapshot for local-transform deltas
+    if(n){ n._baked = {...n.properties}; n.boxcolor = color; }   // snapshot + title dot
     legend.push({id, color, label:(n && (n.title||n.cadType)) || id, wire: !!(n && n.wireframe)});
   }
   renderLegend(legend);
+  if(lcanvas) lcanvas.setDirty(true, true);   // repaint node dots
   // shapes stay at their real world coordinates (no recentering), so moving a
   // node visibly moves it on the fixed grid. Frame once; then preserve the view.
   const box = new THREE.Box3().setFromObject(previewGroup);
