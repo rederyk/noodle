@@ -36,12 +36,15 @@ WIRE_SELECTION = "selection"  # a set of sub-shapes (edges/faces/vertices) picke
 # Which wire types may legally connect to which (output -> accepted inputs).
 # Geometry-ish types are kept distinct but `data` is the permissive fallback.
 WIRE_COMPATIBLE: dict[str, set[str]] = {
-    WIRE_GEOMETRY: {WIRE_GEOMETRY, WIRE_DATA},
+    # geometry <-> plane are interchangeable so the transform nodes (Move /
+    # Rotate / Scale) treat a Plane like any other geometry: a Plane can be
+    # transformed, and a transformed result can flow back into a plane input.
+    WIRE_GEOMETRY: {WIRE_GEOMETRY, WIRE_DATA, WIRE_PLANE},
     WIRE_SKETCH: {WIRE_SKETCH, WIRE_GEOMETRY, WIRE_DATA},
     WIRE_CURVE: {WIRE_CURVE, WIRE_SKETCH, WIRE_DATA},
     WIRE_DATA: {WIRE_DATA},
     WIRE_TREE: {WIRE_TREE, WIRE_DATA},
-    WIRE_PLANE: {WIRE_PLANE, WIRE_DATA},
+    WIRE_PLANE: {WIRE_PLANE, WIRE_DATA, WIRE_GEOMETRY},
     WIRE_VECTOR: {WIRE_VECTOR, WIRE_DATA},
     # a selection (sub-shapes) is also usable as raw data, and as point origins
     WIRE_SELECTION: {WIRE_SELECTION, WIRE_DATA, WIRE_VECTOR},
@@ -430,7 +433,7 @@ register(NodeDef("Move", "transform", "Move",
     params=[_f("x", 0, -500, 500), _f("y", 0, -500, 500), _f("z", 0, -500, 500)],
     outputs=_geo(),
     code_template={"algebra": "(Pos({x}, {y}, {z}) * {shape})"},
-    description="Translate a shape."))
+    description="Translate a shape (or a plane)."))
 
 register(NodeDef("Rotate", "transform", "Rotate",
     inputs=[Socket("shape", WIRE_GEOMETRY)],
@@ -439,8 +442,8 @@ register(NodeDef("Rotate", "transform", "Rotate",
                   options=["X", "Y", "Z"],
                   code_map={"X": "Axis.X", "Y": "Axis.Y", "Z": "Axis.Z"})],
     outputs=_geo(),
-    code_template={"algebra": "{shape}.rotate({axis}, {angle})"},
-    description="Rotate a shape around an axis."))
+    code_template={"algebra": "_rotate({shape}, {axis}, {angle})"},
+    description="Rotate a shape (or a plane) around a global axis."))
 
 register(NodeDef("Scale", "transform", "Scale",
     inputs=[Socket("shape", WIRE_GEOMETRY)],

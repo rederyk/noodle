@@ -205,12 +205,12 @@ const WIRE_COLORS = {
 };
 // for an input of type T, which output types may feed it
 const INPUT_ACCEPTS = {
-  geometry:['geometry','sketch'],
+  geometry:['geometry','sketch','plane'],   // transforms treat a plane like geometry
   sketch:['sketch'],
   curve:['curve'],
   data:['geometry','sketch','curve','data','tree','plane','vector','selection'],
   tree:['tree'],
-  plane:['plane'],
+  plane:['plane','geometry'],               // a transformed plane flows back into a plane input
   vector:['vector','selection'],
   selection:['selection'],
 };

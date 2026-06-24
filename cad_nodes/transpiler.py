@@ -165,6 +165,16 @@ def _section(_shape, _plane=None):
         return None
     pl = _plane if isinstance(_plane, Plane) else Plane.XY
     return section(_shape, section_by=pl)
+
+
+def _rotate(_obj, _axis, _angle):
+    \"\"\"Rotate any spatial object — Shape OR Plane — by _angle degrees about a
+    global axis. Uses Location algebra (Rot * obj) so it is polymorphic: a plane
+    rotates just like a solid (build123d Planes have no .rotate()).\"\"\"
+    if _obj is None:
+        return None
+    d = _axis.direction
+    return Rot(d.X * _angle, d.Y * _angle, d.Z * _angle) * _obj
 """
 
 # Output wire types that yield a drawable mesh (mirrors the catalog).
