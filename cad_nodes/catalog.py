@@ -43,7 +43,8 @@ WIRE_COMPATIBLE: dict[str, set[str]] = {
     WIRE_TREE: {WIRE_TREE, WIRE_DATA},
     WIRE_PLANE: {WIRE_PLANE, WIRE_DATA},
     WIRE_VECTOR: {WIRE_VECTOR, WIRE_DATA},
-    WIRE_SELECTION: {WIRE_SELECTION},
+    # a selection (sub-shapes) is also usable as raw data, and as point origins
+    WIRE_SELECTION: {WIRE_SELECTION, WIRE_DATA, WIRE_VECTOR},
 }
 
 
@@ -156,6 +157,11 @@ def _data(name="result"):
     return [Socket(name, WIRE_DATA)]
 
 
+def _origin_in():
+    # optional point input; when wired, positions the primitive there (default 0,0,0)
+    return [Socket("origin", WIRE_VECTOR, required=False)]
+
+
 def _f(name, default=0.0, lo=None, hi=None, step=0.5, label="", widget="slider"):
     return Param(name, "float", label or name, default, lo, hi, step, widget)
 
@@ -168,34 +174,46 @@ def _i(name, default=0, lo=None, hi=None, label="", widget="slider"):
 # 1. Primitives 3D
 # ===========================================================================
 register(NodeDef("Box", "primitives_3d", "Box",
+    inputs=_origin_in(),
     params=[_f("width", 10, 0.1, 500), _f("height", 10, 0.1, 500), _f("depth", 10, 0.1, 500)],
     outputs=_geo(),
     code_template={"algebra": "Box({width}, {height}, {depth})"},
     description="Solid box of given width, height, depth."))
 
 register(NodeDef("Cylinder", "primitives_3d", "Cylinder",
+    inputs=_origin_in(),
     params=[_f("radius", 5, 0.1, 500), _f("height", 20, 0.1, 500)],
     outputs=_geo(),
     code_template={"algebra": "Cylinder({radius}, {height})"},
     description="Solid cylinder."))
 
 register(NodeDef("Sphere", "primitives_3d", "Sphere",
+    inputs=_origin_in(),
     params=[_f("radius", 10, 0.1, 500)],
     outputs=_geo(),
     code_template={"algebra": "Sphere({radius})"},
     description="Solid sphere."))
 
 register(NodeDef("Cone", "primitives_3d", "Cone",
+    inputs=_origin_in(),
     params=[_f("bottom_radius", 5, 0, 500), _f("top_radius", 0, 0, 500), _f("height", 15, 0.1, 500)],
     outputs=_geo(),
     code_template={"algebra": "Cone({bottom_radius}, {top_radius}, {height})"},
     description="Truncated cone / frustum."))
 
 register(NodeDef("Torus", "primitives_3d", "Torus",
+    inputs=_origin_in(),
     params=[_f("major_radius", 15, 0.1, 500), _f("minor_radius", 3, 0.1, 500)],
     outputs=_geo(),
     code_template={"algebra": "Torus({major_radius}, {minor_radius})"},
     description="Torus / ring."))
+
+register(NodeDef("ConstructPoint", "vector", "Construct Point",
+    params=[_f("x", 0, label="x"), _f("y", 0, label="y"), _f("z", 0, label="z")],
+    outputs=[Socket("point", WIRE_VECTOR)],
+    code_template={"algebra": "Vector({x}, {y}, {z})"},
+    description="A point (vector) from X, Y, Z. Feed it into a primitive's "
+                "origin input to position the primitive there."))
 
 # ===========================================================================
 # 2. Primitives 2D (sketch / curve)
@@ -366,12 +384,13 @@ register(NodeDef("ChamferSelectedEdges", "modifiers", "Chamfer Selected Edges",
     code_template={"algebra": "chamfer({edges}, length={length})"},
     description="Bevel only the edges chosen by a Select Edge node."))
 
-register(NodeDef("ExtrudeSelectedFace", "modifiers", "Extrude Selected Face",
+register(NodeDef("ExtrudeSelectedFace", "modifiers", "Push / Pull Face",
     inputs=[Socket("part", WIRE_GEOMETRY), Socket("faces", WIRE_SELECTION)],
     params=[_f("amount", 5, -200, 200)],
     outputs=_geo(),
-    code_template={"algebra": "({part} + extrude({faces}, amount={amount}))"},
-    description="Grow a boss by extruding the faces chosen by a Select Face node."))
+    code_template={"algebra": "_pushpull({part}, {faces}, {amount})"},
+    description="Push/pull the faces chosen by a Select Face node along their "
+                "normal: positive grows a boss, negative carves a pocket."))
 
 register(NodeDef("Shell", "modifiers", "Shell",
     inputs=[Socket("part", WIRE_GEOMETRY)],

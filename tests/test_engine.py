@@ -183,9 +183,9 @@ def test_transpile_select_edge_and_targeted_fillet():
     assert "fillet(__out_2, radius=1.5)" in code      # operates on the selection var
 
 
-def test_transpile_select_face_defaults_kind_and_extrudes():
+def test_transpile_select_face_defaults_kind_and_pushpull():
     # An unpicked SelectFace still transpiles, defaulting its kind to 'face';
-    # ExtrudeSelectedFace grows a boss from the selection var.
+    # ExtrudeSelectedFace push/pulls the selection (positive boss / negative pocket).
     g = Graph.from_dict({
         "nodes": [
             {"id": "b", "type": "Box"},
@@ -200,7 +200,26 @@ def test_transpile_select_face_defaults_kind_and_extrudes():
     })
     code = transpile(g)
     assert "_select_subshapes(__out_1, 'face'" in code     # kind inferred from node type
-    assert "extrude(__out_2, amount=8.0)" in code
+    assert "_pushpull(__out_1, __out_2, 8.0)" in code
+
+
+def test_transpile_origin_input_positions_primitive():
+    # A point wired into a primitive's optional origin wraps it in _at(...).
+    g = Graph.from_dict({
+        "nodes": [
+            {"id": "p", "type": "ConstructPoint", "params": {"x": 10, "y": 0, "z": 5}},
+            {"id": "s", "type": "Sphere", "params": {"radius": 3}},
+        ],
+        "connections": [{"id": "c", "from_node": "p", "from_socket": "point",
+                         "to_node": "s", "to_socket": "origin"}],
+    })
+    code = transpile(g)
+    assert "Vector(10.0, 0.0, 5.0)" in code
+    assert "_at(Sphere(3.0), __out_1)" in code
+    # an unconnected origin must NOT wrap the primitive
+    g2 = Graph.from_dict({"nodes": [{"id": "b", "type": "Box"}], "connections": []})
+    body = transpile(g2).split("# --- nodes ---")[1]
+    assert "_at(" not in body
 
 
 def test_transpile_codeblock():

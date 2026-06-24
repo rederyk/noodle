@@ -91,6 +91,47 @@ def _select_subshapes(_shape, _kind, _indices, _sigs):
                 used.add(idx)
                 chosen.append(subs[idx])
     return ShapeList(chosen)
+
+
+def _origin_points(_o):
+    \"\"\"Normalise a vector / vertex / tuple / list / ShapeList into [Vector, ...].\"\"\"
+    if _o is None:
+        return []
+    items = list(_o) if isinstance(_o, (list, tuple)) else [_o]
+    out = []
+    for it in items:
+        if it is None:
+            continue
+        if hasattr(it, "X") and hasattr(it, "Y") and hasattr(it, "Z"):
+            out.append(Vector(it.X, it.Y, it.Z))
+        elif isinstance(it, (list, tuple)) and len(it) >= 3:
+            out.append(Vector(it[0], it[1], it[2]))
+        elif hasattr(it, "center"):
+            c = it.center()
+            out.append(Vector(c.X, c.Y, c.Z))
+    return out
+
+
+def _at(_shape, _origin):
+    \"\"\"Place _shape at _origin. One point -> a moved copy; many points -> a
+    Compound with a copy at each (so a Select Vertex can seed N primitives).\"\"\"
+    if _shape is None or _origin is None:
+        return _shape
+    pts = _origin_points(_origin)
+    if not pts:
+        return _shape
+    if len(pts) == 1:
+        return _shape.moved(Pos(pts[0].X, pts[0].Y, pts[0].Z))
+    return Compound(children=[_shape.moved(Pos(p.X, p.Y, p.Z)) for p in pts])
+
+
+def _pushpull(_part, _faces, _amount):
+    \"\"\"Push/pull selected faces along their normal: positive grows a boss,
+    negative carves a pocket.\"\"\"
+    if _part is None or not _faces or not _amount:
+        return _part
+    prism = extrude(_faces, amount=_amount)
+    return (_part + prism) if _amount > 0 else (_part - prism)
 """
 
 # Output wire types that yield a drawable mesh (mirrors the catalog).
@@ -266,6 +307,12 @@ class Transpiler:
         if template is None:
             raise ValueError(f"Node {node.type} has no algebra template")
         expr = _substitute(template, values)
+
+        # Optional `origin` input: position the result (point, or a Compound at
+        # each of several points). Only wraps when actually connected.
+        origin = values.get("origin")
+        if origin and origin != "None":
+            expr = f"_at({expr}, {origin})"
 
         if ndef.outputs:
             var = self._new_var(node.id)
