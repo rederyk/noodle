@@ -111,15 +111,36 @@ def _make_tools(store: GraphStore, graph_id: str, state: dict):
             pos = (120 + (n % 6) * 230, 160 + (n // 6) * 180)
             nid = api.add_node(store, graph_id, a["node_type"],
                                a.get("params") or {}, position=pos)
+            state.setdefault("created", set()).add(nid)  # safe to fully edit this session
             state["changed"] = True
             return {"node_id": nid}
+        if name == "copy_node":
+            g = store.load(graph_id)
+            src = g.node(a["node_id"])  # KeyError if missing -> surfaced to model
+            n = len(g.nodes)
+            pos = (120 + (n % 6) * 230, 160 + (n // 6) * 180)
+            nid = api.add_node(store, graph_id, src.type, dict(src.params), position=pos)
+            state.setdefault("created", set()).add(nid)
+            state["changed"] = True
+            return {"node_id": nid, "type": src.type}
         if name == "connect":
             cid = api.connect(store, graph_id, a["from_node"], a["from_socket"],
                               a["to_node"], a["to_socket"])
             state["changed"] = True
             return {"connection_id": cid}
         if name == "set_param":
-            api.set_param(store, graph_id, a["node_id"], a["params"])
+            # Guardrail: never silently rewrite the code of a custom (CodeBlock)
+            # node that already existed before this session. Composing workflows
+            # and configuring freshly-created custom nodes is fine; mutating an
+            # existing one must go through copy_node + the user's go-ahead.
+            node = store.load(graph_id).node(a["node_id"])
+            params = a.get("params") or {}
+            if (node.type == "CodeBlock" and "code" in params
+                    and a["node_id"] not in state.get("created", ())):
+                return {"error": "refused: editing the code of an existing custom "
+                        "node is not allowed. Warn the user, then call copy_node "
+                        "and modify the copy, leaving the original intact."}
+            api.set_param(store, graph_id, a["node_id"], params)
             state["changed"] = True
             return {"ok": True}
         if name == "delete_node":
@@ -149,8 +170,12 @@ def _make_tools(store: GraphStore, graph_id: str, state: dict):
         fn("get_graph", "List the current nodes (id, type, params) and connections.", {}, []),
         fn("get_node_def", "Get the inputs/outputs/params of one node type.",
            {"node_type": s}, ["node_type"]),
-        fn("add_node", "Add a node. Returns its node_id. params is a dict of param->value.",
+        fn("add_node", "Add a node. Returns its node_id. params is a dict of param->value. "
+           "Use type 'CodeBlock' to create a custom node from scratch (its `code` param holds build123d code).",
            {"node_type": s, "params": {"type": "object"}}, ["node_type"]),
+        fn("copy_node", "Duplicate an existing node (same type and params/code) and return the new node_id. "
+           "This is how you modify a custom node: copy it, then edit the COPY — never the original.",
+           {"node_id": s}, ["node_id"]),
         fn("connect", "Wire from_node.from_socket -> to_node.to_socket. Errors on incompatible wires.",
            {"from_node": s, "from_socket": s, "to_node": s, "to_socket": s},
            ["from_node", "from_socket", "to_node", "to_socket"]),
@@ -165,6 +190,19 @@ def _make_tools(store: GraphStore, graph_id: str, state: dict):
 SYSTEM = """You are CAD Copilot, an assistant inside a node-based parametric CAD app built on build123d.
 You edit ONE graph by calling tools. Geometry flows through typed wires:
   geometry (solids), sketch (2D), curve, vector (points), selection (picked sub-shapes), data.
+Scope — you ONLY assemble graphs; you never touch the application:
+- You CANNOT and MUST NOT modify the app's code or the definition/behaviour of any
+  built-in node type. You have no tool for that — never claim to have done it.
+- What you may do freely: compose workflows by adding/connecting/parameterising the
+  existing catalog nodes, and create brand-new CUSTOM nodes from scratch (add a
+  'CodeBlock' node and write its `code`).
+- A custom node is a CodeBlock. You may NOT edit the `code` of a custom node that
+  already existed before this conversation. If the user wants to change such a node:
+  (1) tell the user you will leave the original untouched and work on a copy,
+  (2) call copy_node to duplicate it, (3) edit ONLY the copy. set_param will refuse
+  an in-place code edit of a pre-existing custom node — that is expected, not a bug.
+- Don't delete nodes you didn't create without saying so.
+
 Rules:
 - Call get_graph first to see what already exists; reuse nodes, don't duplicate.
 - Use ONLY node types from the catalog below, with their exact socket names and wire types.
