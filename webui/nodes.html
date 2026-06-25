@@ -218,12 +218,6 @@ const INPUT_ACCEPTS = {
   selection:['selection'],
 };
 
-// Track Shift so a connection can choose to ADD a slot instead of replacing.
-window._cadShift = false;
-window.addEventListener('keydown', e => { if (e.key === 'Shift') window._cadShift = true; }, true);
-window.addEventListener('keyup',   e => { if (e.key === 'Shift') window._cadShift = false; }, true);
-window.addEventListener('blur',     () => { window._cadShift = false; });
-
 function log(msg, cls=''){
   const el = document.getElementById('body-log');
   const t = new Date().toLocaleTimeString();
@@ -247,12 +241,22 @@ function registerNodes(defs){
       // MANY connections (shift-drag adds a slot): every input fans out / is a
       // collector EXCEPT list_access inputs, which take one whole list.
       this.cadInputs = {};
+      this.multiInputs = new Set();   // input names whose "+" toggle is on
       for (const s of (def.inputs||[])){
         const accepts = (INPUT_ACCEPTS[s.wire_type]||[s.wire_type]).join(',');
         const grow = !!(s.multiple) || !s.list_access;
         this.cadInputs[s.name] = {accepts, grow};
         this.addInput(s.name, accepts);
         this.inputs[this.inputs.length-1].cadName = s.name;
+      }
+      // A "+" toggle on every multi-capable input: flag it to reveal an empty
+      // spare slot; each time you wire one, the next empty appears. Persistent
+      // per node (saved as node.multi), so the slots come back on reload.
+      for (const s of (def.inputs||[])){
+        if (!this.cadInputs[s.name].grow) continue;
+        const w = this.addWidget('toggle', '＋ '+s.name, false,
+          (v)=> setMultiInput(this, s.name, v));
+        w.cadMultiFor = s.name;
       }
       for (const s of (def.outputs||[])){
         this.addOutput(s.name, s.wire_type);
@@ -275,13 +279,14 @@ function registerNodes(defs){
       this.onConnectionsChange = function(type, index, connected, link_info){
         if (type !== LiteGraph.INPUT || loadingGraph) return;
         const slot = this.inputs[index]; if (!slot) return;
-        const info = this.cadInputs[slot.cadName || slot.name];
+        const name = slot.cadName || slot.name;
+        const info = this.cadInputs[name];
         if (!info || !info.grow) return;
-        if (connected && window._cadShift){
-          const spare = this.inputs.some(s => (s.cadName||s.name)===slot.cadName && s.link==null);
+        if (connected && this.multiInputs.has(name)){
+          const spare = this.inputs.some(s => (s.cadName||s.name)===name && s.link==null);
           if (!spare){
-            this.addInput(slot.cadName, info.accepts);
-            this.inputs[this.inputs.length-1].cadName = slot.cadName;
+            this.addInput(name, info.accepts);
+            this.inputs[this.inputs.length-1].cadName = name;
           }
         }
         if (!connected){
@@ -417,6 +422,39 @@ function addEyeWidget(node){
 }
 
 // ── serialize Litegraph -> our graph JSON ──
+// Turn an input's "+" multi mode on/off. On: reveal an empty spare slot (the
+// node then grows one per connection). Off: only allowed once the extra wires
+// are gone — you must disconnect down to a single connection first.
+function setMultiInput(node, name, on){
+  const info = node.cadInputs[name]; if(!info || !info.grow) return;
+  const widget = (node.widgets||[]).find(w => w.cadMultiFor===name);
+  const slotsOf = () => node.inputs.filter(s => (s.cadName||s.name)===name);
+  if (on){
+    node.multiInputs.add(name);
+    if (!slotsOf().some(s => s.link==null)){               // ensure one empty spare
+      node.addInput(name, info.accepts);
+      node.inputs[node.inputs.length-1].cadName = name;
+    }
+  } else {
+    if (slotsOf().filter(s => s.link!=null).length > 1){    // still multi-wired -> refuse
+      if (widget) widget.value = true;
+      setStatus('disconnect the extra “'+name+'” inputs first', 'err');
+      return;
+    }
+    node.multiInputs.delete(name);
+    for (let g=0; g<64; g++){                               // drop trailing empty spares
+      const last = node.inputs[node.inputs.length-1];
+      if (last && last.link==null && (last.cadName||last.name)===name && slotsOf().length>1)
+        node.removeInput(node.inputs.length-1);
+      else break;
+    }
+  }
+  if (widget) widget.value = on;
+  node.size = node.computeSize(); node.size[0] = Math.max(node.size[0],150);
+  node.setDirtyCanvas && node.setDirtyCanvas(true,true);
+  if (typeof scheduleLive==='function') scheduleLive();
+}
+
 function toGraphJSON(name){
   const nodes = [], connections = [], idMap = {};
   nodeIndex = {};
@@ -431,6 +469,7 @@ function toGraphJSON(name){
     if (n.bypassed) nd.bypassed = true;
     if (n.previewColor) nd.color = n.previewColor;
     if (n.wireframe) nd.wireframe = true;
+    if (n.multiInputs && n.multiInputs.size) nd.multi = [...n.multiInputs];
     nodes.push(nd);
   }
   for (const k in lgraph.links){
@@ -459,6 +498,7 @@ function fromGraphJSON(data){
     if (nd.bypassed){ node.bypassed = true; node.mode = LiteGraph.NEVER; }
     if (nd.color) node.previewColor = nd.color;
     if (nd.wireframe) node.wireframe = true;
+    if (nd.multi) for (const nm of nd.multi) node.multiInputs.add(nm);
     if (nd.params && nd.params.selection){ node.selectionData = nd.params.selection; updateSelectBtn(node); }
     if (node.widgets) for (const w of node.widgets){
       if (w.cadParam && nd.params && w.cadParam in nd.params){
@@ -470,7 +510,6 @@ function fromGraphJSON(data){
     lgraph.add(node);
     map[nd.id] = node;
   }
-  const grewInputs = [];   // [node, socketName] that received >=1 connection
   for (const c of (data.connections||[])){
     const on = map[c.from_node], tn = map[c.to_node]; if(!on||!tn) continue;
     const os = on.outputs.findIndex(s=>s.name===c.from_socket);
@@ -483,16 +522,22 @@ function fromGraphJSON(data){
       if (info){ tn.addInput(c.to_socket, info.accepts); is = tn.inputs.length-1; tn.inputs[is].cadName=c.to_socket; }
       else is = tn.inputs.findIndex(s=>(s.cadName||s.name)===c.to_socket);
     }
-    if (os>=0 && is>=0){ on.connect(os, tn, is); grewInputs.push([tn, c.to_socket]); }
+    if (os>=0 && is>=0) on.connect(os, tn, is);
   }
-  // leave one trailing empty spare on each grow input that got wired, so the
-  // user can shift-drag yet another connection without first freeing a slot.
-  for (const [tn, name] of grewInputs){
-    const info = tn.cadInputs && tn.cadInputs[name];
-    if (info && info.grow && !tn.inputs.some(s=>(s.cadName||s.name)===name && s.link==null)){
-      tn.addInput(name, info.accepts); tn.inputs[tn.inputs.length-1].cadName = name;
+  // restore "+" state: any input that ended up with >=2 connections is multi;
+  // every enabled multi input gets a trailing empty spare + its toggle set on.
+  for (const node of lgraph._nodes){
+    const counts = {};
+    for (const s of node.inputs) if (s.link!=null){ const nm=s.cadName||s.name; counts[nm]=(counts[nm]||0)+1; }
+    for (const nm in counts) if (counts[nm]>=2) node.multiInputs.add(nm);
+    for (const nm of node.multiInputs){
+      const info = node.cadInputs[nm];
+      if (info && info.grow && !node.inputs.some(s=>(s.cadName||s.name)===nm && s.link==null)){
+        node.addInput(nm, info.accepts); node.inputs[node.inputs.length-1].cadName = nm;
+      }
+      const w = (node.widgets||[]).find(x => x.cadMultiFor===nm); if (w) w.value = true;
     }
-    tn.size = tn.computeSize(); tn.size[0] = Math.max(tn.size[0], 150);
+    node.size = node.computeSize(); node.size[0] = Math.max(node.size[0], 150);
   }
   lgraph.setDirtyCanvas(true,true);
   loadingGraph = false;

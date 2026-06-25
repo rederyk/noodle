@@ -44,6 +44,10 @@ class Node:
     # Display-only (don't affect geometry): preview colour (hex) and wireframe.
     color: Optional[str] = None
     wireframe: bool = False
+    # UX-only: names of inputs whose "multi" (+) toggle is on, so the editor
+    # restores their extra/spare connection slots on reload. Ignored by the
+    # engine (several connections to one socket already fan out by themselves).
+    multi: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = {
@@ -61,6 +65,8 @@ class Node:
             d["color"] = self.color
         if self.wireframe:
             d["wireframe"] = True
+        if self.multi:
+            d["multi"] = list(self.multi)
         return d
 
     @staticmethod
@@ -76,6 +82,7 @@ class Node:
             bypassed=bool(d.get("bypassed", False)),
             color=d.get("color"),
             wireframe=bool(d.get("wireframe", False)),
+            multi=list(d.get("multi", [])),
         )
 
 
