@@ -221,11 +221,15 @@ register(NodeDef("Torus", "primitives_3d", "Torus",
     description="Torus / ring."))
 
 register(NodeDef("ConstructPoint", "vector", "Construct Point",
+    inputs=[Socket("x", WIRE_DATA, required=False),
+            Socket("y", WIRE_DATA, required=False),
+            Socket("z", WIRE_DATA, required=False)],
     params=[_f("x", 0, label="x"), _f("y", 0, label="y"), _f("z", 0, label="z")],
     outputs=[Socket("point", WIRE_VECTOR)],
     code_template={"algebra": "Vector({x}, {y}, {z})"},
-    description="A point (vector) from X, Y, Z. Feed it into a primitive's "
-                "origin input to position the primitive there."))
+    description="A point (vector) from X, Y, Z. Each coordinate can be a widget "
+                "OR an input — wire a list of numbers (e.g. from Range) into x to "
+                "build a list of points. Feed `point` into a primitive's origin."))
 
 # ===========================================================================
 # 2. Primitives 2D (sketch / curve)
@@ -438,11 +442,14 @@ register(NodeDef("Section", "modifiers", "Section",
 # 6. Transforms
 # ===========================================================================
 register(NodeDef("Move", "transform", "Move",
-    inputs=[Socket("shape", WIRE_GEOMETRY)],
+    inputs=[Socket("shape", WIRE_GEOMETRY),
+            Socket("offset", WIRE_VECTOR, required=False)],
     params=[_f("x", 0, -500, 500), _f("y", 0, -500, 500), _f("z", 0, -500, 500)],
     outputs=_geo(),
-    code_template={"algebra": "(Pos({x}, {y}, {z}) * {shape})"},
-    description="Translate a shape (or a plane)."))
+    code_template={"algebra": "_move({shape}, {offset}, {x}, {y}, {z})"},
+    description="Translate a shape (or a plane). Wire a vector into `offset` to "
+                "drive the position; feed a LIST of vectors to scatter the shape "
+                "to each position (one moved copy per vector)."))
 
 register(NodeDef("Rotate", "transform", "Rotate",
     inputs=[Socket("shape", WIRE_GEOMETRY)],
@@ -506,12 +513,16 @@ register(NodeDef("BoundingPlane", "plane", "Bounding Plane",
 # 8. Vectors & points
 # ===========================================================================
 register(NodeDef("Vector", "vector", "Vector",
+    inputs=[Socket("x", WIRE_DATA, required=False),
+            Socket("y", WIRE_DATA, required=False),
+            Socket("z", WIRE_DATA, required=False)],
     params=[_f("x", 0, -1000, 1000, widget="input"),
             _f("y", 0, -1000, 1000, widget="input"),
             _f("z", 0, -1000, 1000, widget="input")],
     outputs=[Socket("vector", WIRE_VECTOR)],
     code_template={"algebra": "Vector({x}, {y}, {z})"},
-    description="A 3D vector."))
+    description="A 3D vector. Each component is a widget OR an input; wire a list "
+                "of numbers into a component to build a list of vectors."))
 
 # ===========================================================================
 # 9. Lists / data trees (subset)

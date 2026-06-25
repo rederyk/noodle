@@ -143,6 +143,11 @@ Inputs have a data-access mode (`Socket.list_access`):
 - **list_access** (`Socket("list", …, list_access=True)`) and every `multiple`
   collector: consume the whole list as one value (List/Sort/Item/Slice…, Loft).
 
+**Params as inputs:** an input socket that shares a param's name overrides the
+widget when wired, and falls back to it when not (e.g. `Vector`/`ConstructPoint`
+x/y/z, `Move` `offset`). Wire a list into such an input and the node fans out —
+`Range → ConstructPoint.x → Move.offset` scatters one copy per position.
+
 The transpiler wraps a fanned node as `_fanout(lambda …: <expr>, {…})` and tracks
 which node outputs are lists (`_produces_list` + `_LIST_PRODUCERS`) so lists
 propagate down a chain. List nodes live in the `data` category (ListCreate,

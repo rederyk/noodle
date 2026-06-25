@@ -245,6 +245,21 @@ def _sort(_items, _by="X"):
         return sorted(items)
     except Exception:
         return items
+
+
+def _move(_shape, _offset, _x, _y, _z):
+    \"\"\"Translate a shape/plane. By the wired `offset` vector when present
+    (item-access: a list of vectors scatters the shape to each), else by the
+    x/y/z widgets.\"\"\"
+    if _shape is None:
+        return None
+    if _offset is None:
+        v = Vector(_x, _y, _z)
+    elif hasattr(_offset, "X"):
+        v = _offset
+    else:
+        v = Vector(*list(_offset)[:3])
+    return Pos(v.X, v.Y, v.Z) * _shape
 """
 
 # Output wire types that yield a drawable mesh (mirrors the catalog).
@@ -438,7 +453,10 @@ class Transpiler:
             elif sock.list_access:                  # consumes the list as-is
                 subs[sock.name] = vars_[0] if vars_ else "None"
             elif not vars_:
-                subs[sock.name] = "None"
+                # Unconnected: fall back to a same-named param (params-as-inputs —
+                # wire the socket to override/drive the widget), else None.
+                if ndef.param(sock.name) is None:
+                    subs[sock.name] = "None"
             else:
                 maybe_list = len(vars_) >= 2 or any(
                     fn in self._produces_list for (fn, _fs) in srcs)
