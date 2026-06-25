@@ -273,36 +273,20 @@ function registerNodes(defs){
         sb.isSelectBtn = true;
         this._selKind = SEL_KIND;
       }
-      // Multi-input: shift-drag a second wire into a "grow" input to add a slot
-      // (two points → one Circle → two outputs). Slots share the socket name, so
-      // the backend collects them under that name and the node fans out.
+      // Multi-input: while an input's "+" toggle is on, keep exactly one empty
+      // spare slot so the node grows one slot per connection (it fans out).
+      // Normalisation is DEFERRED to a microtask: litegraph sets the new link
+      // after this callback returns, so checking slots synchronously would still
+      // see the just-connected slot as empty and never grow past it (the
+      // "stops at 2" bug).
       this.onConnectionsChange = function(type, index, connected, link_info){
         if (type !== LiteGraph.INPUT || loadingGraph) return;
-        const slot = this.inputs[index]; if (!slot) return;
-        const name = slot.cadName || slot.name;
-        const info = this.cadInputs[name];
+        const slot = this.inputs[index];
+        const name = slot && (slot.cadName || slot.name);
+        const info = name && this.cadInputs[name];
         if (!info || !info.grow) return;
-        if (connected && this.multiInputs.has(name)){
-          const spare = this.inputs.some(s => (s.cadName||s.name)===name && s.link==null);
-          if (!spare){
-            this.addInput(name, info.accepts);
-            this.inputs[this.inputs.length-1].cadName = name;
-          }
-        }
-        if (!connected){
-          // drop surplus empty duplicates of this name — only ever the LAST slot,
-          // so no other slot's index (and no live link) shifts underneath us.
-          for (let guard=0; guard<32; guard++){
-            const last = this.inputs[this.inputs.length-1];
-            const dups = this.inputs.filter(s => (s.cadName||s.name)===last.cadName && s.link==null).length;
-            if (last.link==null && this.cadInputs[last.cadName] && dups>1)
-              this.removeInput(this.inputs.length-1);
-            else break;
-          }
-        }
-        this.size = this.computeSize();
-        this.size[0] = Math.max(this.size[0], 150);
-        scheduleLive && scheduleLive();
+        const self = this;
+        setTimeout(() => { normalizeMultiSlots(self); if (typeof scheduleLive==='function') scheduleLive(); }, 0);
       };
       this.size = this.computeSize();
       this.size[0] = Math.max(this.size[0], 150);
@@ -422,6 +406,33 @@ function addEyeWidget(node){
 }
 
 // ── serialize Litegraph -> our graph JSON ──
+// Keep exactly ONE empty spare slot on each input whose "+" toggle is on, so a
+// connection always lands and the next empty slot appears. Idempotent — safe to
+// call after every connection change.
+function normalizeMultiSlots(node){
+  if (!node || !node.multiInputs || !node.multiInputs.size) return;
+  let changed = false;
+  for (const name of node.multiInputs){
+    const info = node.cadInputs[name]; if (!info || !info.grow) continue;
+    const empties = () => node.inputs.filter(s => (s.cadName||s.name)===name && s.link==null).length;
+    if (empties() === 0){
+      node.addInput(name, info.accepts);
+      node.inputs[node.inputs.length-1].cadName = name;
+      changed = true;
+    }
+    while (empties() > 1){                                  // trim surplus empties (tail only)
+      const last = node.inputs[node.inputs.length-1];
+      if (last && last.link==null && (last.cadName||last.name)===name){
+        node.removeInput(node.inputs.length-1); changed = true;
+      } else break;
+    }
+  }
+  if (changed){
+    node.size = node.computeSize(); node.size[0] = Math.max(node.size[0],150);
+    node.setDirtyCanvas && node.setDirtyCanvas(true,true);
+  }
+}
+
 // Turn an input's "+" multi mode on/off. On: reveal an empty spare slot (the
 // node then grows one per connection). Off: only allowed once the extra wires
 // are gone — you must disconnect down to a single connection first.
@@ -431,10 +442,7 @@ function setMultiInput(node, name, on){
   const slotsOf = () => node.inputs.filter(s => (s.cadName||s.name)===name);
   if (on){
     node.multiInputs.add(name);
-    if (!slotsOf().some(s => s.link==null)){               // ensure one empty spare
-      node.addInput(name, info.accepts);
-      node.inputs[node.inputs.length-1].cadName = name;
-    }
+    normalizeMultiSlots(node);                             // reveal the first spare
   } else {
     if (slotsOf().filter(s => s.link!=null).length > 1){    // still multi-wired -> refuse
       if (widget) widget.value = true;
@@ -442,9 +450,9 @@ function setMultiInput(node, name, on){
       return;
     }
     node.multiInputs.delete(name);
-    for (let g=0; g<64; g++){                               // drop trailing empty spares
+    while (slotsOf().length > 1){                           // collapse back to a single slot
       const last = node.inputs[node.inputs.length-1];
-      if (last && last.link==null && (last.cadName||last.name)===name && slotsOf().length>1)
+      if (last && last.link==null && (last.cadName||last.name)===name)
         node.removeInput(node.inputs.length-1);
       else break;
     }
