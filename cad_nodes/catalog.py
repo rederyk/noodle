@@ -415,7 +415,8 @@ register(NodeDef("ExtrudeSelectedFace", "modifiers", "Push / Pull Face",
                 "normal: positive grows a boss, negative carves a pocket."))
 
 register(NodeDef("Shell", "modifiers", "Shell",
-    inputs=[Socket("part", WIRE_GEOMETRY)],
+    inputs=[Socket("part", WIRE_GEOMETRY),
+            Socket("thickness", WIRE_DATA, required=False)],
     params=[_f("thickness", 1, 0.05, 100)],
     outputs=_geo(),
     code_template={"algebra": "offset({part}, amount=-{thickness}, openings={part}.faces().sort_by(Axis.Z)[-1])"},
@@ -718,10 +719,10 @@ register(NodeDef("BuildSketch", "group", "Build Sketch",
 # 15. CodeBlock — the universal node
 # ===========================================================================
 register(NodeDef("CodeBlock", "code", "Code Block",
-    inputs=[Socket("in_0", WIRE_DATA, required=False),
-            Socket("in_1", WIRE_DATA, required=False)],
+    inputs=[Socket(f"in_{i}", WIRE_DATA, required=False) for i in range(6)],
     params=[Param("code", "str", "code",
                   "result = Box(in_0 or 10, in_1 or 10, 5)", widget="text", raw=True)],
     outputs=_data("result"),
     code_template={},  # handled specially by the transpiler
-    description="Arbitrary build123d code; must assign `result`."))
+    description="Arbitrary build123d code; must assign `result`. Inputs in_0..in_5 "
+                "(all optional) are available as variables; unconnected ones are None."))
