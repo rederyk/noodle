@@ -260,6 +260,62 @@ def _move(_shape, _offset, _x, _y, _z):
     else:
         v = Vector(*list(_offset)[:3])
     return Pos(v.X, v.Y, v.Z) * _shape
+
+
+def _voronoi2d(_points=None, _count=40, _seed=1, _width=100.0, _height=100.0):
+    \"\"\"2D Voronoi -> a list of cell Faces in the XY plane. Uses the wired
+    `points` (their X,Y) or, if none, `count` random points in the
+    width x height domain. Cells are clipped to the domain by mirroring the
+    sites across its edges (so every kept cell is finite).\"\"\"
+    import numpy as np
+    from scipy.spatial import Voronoi
+    if _points:
+        P = [(p.X, p.Y) for p in _origin_points(_points)]
+        if not P:
+            return ShapeList([])
+        W = max(x for x, _ in P); Ht = max(y for _, y in P)
+    else:
+        rng = np.random.RandomState(int(_seed))
+        P = list(zip(rng.uniform(0, _width, int(_count)),
+                     rng.uniform(0, _height, int(_count))))
+        W, Ht = float(_width), float(_height)
+    pad = []
+    for (x, y) in P:
+        pad += [(-x, y), (2 * W - x, y), (x, -y), (x, 2 * Ht - y)]
+    vor = Voronoi(np.vstack([np.array(P), pad]))
+    faces = []
+    for i in range(len(P)):                       # original sites only
+        reg = vor.regions[vor.point_region[i]]
+        if not reg or -1 in reg:
+            continue
+        poly = vor.vertices[reg]
+        try:
+            faces.append(make_face(Polyline(*[Vector(x, y, 0) for x, y in poly], close=True)))
+        except Exception:
+            pass
+    return ShapeList(faces)
+
+
+def _divide_surface(_shape, _u=6, _v=6):
+    \"\"\"Sample a u x v grid of points on a surface. Uses the largest face of the
+    input shape and build123d's parametric position_at(u, v) (u, v in 0..1).\"\"\"
+    if _shape is None:
+        return []
+    faces = list(_shape.faces()) if hasattr(_shape, "faces") else [_shape]
+    if not faces:
+        return []
+    face = max(faces, key=lambda f: getattr(f, "area", 0.0))
+    nu, nv = max(int(_u), 1), max(int(_v), 1)
+    out = []
+    for i in range(nu):
+        for j in range(nv):
+            u = i / (nu - 1) if nu > 1 else 0.5
+            v = j / (nv - 1) if nv > 1 else 0.5
+            try:
+                out.append(face.position_at(u, v))
+            except Exception:
+                pass
+    return out
 """
 
 # Output wire types that yield a drawable mesh (mirrors the catalog).
@@ -271,6 +327,7 @@ _PREVIEWABLE = {catalog.WIRE_GEOMETRY, catalog.WIRE_SKETCH, catalog.WIRE_CURVE}
 _LIST_PRODUCERS = {
     "ArrayLinear", "ListCreate", "ListRange", "ListSeries", "ListRepeat",
     "ListSlice", "ListReverse", "ListSort", "ListFlatten", "Concat",
+    "Voronoi2D", "DivideSurface",
 }
 
 

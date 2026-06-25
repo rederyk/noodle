@@ -321,6 +321,28 @@ register(NodeDef("MakeFace", "operations", "Make Face",
     code_template={"algebra": "make_face({edges})", "builder": "make_face()"},
     description="Build a face from a closed wire."))
 
+register(NodeDef("Voronoi2D", "operations", "Voronoi 2D",
+    inputs=[Socket("points", WIRE_VECTOR, required=False, list_access=True)],
+    params=[_i("count", 40, 1, 2000, label="count"),
+            _i("seed", 1, 0, 100000, label="seed", widget="input"),
+            _f("width", 100, 1, 5000, label="width", widget="input"),
+            _f("height", 100, 1, 5000, label="height", widget="input")],
+    outputs=[Socket("cells", WIRE_SKETCH)],
+    code_template={"algebra": "_voronoi2d({points}, {count}, {seed}, {width}, {height})"},
+    description="A 2D Voronoi diagram as a LIST of cell faces (XY plane). Feed a "
+                "list of points, or leave `points` empty to scatter `count` "
+                "random sites in the width x height domain. Fan out downstream "
+                "(e.g. Extrude) to act per cell."))
+
+register(NodeDef("DivideSurface", "operations", "Divide Surface",
+    inputs=[Socket("surface", WIRE_GEOMETRY)],
+    params=[_i("u_count", 6, 1, 500, label="u"), _i("v_count", 6, 1, 500, label="v")],
+    outputs=[Socket("points", WIRE_VECTOR)],
+    code_template={"algebra": "_divide_surface({surface}, {u_count}, {v_count})"},
+    description="Sample a u x v grid of points on a surface (the largest face of "
+                "the input). Feed `points` into a primitive's origin or Move to "
+                "scatter geometry across the surface."))
+
 # ===========================================================================
 # 4. Booleans (CSG)
 # ===========================================================================

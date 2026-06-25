@@ -153,6 +153,9 @@ which node outputs are lists (`_produces_list` + `_LIST_PRODUCERS`) so lists
 propagate down a chain. List nodes live in the `data` category (ListCreate,
 ListSort, ListItem, ListReverse, ListSlice, First/Last, Flatten, Concat, …);
 `_sort` uses build123d `ShapeList.sort_by` for shapes, Python `sorted` otherwise.
+Other list-producers: `Voronoi2D` (scipy → cell faces), `DivideSurface`
+(`Face.position_at` UV grid → points) — both fan out downstream (Extrude per
+cell, scatter per point). scipy/numpy are available in the worker.
 Frontend multi-connect = dynamic input slots sharing one socket name (see
 `onConnectionsChange` + `fromGraphJSON` in `nodes.html`).
 
