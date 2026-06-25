@@ -262,38 +262,69 @@ def _move(_shape, _offset, _x, _y, _z):
     return Pos(v.X, v.Y, v.Z) * _shape
 
 
-def _voronoi2d(_points=None, _count=40, _seed=1, _width=100.0, _height=100.0):
-    \"\"\"2D Voronoi -> a list of cell Faces in the XY plane. Uses the wired
-    `points` (their X,Y) or, if none, `count` random points in the
-    width x height domain. Cells are clipped to the domain by mirroring the
-    sites across its edges (so every kept cell is finite).\"\"\"
+def _populate(_count=40, _seed=1, _width=100.0, _height=100.0):
+    \"\"\"Scatter `count` random points across the width x height domain (z=0).
+    Deterministic per `seed`. Feed into Voronoi2D / origin / Move.\"\"\"
     import numpy as np
-    from scipy.spatial import Voronoi
+    rng = np.random.RandomState(int(_seed))
+    xs = rng.uniform(0, float(_width), int(_count))
+    ys = rng.uniform(0, float(_height), int(_count))
+    return [Vector(float(x), float(y), 0.0) for x, y in zip(xs, ys)]
+
+
+def _voronoi2d(_points=None, _scale=0.85, _count=40, _seed=1, _width=100.0, _height=100.0):
+    \"\"\"Tangent circles — each the inscribed circle of a point's Voronoi cell:
+    radius = half the distance to the nearest neighbour, times `scale` (so
+    adjacent circles just touch / leave a gap). Far more robust than polygonal
+    cells. Uses the wired `points`, else `count` random ones.\"\"\"
+    import numpy as np
+    from scipy.spatial import cKDTree
     if _points:
-        P = [(p.X, p.Y) for p in _origin_points(_points)]
-        if not P:
-            return ShapeList([])
-        W = max(x for x, _ in P); Ht = max(y for _, y in P)
+        P = np.array([(p.X, p.Y) for p in _origin_points(_points)], dtype=float)
     else:
         rng = np.random.RandomState(int(_seed))
-        P = list(zip(rng.uniform(0, _width, int(_count)),
-                     rng.uniform(0, _height, int(_count))))
-        W, Ht = float(_width), float(_height)
-    pad = []
-    for (x, y) in P:
-        pad += [(-x, y), (2 * W - x, y), (x, -y), (x, 2 * Ht - y)]
-    vor = Voronoi(np.vstack([np.array(P), pad]))
-    faces = []
-    for i in range(len(P)):                       # original sites only
-        reg = vor.regions[vor.point_region[i]]
-        if not reg or -1 in reg:
+        P = np.column_stack([rng.uniform(0, float(_width), int(_count)),
+                             rng.uniform(0, float(_height), int(_count))])
+    if len(P) < 2:
+        return ShapeList([])
+    d, _ix = cKDTree(P).query(P, k=2)             # nearest-neighbour distance
+    out = []
+    for (x, y), nn in zip(P, d[:, 1]):
+        r = 0.5 * float(nn) * float(_scale)
+        if r <= 1e-6:
             continue
-        poly = vor.vertices[reg]
         try:
-            faces.append(make_face(Polyline(*[Vector(x, y, 0) for x, y in poly], close=True)))
+            out.append(Pos(float(x), float(y), 0) * Circle(r))
         except Exception:
             pass
-    return ShapeList(faces)
+    return ShapeList(out)
+
+
+def _map_to_surface(_shapes, _surface, _width=100.0, _height=100.0):
+    \"\"\"Lay flat shapes onto a surface: each shape's centroid (x, y) maps to UV
+    (x/width, y/height); the shape is re-seated on the surface's tangent plane
+    there (oriented by the normal). Extrude the result to cut/boss radially.\"\"\"
+    if _surface is None or not _shapes:
+        return ShapeList([])
+    faces = list(_surface.faces()) if hasattr(_surface, "faces") else [_surface]
+    if not faces:
+        return ShapeList([])
+    face = max(faces, key=lambda f: getattr(f, "area", 0.0))
+    items = _shapes if isinstance(_shapes, (list, tuple, ShapeList)) else [_shapes]
+    out = []
+    for sh in items:
+        if sh is None:
+            continue
+        try:
+            c = sh.center()
+            u = min(max(c.X / float(_width), 0.0), 1.0)
+            v = min(max(c.Y / float(_height), 0.0), 1.0)
+            P = face.position_at(u, v)
+            tpl = Plane(origin=P, z_dir=face.normal_at(P))
+            out.append(tpl.location * (Pos(-c.X, -c.Y, 0) * sh))
+        except Exception:
+            pass
+    return ShapeList(out)
 
 
 def _divide_surface(_shape, _u=6, _v=6):
@@ -327,7 +358,7 @@ _PREVIEWABLE = {catalog.WIRE_GEOMETRY, catalog.WIRE_SKETCH, catalog.WIRE_CURVE}
 _LIST_PRODUCERS = {
     "ArrayLinear", "ListCreate", "ListRange", "ListSeries", "ListRepeat",
     "ListSlice", "ListReverse", "ListSort", "ListFlatten", "Concat",
-    "Voronoi2D", "DivideSurface",
+    "Voronoi2D", "DivideSurface", "PopulateGeometry", "MapToSurface",
 }
 
 

@@ -282,11 +282,13 @@ register(NodeDef("Text", "primitives_2d", "Text",
 # ===========================================================================
 register(NodeDef("Extrude", "operations", "Extrude",
     inputs=[Socket("sketch", WIRE_SKETCH)],
-    params=[_f("amount", 10, 0.1, 500), _f("taper", 0, -45, 45)],
+    params=[_f("amount", 10, 0.1, 500), _f("taper", 0, -45, 45),
+            Param("both", "bool", "both", False, widget="checkbox")],
     outputs=_geo(),
-    code_template={"algebra": "extrude({sketch}, amount={amount}, taper={taper})",
-                   "builder": "extrude(amount={amount}, taper={taper})"},
-    description="Extrude a 2D sketch into a 3D solid."))
+    code_template={"algebra": "extrude({sketch}, amount={amount}, taper={taper}, both={both})",
+                   "builder": "extrude(amount={amount}, taper={taper}, both={both})"},
+    description="Extrude a 2D sketch into a 3D solid (along its normal). `both` "
+                "extrudes symmetrically in both directions."))
 
 register(NodeDef("Revolve", "operations", "Revolve",
     inputs=[Socket("sketch", WIRE_SKETCH)],
@@ -321,18 +323,31 @@ register(NodeDef("MakeFace", "operations", "Make Face",
     code_template={"algebra": "make_face({edges})", "builder": "make_face()"},
     description="Build a face from a closed wire."))
 
-register(NodeDef("Voronoi2D", "operations", "Voronoi 2D",
-    inputs=[Socket("points", WIRE_VECTOR, required=False, list_access=True)],
-    params=[_i("count", 40, 1, 2000, label="count"),
+register(NodeDef("PopulateGeometry", "operations", "Populate Geometry",
+    params=[_i("count", 40, 1, 5000, label="count"),
             _i("seed", 1, 0, 100000, label="seed", widget="input"),
             _f("width", 100, 1, 5000, label="width", widget="input"),
             _f("height", 100, 1, 5000, label="height", widget="input")],
-    outputs=[Socket("cells", WIRE_SKETCH)],
-    code_template={"algebra": "_voronoi2d({points}, {count}, {seed}, {width}, {height})"},
-    description="A 2D Voronoi diagram as a LIST of cell faces (XY plane). Feed a "
-                "list of points, or leave `points` empty to scatter `count` "
-                "random sites in the width x height domain. Fan out downstream "
-                "(e.g. Extrude) to act per cell."))
+    outputs=[Socket("points", WIRE_VECTOR)],
+    code_template={"algebra": "_populate({count}, {seed}, {width}, {height})"},
+    description="Scatter `count` random points across a width x height domain "
+                "(z=0), deterministic per `seed`. Feed into Voronoi2D, an origin, "
+                "or Move."))
+
+register(NodeDef("Voronoi2D", "operations", "Voronoi 2D",
+    inputs=[Socket("points", WIRE_VECTOR, required=False, list_access=True)],
+    params=[_f("scale", 0.85, 0.05, 1.0, 0.05, label="scale"),
+            _i("count", 40, 1, 2000, label="count"),
+            _i("seed", 1, 0, 100000, label="seed", widget="input"),
+            _f("width", 100, 1, 5000, label="width", widget="input"),
+            _f("height", 100, 1, 5000, label="height", widget="input")],
+    outputs=[Socket("circles", WIRE_SKETCH)],
+    code_template={"algebra": "_voronoi2d({points}, {scale}, {count}, {seed}, {width}, {height})"},
+    description="Tangent circles from a point set — each is the inscribed circle "
+                "of the point's Voronoi cell (radius = half the nearest-neighbour "
+                "distance x scale), so neighbours just touch. Feed `points` (e.g. "
+                "from Populate Geometry); fan out downstream (Extrude / "
+                "MapToSurface) to act per circle."))
 
 register(NodeDef("DivideSurface", "operations", "Divide Surface",
     inputs=[Socket("surface", WIRE_GEOMETRY)],
@@ -342,6 +357,19 @@ register(NodeDef("DivideSurface", "operations", "Divide Surface",
     description="Sample a u x v grid of points on a surface (the largest face of "
                 "the input). Feed `points` into a primitive's origin or Move to "
                 "scatter geometry across the surface."))
+
+register(NodeDef("MapToSurface", "operations", "Map To Surface",
+    inputs=[Socket("shapes", WIRE_SKETCH, list_access=True),
+            Socket("surface", WIRE_GEOMETRY)],
+    params=[_f("width", 100, 1, 5000, label="width", widget="input"),
+            _f("height", 100, 1, 5000, label="height", widget="input")],
+    outputs=[Socket("mapped", WIRE_SKETCH)],
+    code_template={"algebra": "_map_to_surface({shapes}, {surface}, {width}, {height})"},
+    description="Wrap flat 2D shapes onto a surface: each shape's centroid maps "
+                "from the width x height domain to the surface's UV and is re-"
+                "seated on the tangent plane there. Then Extrude (along the "
+                "normal) to make radial cutters/bosses. width/height must match "
+                "the domain used to make the shapes (e.g. Voronoi2D's)."))
 
 # ===========================================================================
 # 4. Booleans (CSG)
@@ -353,10 +381,13 @@ register(NodeDef("Union", "boolean", "Union",
     description="Boolean union A + B."))
 
 register(NodeDef("Subtract", "boolean", "Subtract",
-    inputs=[Socket("a", WIRE_GEOMETRY), Socket("b", WIRE_GEOMETRY)],
+    # `b` is list-access: a LIST of tools (e.g. a fanned set of cutters) is
+    # subtracted wholesale (A - [b0, b1, …]), not fanned. `a` still fans.
+    inputs=[Socket("a", WIRE_GEOMETRY), Socket("b", WIRE_GEOMETRY, list_access=True)],
     outputs=_geo(),
     code_template={"algebra": "({a} - {b})"},
-    description="Boolean difference A - B."))
+    description="Boolean difference A - B. B may be a single shape or a whole "
+                "list of tools (all subtracted)."))
 
 register(NodeDef("Intersect", "boolean", "Intersect",
     inputs=[Socket("a", WIRE_GEOMETRY), Socket("b", WIRE_GEOMETRY)],

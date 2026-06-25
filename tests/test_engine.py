@@ -92,7 +92,7 @@ def test_transpile_flange_golden():
     code = transpile(_flange())
     assert "from build123d import *" in code
     assert "__out_1 = Circle(20.0)" in code
-    assert "extrude(__out_1, amount=10.0, taper=0.0)" in code
+    assert "extrude(__out_1, amount=10.0, taper=0.0, both=False)" in code
     assert "(__out_2 - __out_4)" in code
     assert "export_step(__out_5, 'flange.step')" in code
     assert "__result__ = __out_5" in code
