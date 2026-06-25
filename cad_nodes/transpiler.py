@@ -262,54 +262,77 @@ def _move(_shape, _offset, _x, _y, _z):
     return Pos(v.X, v.Y, v.Z) * _shape
 
 
-def _populate(_count=40, _seed=1, _width=100.0, _height=100.0):
-    \"\"\"Scatter `count` random points across the width x height domain (z=0).
-    Deterministic per `seed`. Feed into Voronoi2D / origin / Move.\"\"\"
+def _domain2d(_region, _w, _h, _pts=None):
+    \"\"\"(x0, y0, x1, y1) of a 2D domain: a region face's bounding box if given,
+    else the points' extent, else a 0..w x 0..h box.\"\"\"
+    if _region is not None:
+        try:
+            bb = _region.bounding_box()
+            return bb.min.X, bb.min.Y, bb.max.X, bb.max.Y
+        except Exception:
+            pass
+    if _pts is not None and len(_pts):
+        import numpy as np
+        P = np.asarray(_pts, dtype=float)
+        return P[:, 0].min(), P[:, 1].min(), P[:, 0].max(), P[:, 1].max()
+    return 0.0, 0.0, float(_w), float(_h)
+
+
+def _populate(_count=40, _seed=1, _width=100.0, _height=100.0, _region=None):
+    \"\"\"Scatter `count` random points (z=0), deterministic per `seed`, inside the
+    `region` rectangle's bounds if wired, else a 0..width x 0..height box.\"\"\"
     import numpy as np
+    x0, y0, x1, y1 = _domain2d(_region, _width, _height)
     rng = np.random.RandomState(int(_seed))
-    xs = rng.uniform(0, float(_width), int(_count))
-    ys = rng.uniform(0, float(_height), int(_count))
+    xs = rng.uniform(x0, x1, int(_count)); ys = rng.uniform(y0, y1, int(_count))
     return [Vector(float(x), float(y), 0.0) for x, y in zip(xs, ys)]
 
 
-def _voronoi2d(_points=None, _scale=0.85, _count=40, _seed=1, _width=100.0, _height=100.0):
-    \"\"\"Tangent circles — each the inscribed circle of a point's Voronoi cell:
-    radius = half the distance to the nearest neighbour, times `scale` (so
-    adjacent circles just touch / leave a gap). Far more robust than polygonal
-    cells. Uses the wired `points`, else `count` random ones.\"\"\"
+def _voronoi2d(_points, _boundary=None, _scale=0.9):
+    \"\"\"Polygonal Voronoi cells from a point set, clipped to the `boundary`
+    rectangle (its bounding box). `scale` shrinks each cell toward its centre to
+    leave a frame between cells (1.0 = cells touch / share edges). Sites are
+    mirrored across the boundary so the kept cells are finite and clipped.\"\"\"
     import numpy as np
-    from scipy.spatial import cKDTree
-    if _points:
-        P = np.array([(p.X, p.Y) for p in _origin_points(_points)], dtype=float)
-    else:
-        rng = np.random.RandomState(int(_seed))
-        P = np.column_stack([rng.uniform(0, float(_width), int(_count)),
-                             rng.uniform(0, float(_height), int(_count))])
-    if len(P) < 2:
+    from scipy.spatial import Voronoi
+    pts = _origin_points(_points)
+    if len(pts) < 2:
         return ShapeList([])
-    d, _ix = cKDTree(P).query(P, k=2)             # nearest-neighbour distance
-    out = []
-    for (x, y), nn in zip(P, d[:, 1]):
-        r = 0.5 * float(nn) * float(_scale)
-        if r <= 1e-6:
+    P = np.array([(p.X, p.Y) for p in pts], dtype=float)
+    x0, y0, x1, y1 = _domain2d(_boundary, 100.0, 100.0, P)
+    pad = []
+    for (x, y) in P:
+        pad += [(2 * x0 - x, y), (2 * x1 - x, y), (x, 2 * y0 - y), (x, 2 * y1 - y)]
+    vor = Voronoi(np.vstack([P, pad]))
+    s = float(_scale)
+    faces = []
+    for i in range(len(P)):                        # original sites only
+        reg = vor.regions[vor.point_region[i]]
+        if not reg or -1 in reg:
             continue
+        poly = vor.vertices[reg]
+        cx, cy = poly[:, 0].mean(), poly[:, 1].mean()
+        vs = [Vector(cx + s * (x - cx), cy + s * (y - cy), 0) for x, y in poly]
         try:
-            out.append(Pos(float(x), float(y), 0) * Circle(r))
+            faces.append(make_face(Polyline(*vs, close=True)))
         except Exception:
             pass
-    return ShapeList(out)
+    return ShapeList(faces)
 
 
-def _map_to_surface(_shapes, _surface, _width=100.0, _height=100.0):
-    \"\"\"Lay flat shapes onto a surface: each shape's centroid (x, y) maps to UV
-    (x/width, y/height); the shape is re-seated on the surface's tangent plane
-    there (oriented by the normal). Extrude the result to cut/boss radially.\"\"\"
+def _map_to_surface(_shapes, _surface, _boundary=None, _width=100.0, _height=100.0):
+    \"\"\"Lay flat shapes onto a surface: each shape's centroid maps from the 2D
+    domain (the `boundary` rectangle, or 0..width x 0..height) to the surface's
+    UV, and the shape is re-seated on the tangent plane there. Extrude the result
+    (along the normal) to cut/boss radially.\"\"\"
     if _surface is None or not _shapes:
         return ShapeList([])
     faces = list(_surface.faces()) if hasattr(_surface, "faces") else [_surface]
     if not faces:
         return ShapeList([])
     face = max(faces, key=lambda f: getattr(f, "area", 0.0))
+    x0, y0, x1, y1 = _domain2d(_boundary, _width, _height)
+    dx = (x1 - x0) or 1.0; dy = (y1 - y0) or 1.0
     items = _shapes if isinstance(_shapes, (list, tuple, ShapeList)) else [_shapes]
     out = []
     for sh in items:
@@ -317,8 +340,8 @@ def _map_to_surface(_shapes, _surface, _width=100.0, _height=100.0):
             continue
         try:
             c = sh.center()
-            u = min(max(c.X / float(_width), 0.0), 1.0)
-            v = min(max(c.Y / float(_height), 0.0), 1.0)
+            u = min(max((c.X - x0) / dx, 0.0), 1.0)
+            v = min(max((c.Y - y0) / dy, 0.0), 1.0)
             P = face.position_at(u, v)
             tpl = Plane(origin=P, z_dir=face.normal_at(P))
             out.append(tpl.location * (Pos(-c.X, -c.Y, 0) * sh))

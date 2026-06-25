@@ -324,30 +324,27 @@ register(NodeDef("MakeFace", "operations", "Make Face",
     description="Build a face from a closed wire."))
 
 register(NodeDef("PopulateGeometry", "operations", "Populate Geometry",
+    inputs=[Socket("region", WIRE_SKETCH, required=False)],
     params=[_i("count", 40, 1, 5000, label="count"),
             _i("seed", 1, 0, 100000, label="seed", widget="input"),
             _f("width", 100, 1, 5000, label="width", widget="input"),
             _f("height", 100, 1, 5000, label="height", widget="input")],
     outputs=[Socket("points", WIRE_VECTOR)],
-    code_template={"algebra": "_populate({count}, {seed}, {width}, {height})"},
-    description="Scatter `count` random points across a width x height domain "
-                "(z=0), deterministic per `seed`. Feed into Voronoi2D, an origin, "
-                "or Move."))
+    code_template={"algebra": "_populate({count}, {seed}, {width}, {height}, {region})"},
+    description="Scatter `count` random points (z=0), deterministic per `seed`, "
+                "inside the `region` rectangle if wired (else a width x height "
+                "box). Feed into Voronoi2D, an origin, or Move."))
 
 register(NodeDef("Voronoi2D", "operations", "Voronoi 2D",
-    inputs=[Socket("points", WIRE_VECTOR, required=False, list_access=True)],
-    params=[_f("scale", 0.85, 0.05, 1.0, 0.05, label="scale"),
-            _i("count", 40, 1, 2000, label="count"),
-            _i("seed", 1, 0, 100000, label="seed", widget="input"),
-            _f("width", 100, 1, 5000, label="width", widget="input"),
-            _f("height", 100, 1, 5000, label="height", widget="input")],
-    outputs=[Socket("circles", WIRE_SKETCH)],
-    code_template={"algebra": "_voronoi2d({points}, {scale}, {count}, {seed}, {width}, {height})"},
-    description="Tangent circles from a point set — each is the inscribed circle "
-                "of the point's Voronoi cell (radius = half the nearest-neighbour "
-                "distance x scale), so neighbours just touch. Feed `points` (e.g. "
-                "from Populate Geometry); fan out downstream (Extrude / "
-                "MapToSurface) to act per circle."))
+    inputs=[Socket("points", WIRE_VECTOR, list_access=True),
+            Socket("boundary", WIRE_SKETCH, required=False)],
+    params=[_f("scale", 0.9, 0.05, 1.0, 0.05, label="scale")],
+    outputs=[Socket("cells", WIRE_SKETCH)],
+    code_template={"algebra": "_voronoi2d({points}, {boundary}, {scale})"},
+    description="Polygonal Voronoi cells from a set of `points`, clipped to the "
+                "`boundary` rectangle (a Rectangle sketch). `scale` shrinks each "
+                "cell toward its centre to leave a frame (1.0 = cells share "
+                "edges). Fan out downstream (Extrude / MapToSurface) per cell."))
 
 register(NodeDef("DivideSurface", "operations", "Divide Surface",
     inputs=[Socket("surface", WIRE_GEOMETRY)],
@@ -360,16 +357,17 @@ register(NodeDef("DivideSurface", "operations", "Divide Surface",
 
 register(NodeDef("MapToSurface", "operations", "Map To Surface",
     inputs=[Socket("shapes", WIRE_SKETCH, list_access=True),
-            Socket("surface", WIRE_GEOMETRY)],
+            Socket("surface", WIRE_GEOMETRY),
+            Socket("boundary", WIRE_SKETCH, required=False)],
     params=[_f("width", 100, 1, 5000, label="width", widget="input"),
             _f("height", 100, 1, 5000, label="height", widget="input")],
     outputs=[Socket("mapped", WIRE_SKETCH)],
-    code_template={"algebra": "_map_to_surface({shapes}, {surface}, {width}, {height})"},
+    code_template={"algebra": "_map_to_surface({shapes}, {surface}, {boundary}, {width}, {height})"},
     description="Wrap flat 2D shapes onto a surface: each shape's centroid maps "
-                "from the width x height domain to the surface's UV and is re-"
-                "seated on the tangent plane there. Then Extrude (along the "
-                "normal) to make radial cutters/bosses. width/height must match "
-                "the domain used to make the shapes (e.g. Voronoi2D's)."))
+                "from the 2D domain (the `boundary` rectangle, else width x "
+                "height) to the surface's UV, and is re-seated on the tangent "
+                "plane there. Then Extrude (along the normal) for radial "
+                "cutters/bosses. Use the SAME boundary as Voronoi2D."))
 
 # ===========================================================================
 # 4. Booleans (CSG)
