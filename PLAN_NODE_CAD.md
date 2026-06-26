@@ -896,3 +896,84 @@ Allineamenti alla realtà del codice:
 - Group node (Litegraph groups + wiring builder-mode via `parent`).
 - Input+slider unificato e fluido che si apre col valore già selezionato.
 - Auto-fix raggio fillet (bisection su min/max); chat AI (C).
+
+---
+
+## D. Distribuzione: webapp opensource facile da installare
+
+> Obiettivo: chiunque (target = amatori Grasshopper) lo installa con **un
+> comando**, senza compilare OCCT né litigare con le dipendenze. Repo pubblico
+> opensource, con licenza scelta in modo consapevole rispetto a ciò che usa.
+
+### D0 — Scelta licenza (decisa dalle dipendenze, non a caso)
+
+Cosa traina il vincolo (verificare le versioni effettivamente installate):
+
+| Dipendenza | Ruolo | Licenza | Effetto sul nostro codice |
+|---|---|---|---|
+| **OpenCASCADE / OCCT** (via `cadquery-ocp`) | kernel B-Rep | **LGPL-2.1** | linking dinamico (Python) → **non** ci obbliga a GPL; basta lasciare l'utente libero di sostituire/ricompilare la lib e dare i credit |
+| **build123d** | API modellazione | Apache-2.0 | permissiva |
+| numpy / scipy | math nel worker | BSD-3 | permissiva |
+| FastAPI / Starlette | HTTP API | MIT | permissiva |
+| uvicorn | server ASGI | BSD-3 | permissiva |
+| `mcp` SDK | MCP server | MIT | permissiva |
+| Three.js, litegraph.js | frontend | MIT | permissiva |
+| **OpenSCAD** (binario, backend legacy) | backend alternativo | **GPL-2.0+** | **solo se lo bundli e lo invochi**; come processo separato è "mera aggregazione", ma per stare puliti su MIT va reso opzionale o rimosso |
+
+**Decisione consigliata: MIT per il nostro codice.** È compatibile con tutto lo
+stack: l'unico copyleft "forte" è OpenSCAD, che è un *binario invocato come
+sottoprocesso* (backend legacy `backends/openscad.py`), non codice linkato — non
+contamina. Per evitare ambiguità: (a) marcare OpenSCAD come dipendenza opzionale
+e **non includerla di default** nell'immagine "core", oppure (b) se la si tiene,
+documentare che quella parte è GPL e il resto MIT.
+Se invece in futuro si linkasse staticamente qualcosa di GPL o si bundlasse
+OpenSCAD come parte integrante → ripiegare su **GPL-3.0**.
+→ DoD: file `LICENSE` (MIT) + `THIRD_PARTY_NOTICES.md` che elenca OCCT (LGPL),
+build123d (Apache), OpenSCAD (GPL, opzionale) e i loro avvisi.
+
+### D1 — Igiene del repo per l'opensource
+- `LICENSE`, `README.md` (cos'è, screenshot/gif, quickstart in 3 righe),
+  `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`.
+- `requirements.txt` / `pyproject.toml` con **versioni pinnate** (oggi le dep
+  vivono solo nel `Dockerfile` — estrarle così girano anche fuori da Docker e si
+  riproduce il `.venv-b123d`).
+- `.env.example` (le env del copilot: `COPILOT_BASE_URL/API_KEY/MODEL`).
+- `projects/` con un paio di **grafi-esempio** versionati (vase, variable_loft)
+  così il primo avvio non è una tela bianca.
+
+### D2 — Un comando per partire (è già quasi pronto)
+`docker compose up -d` esiste già. Renderlo davvero "facile":
+- Pubblicare l'**immagine pre-buildata** su GHCR (`ghcr.io/<user>/cad-studio`)
+  via GitHub Action → l'utente fa `docker run -p 8090:8090 ghcr.io/...` senza
+  compilare nulla (OCCT è già dentro la wheel di `cadquery-ocp`, niente build
+  nativa).
+- `docker-compose.yml` "consumer": una sola immagine dal registry + volume
+  `./projects`, niente mount read-only del sorgente (quelli servono solo in dev).
+
+### D3 — **Sandbox prima di esporre** (blocker di sicurezza, non opzionale)
+Oggi `CodeBlock`/`Expression` eseguono **Python arbitrario** (vedi note di stato
+e [[project-vision-node-cad]]). Per una webapp pubblica/multi-utente questo va
+chiuso **prima** della distribuzione: l'`executor` è già subprocess-per-run →
+aggiungere limiti (no rete, rlimit CPU/mem, fs temporaneo, timeout già presente)
+o un container effimero per run. Finché non è fatto: README deve dichiarare
+**"single-user / trusted, non esporre la porta in rete"**.
+
+### D4 — Modalità di deploy supportate (documentare, dalla più facile)
+1. **Desktop/locale** — `docker run` (default, zero config).
+2. **Self-host LAN** — stessa immagine + reverse proxy; richiede D3.
+3. **Demo pubblica** — read-only o per-sessione effimera; richiede D3 + rate
+   limit. (Opzionale, più avanti.)
+
+DoD complessivo della fase D: un nuovo utente, partendo dal solo README, ha la UI
+su `localhost:8090/ui` in < 5 minuti senza toccare il codice, e il repo è
+legalmente pulito (LICENSE + notices coerenti con lo stack).
+
+#### Stato D (materializzato 2026-06-26)
+- ✅ `LICENSE` (MIT) + `THIRD_PARTY_NOTICES.md` (mappa licenze: OCCT LGPL-2.1,
+  build123d Apache, OpenSCAD GPL opzionale, nota di conformità LGPL).
+- ✅ `requirements.txt` pinnato come **single source of truth**; il `Dockerfile`
+  ora fa `pip install -r requirements.txt`. **Fix**: aggiunto `scipy` (era usato
+  da `Voronoi2D` in `transpiler.py` ma mancava dall'immagine → Voronoi rotto nel
+  container).
+- ✅ `README.md` (quickstart, warning sicurezza D3, sezione licenza) + `.env.example`.
+- ⬜ D2 immagine pre-buildata su GHCR · ⬜ D3 sandbox · ⬜ grafi-esempio versionati.

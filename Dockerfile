@@ -14,18 +14,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfontconfig1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install build123d (bundles its matching cadquery-ocp / OCCT) + node engine deps.
-# NOTE: cadquery 2.7.0 pins an OCP build incompatible with build123d, so build123d
-# is now the B-Rep backend (per PLAN_NODE_CAD.md, it replaces cadquery).
-RUN pip install --no-cache-dir --timeout 120 --retries 5 \
-    build123d \
-    numpy \
-    mcp \
-    fastapi==0.115.0 \
-    uvicorn[standard]==0.30.0 \
-    python-multipart
-
+# Install runtime deps from requirements.txt (single source of truth — keeps the
+# host venv and the image identical). build123d bundles its matching
+# cadquery-ocp / OCCT; cadquery 2.7.0 pins an incompatible OCP build, so
+# build123d is the B-Rep backend (per PLAN_NODE_CAD.md, it replaces cadquery).
 WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir --timeout 120 --retries 5 -r requirements.txt
 
 COPY server.py .
 COPY mcp_server.py .
