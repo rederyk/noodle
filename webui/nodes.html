@@ -108,6 +108,8 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
     <button class="tb-btn primary" onclick="runGraph()">▶ Run</button>
     <button class="tb-btn" id="btn-live" onclick="toggleLive()" title="Auto-run on every change">○ Live</button>
     <button class="tb-btn" id="btn-fast" onclick="toggleFastDrag()" title="Drag Move/Rotate/Scale = instant local preview, exact on release">○ Drag</button>
+    <button class="tb-btn" id="btn-snap" onclick="toggleGizmoSnap()" title="Snap the on-canvas gizmo (1mm · 15° · 0.1×)" style="display:none">⌗ Snap</button>
+    <button class="tb-btn" id="btn-space" onclick="toggleGizmoSpace()" title="Gizmo orientation: world / local axes" style="display:none">🌐 World</button>
     <button class="tb-btn" onclick="frameView()" title="Frame geometry (F · dbl-click viewer)">⛶ Fit</button>
     <button class="tb-btn primary" id="btn-grid" onclick="toggleGrid()" title="Show/hide the grid">▦ Grid</button>
     <button class="tb-btn" onclick="exportStep()">⬇ STEP</button>
@@ -181,6 +183,7 @@ import * as THREE from 'three';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
 const API = '';
 const LiteGraph = window.LiteGraph;
@@ -196,6 +199,14 @@ let loadingGraph = false;  // suppress live triggers while rebuilding the graph
 let fastDrag = false;      // local JS transform while dragging Move/Rotate/Scale
 let previewMeshes = {};    // graph node-id -> THREE.Mesh currently shown
 let lastView = null;       // last execution view (for instant display-only refresh)
+let transformControls = null;  // viewport gizmo (E1: translate)
+let gizmoAnchor = null;        // invisible proxy the gizmo drags
+let gizmoNode = null;          // litegraph node currently edited on-canvas (or null)
+let gizmoStart = null;         // anchor world-pos at edit start
+let gizmoParamStart = null;    // bound param values at edit start
+let gizmoRunTimer = null;      // debounce handle for the exact re-run
+let gizmoSnap = false;         // snap the gizmo to fixed increments
+let gizmoSpace = 'world';      // gizmo axis orientation: 'world' | 'local'
 
 // ── wire-type colors + input accept-lists (mirrors catalog.WIRE_COMPATIBLE) ──
 const WIRE_COLORS = {
@@ -272,6 +283,14 @@ function registerNodes(defs){
         const sb = this.addWidget('button', `✎ Select ${pluralKind(SEL_KIND)}`, null, ()=> openSelectionPicker(this, SEL_KIND));
         sb.isSelectBtn = true;
         this._selKind = SEL_KIND;
+      }
+      // on-canvas direct manipulation: a toggle that drives the viewport gizmo
+      // (PLAN_NODE_CAD.md §E). Only on nodes that declare a `gizmo` capability.
+      if (def.gizmo){
+        const eb = this.addWidget('button', gizmoBtnLabel(false),
+          null, ()=> toggleGizmoEdit(this));
+        eb.isGizmoBtn = true;
+        this._gizmo = def.gizmo;
       }
       // Multi-input: while an input's "+" toggle is on, keep exactly one empty
       // spare slot so the node grows one slot per connection (it fans out).
@@ -495,6 +514,7 @@ function toGraphJSON(name){
 
 // ── rebuild Litegraph from our graph JSON (round-trip, incl. MCP-made graphs) ──
 function fromGraphJSON(data){
+  if (gizmoNode) exitGizmoEdit();
   loadingGraph = true;
   lgraph.clear();
   const map = {};
@@ -654,6 +674,7 @@ function cloneSelected(){
 
 function deleteSelected(){
   const ns = selectedNodes(); if (!ns.length) return;
+  if (gizmoNode && ns.includes(gizmoNode)) exitGizmoEdit();
   for (const n of ns) lgraph.remove(n);
   lcanvas.selected_nodes = {};
   lcanvas.setDirty(true, true);
@@ -667,6 +688,7 @@ document.addEventListener('keydown', (e)=>{
   if (e.ctrlKey && !e.shiftKey && k === 'g'){ e.preventDefault(); groupSelected(); }
   else if (e.ctrlKey && !e.shiftKey && k === 'b'){ e.preventDefault(); toggleBypassSelected(); }
   else if (k === 'delete'){ e.preventDefault(); deleteSelected(); }
+  else if (k === 'escape' && gizmoNode){ e.preventDefault(); exitGizmoEdit(); }
   else if (k === 'f' && !e.ctrlKey && !e.metaKey){ e.preventDefault(); frameView(); }
 });
 
@@ -747,9 +769,203 @@ function applyLocalTransform(node){
     const da = ((p.angle||0)-(b.angle||0)) * Math.PI/180, ax = p.axis || 'Z';
     m.rotation.set(ax==='X'?da:0, ax==='Y'?da:0, (ax!=='X'&&ax!=='Y')?da:0);
   } else if (node.cadType === 'Scale'){
-    m.scale.setScalar(b.factor ? (p.factor||1)/b.factor : 1);
+    // build123d scale() pivots about the shape's OWN centre, so scale the mesh
+    // about its geometry centre (not the world origin) to match the baked result.
+    const s = b.factor ? (p.factor||1)/b.factor : 1;
+    m.scale.setScalar(s);
+    m.geometry.computeBoundingBox();
+    const c = new THREE.Vector3(); m.geometry.boundingBox.getCenter(c);
+    m.position.copy(c).multiplyScalar(1 - s);
   }
   return true;
+}
+
+// ── on-canvas edit gizmo (PLAN_NODE_CAD.md §E1: translate) ──────────────────
+// Direct manipulation: drag the shape in the viewport and the node's params
+// follow (bidirectional — params already drive the preview via runGraph).
+function gizmoBtnLabel(on){ return on ? '✓ Editing — click to stop' : '✎ Edit on canvas'; }
+
+// refresh every gizmo button's label (one node edits at a time)
+function refreshGizmoButtons(){
+  if (!lgraph) return;
+  for (const n of lgraph._nodes){
+    const w = (n.widgets||[]).find(x=>x.isGizmoBtn);
+    if (w) w.name = gizmoBtnLabel(n === gizmoNode);
+  }
+  if (lcanvas) lcanvas.setDirty(true,true);
+}
+
+// a node's value is upstream-computed (read-only) when any of its gizmo `lock`
+// input sockets is wired — you edit the producer node instead.
+function gizmoLocked(node){
+  const g = node._gizmo; if(!g || !g.lock) return false;
+  for (const s of (node.inputs||[]))
+    if (s.link != null && g.lock.includes(s.cadName || s.name)) return true;
+  return false;
+}
+
+function toggleGizmoEdit(node){
+  if (gizmoNode === node){ exitGizmoEdit(); return; }
+  if (gizmoLocked(node)){
+    setStatus('“'+(node.title||node.cadType)+'” is wired — edit the upstream node', 'err');
+    return;
+  }
+  enterGizmoEdit(node);
+}
+
+// the rotation/scale axis letter a node's gizmo acts on ('x'|'y'|'z')
+function gizmoAxisLetter(node){
+  const g = node._gizmo;
+  const a = g.axisParam ? (node.properties[g.axisParam] || 'Z') : 'Z';
+  return a.toLowerCase();
+}
+
+// world-space resting position of the gizmo for `node`
+function gizmoAnchorPos(node){
+  const g = node._gizmo, p = node.properties;
+  if (g.anchor === 'origin') return new THREE.Vector3(0,0,0);   // rotate: about global axis
+  if (g.anchor === 'preview' || g.kind === 'scale'){
+    const m = previewMeshes['n'+node.id];
+    if (m){ const b=new THREE.Box3().setFromObject(m); const c=new THREE.Vector3(); b.getCenter(c); return c; }
+  }
+  // "params": the bound XYZ values ARE the point
+  return new THREE.Vector3(+p[g.binds[0]]||0, +p[g.binds[1]]||0, +p[g.binds[2]]||0);
+}
+
+// push the current snap/space prefs into the live gizmo
+function applyGizmoPrefs(){
+  if (!transformControls) return;
+  transformControls.setSpace(gizmoSpace);
+  transformControls.setTranslationSnap(gizmoSnap ? 1 : null);
+  transformControls.setRotationSnap(gizmoSnap ? THREE.MathUtils.degToRad(15) : null);
+  transformControls.setScaleSnap(gizmoSnap ? 0.1 : null);
+}
+
+function enterGizmoEdit(node){
+  exitGizmoEdit();                       // only one at a time
+  gizmoNode = node;
+  const g = node._gizmo;
+  // force this node visible while editing so you see what you move, then run
+  node._gizmoPrevMode = node.previewMode;
+  if (node.previewMode !== 'on'){ node.previewMode = 'on';
+    const ew=(node.widgets||[]).find(w=>w.isEye); if(ew) ew.name = eyeLabel('on'); }
+  // reset the proxy, seat it, and snapshot the starting param values
+  gizmoAnchor.position.set(0,0,0); gizmoAnchor.rotation.set(0,0,0); gizmoAnchor.scale.set(1,1,1);
+  const pos = gizmoAnchorPos(node);
+  gizmoAnchor.position.copy(pos);
+  gizmoStart = pos.clone();
+  gizmoParamStart = {};
+  for (const name of g.binds) gizmoParamStart[name] = +node.properties[name] || 0;
+  transformControls.setMode(g.kind === 'rotate' ? 'rotate' : g.kind === 'scale' ? 'scale' : 'translate');
+  // rotate constrains to the node's single chosen axis; others show all 3
+  if (g.kind === 'rotate'){
+    const ax = gizmoAxisLetter(node);
+    transformControls.showX = ax==='x'; transformControls.showY = ax==='y'; transformControls.showZ = ax==='z';
+  } else {
+    transformControls.showX = transformControls.showY = transformControls.showZ = true;
+  }
+  applyGizmoPrefs();
+  transformControls.attach(gizmoAnchor);
+  transformControls.enabled = true;
+  document.getElementById('btn-snap').style.display = '';
+  document.getElementById('btn-space').style.display = '';
+  if (lcanvas && lcanvas.selectNode) lcanvas.selectNode(node);   // highlight the edited node
+  refreshGizmoButtons();
+  showGizmoHint(node);
+  // run so the (now forced-on) preview shows; anchor stays put meanwhile
+  window.runGraph();
+}
+
+function exitGizmoEdit(){
+  if (!gizmoNode) return;
+  const node = gizmoNode; gizmoNode = null;
+  if (node._gizmoPrevMode !== undefined){
+    node.previewMode = node._gizmoPrevMode; delete node._gizmoPrevMode;
+    const ew=(node.widgets||[]).find(w=>w.isEye); if(ew) ew.name = eyeLabel(node.previewMode);
+  }
+  if (transformControls){
+    transformControls.detach(); transformControls.enabled = false;
+    transformControls.showX = transformControls.showY = transformControls.showZ = true;
+  }
+  document.getElementById('btn-snap').style.display = 'none';
+  document.getElementById('btn-space').style.display = 'none';
+  clearTimeout(gizmoRunTimer); gizmoRunTimer = null;
+  gizmoStart = gizmoParamStart = null;
+  refreshGizmoButtons();
+  showGizmoHint(null);
+}
+
+// write a value back onto a node param + its widget(s), clamped to the catalog range
+function gizmoWriteParam(node, name, raw){
+  const pdef = ((catalog[node.cadType]||{}).params||[]).find(pp=>pp.name===name) || {};
+  const v = clampNum(raw, pdef);
+  node.properties[name] = v;
+  for (const w of (node.widgets||[])) if (w.cadParam===name) w.value = v;
+  return v;
+}
+
+// the gizmo moved: map its delta onto the node's bound param(s), give immediate
+// optimistic feedback (reuse applyLocalTransform), then debounce an exact re-run.
+function gizmoDragUpdate(){
+  if (!gizmoNode || !gizmoParamStart) return;
+  const node = gizmoNode, g = node._gizmo;
+  if (g.kind === 'rotate'){
+    const ax = gizmoAxisLetter(node);                       // proxy rotates only on this axis
+    const deg = THREE.MathUtils.radToDeg(gizmoAnchor.rotation[ax]);
+    gizmoWriteParam(node, g.binds[0], gizmoParamStart[g.binds[0]] + deg);
+  } else if (g.kind === 'scale'){
+    const s = gizmoAnchor.scale;                            // pick the axis dragged furthest from 1
+    let r = 1, best = 0;
+    for (const c of ['x','y','z']){ const dv = Math.abs(s[c]-1); if (dv > best){ best = dv; r = s[c]; } }
+    gizmoWriteParam(node, g.binds[0], gizmoParamStart[g.binds[0]] * (r || 1e-6));
+  } else {                                                  // translate
+    const d = gizmoAnchor.position.clone().sub(gizmoStart); // world delta
+    gizmoWriteParam(node, g.binds[0], gizmoParamStart[g.binds[0]] + d.x);
+    gizmoWriteParam(node, g.binds[1], gizmoParamStart[g.binds[1]] + d.y);
+    gizmoWriteParam(node, g.binds[2], gizmoParamStart[g.binds[2]] + d.z);
+  }
+  node.setDirtyCanvas && node.setDirtyCanvas(true,true);
+  // optimistic preview: applyLocalTransform covers Move/Rotate/Scale; for the
+  // point producers (ConstructPoint/Vector) shift their dot by the world delta.
+  if (!applyLocalTransform(node) && g.kind === 'translate'){
+    const m = previewMeshes['n'+node.id];
+    if (m) m.position.copy(gizmoAnchor.position.clone().sub(gizmoStart));
+  }
+  scheduleGizmoRun();
+}
+
+function scheduleGizmoRun(){
+  clearTimeout(gizmoRunTimer);
+  gizmoRunTimer = setTimeout(()=>{ if (gizmoNode) window.runGraph(); }, 150);
+}
+
+window.toggleGizmoSnap = function(){
+  gizmoSnap = !gizmoSnap;
+  const b = document.getElementById('btn-snap'); b.classList.toggle('primary', gizmoSnap);
+  applyGizmoPrefs();
+};
+window.toggleGizmoSpace = function(){
+  gizmoSpace = gizmoSpace === 'world' ? 'local' : 'world';
+  const b = document.getElementById('btn-space');
+  b.textContent = (gizmoSpace==='world'?'🌐 World':'📍 Local');
+  applyGizmoPrefs();
+};
+
+// small viewport badge telling the user they're in edit mode
+function showGizmoHint(node){
+  let el = document.getElementById('gizmo-hint');
+  if (!node){ if (el) el.style.display='none'; return; }
+  if (!el){
+    el = document.createElement('div'); el.id = 'gizmo-hint';
+    el.style.cssText = 'position:absolute;left:50%;bottom:14px;transform:translateX(-50%);'+
+      'background:rgba(11,14,20,.85);border:1px solid #2dd4a0;color:#cfe;padding:5px 12px;'+
+      'border-radius:6px;font:12px sans-serif;z-index:30;pointer-events:none;white-space:nowrap';
+    const host = document.getElementById('viewer-canvas').parentElement;
+    host.style.position = host.style.position || 'relative';
+    host.appendChild(el);
+  }
+  el.textContent = '✎ Editing '+(node.title||node.cadType)+' — drag to move · Esc to stop';
+  el.style.display = 'block';
 }
 
 window.runGraph = async function(){
@@ -1002,6 +1218,17 @@ function initViewer(){
   renderer.setSize(c.clientWidth, c.clientHeight); renderer.setPixelRatio(Math.min(devicePixelRatio,2));
   renderer.autoClear = false;           // ViewHelper overlays after the main render
   controls = new OrbitControls(camera, canvas); controls.enableDamping=true; controls.dampingFactor=.08;
+  // ── on-canvas edit gizmo (E1: translate) ──
+  // an invisible proxy the gizmo moves; we read its delta back into node params
+  gizmoAnchor = new THREE.Object3D(); scene.add(gizmoAnchor);
+  transformControls = new TransformControls(camera, canvas);
+  transformControls.setSize(0.9);
+  transformControls.setSpace('world');
+  // r0.169+ : the visual is a separate helper object you add to the scene
+  scene.add(transformControls.getHelper ? transformControls.getHelper() : transformControls);
+  transformControls.enabled = false;
+  transformControls.addEventListener('dragging-changed', e=>{ controls.enabled = !e.value; });
+  transformControls.addEventListener('objectChange', ()=> gizmoDragUpdate());
   stlLoader = new STLLoader();
   // navigation gizmo (click an axis to snap to that ortho view)
   viewHelper = new ViewHelper(camera, canvas);
@@ -1011,6 +1238,7 @@ function initViewer(){
   let vDown = null;
   canvas.addEventListener('pointerdown', e=>{ vDown=[e.clientX,e.clientY]; });
   canvas.addEventListener('pointerup', (e)=>{
+    if (transformControls && transformControls.dragging){ vDown=null; return; }  // gizmo drag
     viewHelper.center.copy(controls.target);
     if (viewHelper.handleClick(e)){ vDown=null; return; }   // gizmo consumed it
     if (!vDown) return;

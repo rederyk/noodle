@@ -977,3 +977,109 @@ legalmente pulito (LICENSE + notices coerenti con lo stack).
   container).
 - ✅ `README.md` (quickstart, warning sicurezza D3, sezione licenza) + `.env.example`.
 - ⬜ D2 immagine pre-buildata su GHCR · ⬜ D3 sandbox · ⬜ grafi-esempio versionati.
+
+---
+
+## E. Edit on-canvas: gizmo/scaler bidirezionale sul viewport
+
+> "Premo **Edit** sul nodo (se lo supporta) e muovo / scalo / ruoto il pezzo nel
+> viewport 3D come in un CAD normale; i valori del nodo si aggiornano da soli, e
+> viceversa." Manipolazione diretta della geometria ↔ parametri, bidirezionale.
+> È il duale 3D del GraphMapper (Fase 4 di PLAN_PARAMETRIC_CURVES): lì si edita
+> una curva sul corpo del nodo, qui si editano posizione/scala/punti nel 3D.
+
+### Modello concettuale
+- Un nodo è **gizmo-compatibile** se ha parametri con un *handle spaziale chiaro*.
+  Dichiararlo in `catalog.py` con un campo capability per non indovinare lato UI:
+  `gizmo={"kind": "translate|rotate|scale|points", "binds": [...]}`.
+  - `translate` → `ConstructPoint/Vector` (binds `x,y,z`), `Move.offset`.
+  - `rotate` → `Rotate.angle` (+ asse).
+  - `scale` → `Scale.factor` (uniforme; poi non-uniforme x/y/z).
+  - `points` → editor di una **lista di punti**: control point di `Polyline` /
+    `Spline`, o i punti sorgente di uno scatter.
+- **Editabile solo ciò che è "sorgente"** (param literal o lista in un nodo
+  sorgente). Se l'input è **wired** (params-as-inputs, §5b) il valore è calcolato
+  a monte → gizmo in **sola lettura** (handle visibile ma grigio): si edita il
+  nodo che lo produce, non qui. Stessa regola della guardia copilot: niente
+  scrittura di valori derivati.
+
+### Bidirezionalità (i due versi)
+1. **Param → gizmo**: dopo l'esecuzione il viewer conosce la posa del pezzo
+   (origine/bbox dalla mesh in `view.previews[id]`). L'handle del gizmo si piazza
+   lì. Cambiare lo slider sposta subito l'handle (già reattivo via re-run).
+2. **Gizmo → param**: il drag del `TransformControls` (three.js) emette un delta
+   pose → si mappa ai param del nodo e si chiama `set_param` (riuso dell'API
+   esistente, lo stesso path di copilot/MCP) **debounced ~150ms**, poi re-run
+   live (riusa LP3). Translate→`offset/x,y,z`; rotate→`angle`(+asse);
+   scale→`factor`. Snap opzionale (griglia/incrementi) tenendo `Shift`.
+
+### Editor di punti (`kind:"points"`)
+- I punti di un `Polyline`/`Spline` literal diventano **maniglie sferiche**
+  draggabili nel 3D (riuso del raycast/pickables del modal sub-shape selection,
+  vedi [[subshape-selection-arch]]). Drag di un punto → riscrive l'elemento i-esimo
+  nella lista in `node.params` → `set_param` → re-run.
+- Aggiungi/rimuovi punto (click su segmento / Alt-click sul punto). Le liste
+  **calcolate** (DivideCurve/DivideSurface) restano read-only: per editarle si
+  agisce sui nodi sorgente (count, curva, dominio).
+
+### UX
+- Toggle **"Edit on canvas"** nel corpo del nodo, visibile solo se `gizmo` è
+  dichiarato (riuso del pattern widget custom litegraph: `onDrawForeground` +
+  mouse, come occhio/bypass). Attivarlo:
+  - seleziona il nodo, mostra il suo gizmo nel viewport e nasconde gli altri;
+  - barra contestuale: modalità **W/E/R** (translate/rotate/scale, alla Unity/Blender),
+    toggle **world/local**, snap on/off.
+- Un solo nodo in edit per volta. ESC / ri-click sul toggle = esci.
+- Multi-istanza (nodo che fa fan-out su una lista): edita la **sorgente** (es. un
+  punto della lista) non le singole copie generate.
+
+### Tappe (incrementali, ognuna verificabile)
+- ✅ **E1 — Translate single-value** (2026-06-26). Capability `gizmo` su `NodeDef`
+  (serializzata in `/api/nodes`); dichiarata su `Move` (anchor=preview,
+  lock=offset), `ConstructPoint`/`Vector` (anchor=params, lock=x/y/z). Frontend:
+  `TransformControls` (three addons) in `nodes.html`, toggle **"✎ Edit on canvas"**
+  sul corpo del nodo (solo se `def.gizmo`), proxy `gizmoAnchor` → delta world →
+  scrittura param (clamp su min/max) + feedback ottimistico (`previewMeshes[id]`
+  shiftato) + re-run debounced 150ms. Gating wired→read-only (`gizmoLocked`),
+  Esc/click per uscire, cleanup su reload/delete, badge "Editing…". Verificato:
+  catalogo+transpile+execute headless invariati, 27 test verdi, JS `node --check`
+  ok, `/api/nodes` espone il gizmo live. *Richiede hard-refresh del browser.*
+- ✅ **E2 — Rotate & Scale** (2026-06-26). `gizmo` su `Rotate`
+  (kind=rotate, anchor=origin — `_rotate` ruota attorno all'asse globale; ring del
+  solo asse scelto via `showX/Y/Z`) e `Scale` (kind=scale, anchor=preview/centro —
+  build123d `scale()` pivota sul **centro** della shape, non sull'origine).
+  Toggle **Snap** (1mm / 15° / 0.1×) e **World/Local** in toolbar (visibili solo
+  in edit). Feedback ottimistico via `applyLocalTransform` — **corretto un bug
+  preesistente**: lo Scale ottimistico scalava attorno all'origine; ora pivota sul
+  centro geometrico (coerente con l'engine). *Limite noto:* la lettura rotate via
+  Euler wrappa a ±180° (rotazioni oltre mezzo giro in un solo drag glitchano);
+  ok per l'uso tipico, da rifinire con accumulo quaternionico se serve.
+- ✅ **E3 — Capability nel catalogo: già soddisfatto per design.** Il frontend
+  mostra il toggle SOLO se `def.gizmo` è presente (`registerNodes` legge la
+  capability serializzata da `/api/nodes`) — nessuna lista hard-coded. Aggiungere
+  un nodo spaziale gizmo-abile = pura data-entry nel `catalog.py`.
+- ✅ **E4 — Point editor: coperto da E1 per composizione.** `Polyline`/`Spline`/
+  `Line`/`Arc3pt` ricevono i punti via input `WIRE_VECTOR` da nodi
+  `ConstructPoint`/`Vector`, che hanno già il translate gizmo → si editano i punti
+  di una curva trascinando quei nodi. Nessun nodo memorizza una **lista di punti
+  literal** come param, quindi non serve un editor di lista dedicato. (Se in
+  futuro un nodo memorizzasse punti literal, servirebbe il drag delle maniglie +
+  write-back nella lista — riusando il raycast del picker sub-shape.)
+- ◐ **E5 — Polish.** Fatti: highlight del nodo in edit (`selectNode`), snap,
+  world/local, badge, Esc/cleanup. Da fare (rinviati): scale non-uniforme x/y/z,
+  undo via history del canvas, e — appena c'è LP4 — feedback per-keystroke fluido
+  al posto del re-run debounced 150ms.
+
+### Dipendenze / riuso
+- Si appoggia a **LP3** (auto-run debounced) per il loop edit→risultato e
+  idealmente a **LP4** (worker persistente) per la fluidità vera.
+- Riusa: `set_param` di `cad_nodes.api` (write-back), `view.previews[id]` (posa),
+  lo stack three.js + raycast del picker sub-shape (handle/punti), il pattern
+  widget custom di litegraph (toggle sul nodo).
+- Vincolo invariato: **valori wired = read-only** (la sorgente di verità è il
+  nodo a monte), coerente con [[design-reusable-wires-over-baked-params]].
+
+DoD fase E: per i nodi spaziali principali posso attivare "Edit on canvas",
+trascinare/ruotare/scalare il pezzo nel viewport e vedere i parametri del nodo
+aggiornarsi in tempo reale (e viceversa), con i valori calcolati a monte
+correttamente bloccati.

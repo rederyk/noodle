@@ -109,6 +109,18 @@ class NodeDef:
     is_group: bool = False
     # For group nodes: how to read the result out of the context manager var.
     group_kind: Optional[str] = None  # "part" | "sketch" | "line"
+    # On-canvas direct manipulation (PLAN_NODE_CAD.md §E). When set, the editor
+    # shows an "Edit on canvas" toggle that drives a viewport gizmo bound to the
+    # named params. Shape:
+    #   {"kind": "translate", "binds": ["x","y","z"],
+    #    "anchor": "params"|"preview", "lock": [<socket names>]}
+    # binds  = the three params the gizmo writes (X/Y/Z order).
+    # anchor = where the handle rests: "params" (the bound values ARE the point,
+    #          e.g. ConstructPoint) or "preview" (the node's result bbox centre,
+    #          e.g. Move — its params are a delta, not a world position).
+    # lock   = input sockets that, when wired, make the value upstream-computed →
+    #          the gizmo is read-only (you edit the producer node instead).
+    gizmo: Optional[dict] = None
 
     def param(self, name: str) -> Optional[Param]:
         for p in self.params:
@@ -238,6 +250,8 @@ register(NodeDef("ConstructPoint", "vector", "Construct Point",
             Socket("z", WIRE_DATA, required=False)],
     params=[_f("x", 0, label="x"), _f("y", 0, label="y"), _f("z", 0, label="z")],
     outputs=[Socket("point", WIRE_VECTOR)],
+    gizmo={"kind": "translate", "binds": ["x", "y", "z"],
+           "anchor": "params", "lock": ["x", "y", "z"]},
     code_template={"algebra": "Vector({x}, {y}, {z})"},
     description="A point (vector) from X, Y, Z. Each coordinate can be a widget "
                 "OR an input — wire a list of numbers (e.g. from Range) into x to "
@@ -600,6 +614,8 @@ register(NodeDef("Move", "transform", "Move",
             Socket("offset", WIRE_VECTOR, required=False)],
     params=[_f("x", 0, -500, 500), _f("y", 0, -500, 500), _f("z", 0, -500, 500)],
     outputs=_geo(),
+    gizmo={"kind": "translate", "binds": ["x", "y", "z"],
+           "anchor": "preview", "lock": ["offset"]},
     code_template={"algebra": "_move({shape}, {offset}, {x}, {y}, {z})"},
     description="Translate a shape (or a plane). Wire a vector into `offset` to "
                 "drive the position; feed a LIST of vectors to scatter the shape "
@@ -612,6 +628,8 @@ register(NodeDef("Rotate", "transform", "Rotate",
                   options=["X", "Y", "Z"],
                   code_map={"X": "Axis.X", "Y": "Axis.Y", "Z": "Axis.Z"})],
     outputs=_geo(),
+    gizmo={"kind": "rotate", "binds": ["angle"], "axisParam": "axis",
+           "anchor": "origin", "lock": ["angle"]},
     code_template={"algebra": "_rotate({shape}, {axis}, {angle})"},
     description="Rotate a shape (or a plane) around a global axis."))
 
@@ -619,8 +637,9 @@ register(NodeDef("Scale", "transform", "Scale",
     inputs=[Socket("shape", WIRE_GEOMETRY)] + _pin("factor"),
     params=[_f("factor", 2, 0.01, 100)],
     outputs=_geo(),
+    gizmo={"kind": "scale", "binds": ["factor"], "anchor": "preview", "lock": ["factor"]},
     code_template={"algebra": "scale({shape}, {factor})"},
-    description="Uniform scale."))
+    description="Uniform scale (about the shape's own centre)."))
 
 register(NodeDef("ToPlane", "transform", "To Plane",
     inputs=[Socket("shape", WIRE_SKETCH), Socket("plane", WIRE_PLANE)],
@@ -690,6 +709,8 @@ register(NodeDef("Vector", "vector", "Vector",
             _f("y", 0, -1000, 1000, widget="input"),
             _f("z", 0, -1000, 1000, widget="input")],
     outputs=[Socket("vector", WIRE_VECTOR)],
+    gizmo={"kind": "translate", "binds": ["x", "y", "z"],
+           "anchor": "params", "lock": ["x", "y", "z"]},
     code_template={"algebra": "Vector({x}, {y}, {z})"},
     description="A 3D vector. Each component is a widget OR an input; wire a list "
                 "of numbers into a component to build a list of vectors."))
