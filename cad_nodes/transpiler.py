@@ -41,9 +41,66 @@ __previews__ = {}
 __errors__ = {}
 
 
-def _panel(_id, _value):
-    __panels__[_id] = _value
-    return _value
+def _panel(_id, _value, _text="", _mode="friendly"):
+    \"\"\"Dual-mode Panel. When a value is wired it DISPLAYS it (pass-through);
+    when nothing is wired it is a data SOURCE that parses its own text into
+    value(s) on the wire. Multi-line text -> a list (fans out downstream).\"\"\"
+    if _value is not None:
+        __panels__[_id] = _value
+        return _value
+    _parsed = _panel_parse(_text, _mode)
+    __panels__[_id] = _parsed
+    return _parsed
+
+
+def _panel_one(_line, _mode):
+    \"\"\"Parse a single line into a value per the chosen syntax.\"\"\"
+    import json as _json
+    _s = _line.strip()
+    if _mode == "build123d":
+        return eval(_s, globals())              # build123d expression (arbitrary)
+    if _mode == "json":
+        return _json.loads(_s)
+    # friendly: JSON scalar/array first, else "x, y, z" numbers -> Vector, else str
+    try:
+        return _json.loads(_s)
+    except Exception:
+        pass
+    import re as _re
+    _parts = [p for p in _re.split(r"[,\\s]+", _s.strip("()[] ")) if p]
+    try:
+        _nums = [float(p) for p in _parts]
+    except ValueError:
+        return _s
+    if len(_nums) == 3:
+        return Vector(*_nums)
+    if len(_nums) == 2:
+        return Vector(_nums[0], _nums[1], 0)
+    if len(_nums) == 1:
+        return _nums[0]
+    return _nums
+
+
+def _panel_parse(_text, _mode="friendly"):
+    \"\"\"Text -> value(s). One item per non-empty line; >1 line -> a list.\"\"\"
+    if not _text or not str(_text).strip():
+        return None
+    if _mode == "json":
+        import json as _json
+        try:
+            return _json.loads(_text)           # whole block as one JSON document
+        except Exception:
+            pass
+    _lines = [ln for ln in str(_text).splitlines() if ln.strip()]
+    if not _lines:
+        return None
+    _vals = []
+    for _ln in _lines:
+        try:
+            _vals.append(_panel_one(_ln, _mode))
+        except Exception as _e:
+            _vals.append("⚠ " + str(_e))
+    return _vals[0] if len(_vals) == 1 else _vals
 
 
 def _select_subshapes(_shape, _kind, _indices, _sigs):
@@ -527,6 +584,7 @@ _LIST_PRODUCERS = {
     "Voronoi2D", "DivideSurface", "PopulateGeometry", "MapToSurface",
     "DivideCurve", "CurveEndpoints",
     "Series", "DivideDomain",
+    "Panel",   # source-mode multi-line text -> a list (and pass-through preserves list-ness)
 }
 
 

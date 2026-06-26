@@ -273,6 +273,12 @@ function registerNodes(defs){
         this.addOutput(s.name, s.wire_type);
       }
       for (const p of (def.params||[])) addWidget(this, p);
+      // Panel: a multi-line text editor (text ↔ data, 3 syntaxes) instead of the
+      // single-line prompt; the `text`/`mode` widgets still round-trip the value.
+      if (def.type === 'Panel'){
+        const pb = this.addWidget('button', '✎ Edit text', null, ()=> openPanelEditor(this));
+        pb.isPanelBtn = true;
+      }
       // Eye on every geometry node (auto/on/off). Data/math/panel nodes can't draw.
       const ow = (def.outputs||[])[0];
       if ((ow && ['geometry','sketch','curve'].includes(ow.wire_type)) || def.type === 'CodeBlock')
@@ -1175,6 +1181,64 @@ function panelLines(v, indent=''){
   }
 }
 function fmtPanel(v){ return panelLines(v).join('\n'); }
+
+// ── Panel text editor (multi-line · 3 syntaxes · text ↔ data) ──
+const PANEL_HINTS = {
+  friendly: 'One item per line. "0,0,0" → Vector · numbers/strings direct · [..]/{..} = JSON. Several lines = a list (fans out).',
+  json:     'Whole block as one JSON document, or one JSON value per line.',
+  build123d:'Each line eval\'d as build123d (e.g. Vector(0,0,0), Plane.XY, Box(2,2,2).volume). ⚠ runs Python.',
+};
+function setPanelParam(node, name, val){
+  node.properties[name] = val;
+  for (const w of (node.widgets||[])) if (w.cadParam===name) w.value = val;
+  node.setDirtyCanvas && node.setDirtyCanvas(true,true);
+}
+function openPanelEditor(node){
+  let ov = document.getElementById('panel-editor');
+  if (!ov){
+    ov = document.createElement('div'); ov.id = 'panel-editor';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:200;display:none;align-items:center;'+
+      'justify-content:center;background:rgba(0,0,0,.5)';
+    ov.innerHTML =
+      '<div style="background:var(--bg-1);border:1px solid var(--border);border-radius:10px;'+
+        'width:540px;max-width:92vw;padding:14px;display:flex;flex-direction:column;gap:10px">'+
+        '<div style="display:flex;align-items:center;gap:10px">'+
+          '<b style="color:var(--accent)">Panel — text ↔ data</b><span style="flex:1"></span>'+
+          '<label style="font-size:12px;color:var(--text-dim)">syntax</label>'+
+          '<select id="pe-mode" style="background:var(--bg-3);color:var(--text);'+
+            'border:1px solid var(--border);border-radius:5px;padding:4px 6px;font-size:12px">'+
+            '<option value="friendly">friendly</option><option value="json">json</option>'+
+            '<option value="build123d">build123d</option></select>'+
+        '</div>'+
+        '<textarea id="pe-text" rows="9" spellcheck="false" placeholder="0,0,0&#10;10,0,5&#10;42" '+
+          'style="resize:vertical;background:var(--bg-3);color:var(--text);border:1px solid var(--border);'+
+          'border-radius:6px;padding:8px;font-family:var(--font);font-size:12px;line-height:1.5"></textarea>'+
+        '<div id="pe-hint" style="font-size:11px;color:var(--text-dim)"></div>'+
+        '<div style="display:flex;gap:8px;justify-content:flex-end">'+
+          '<button class="tb-btn" id="pe-cancel">Cancel</button>'+
+          '<button class="tb-btn primary" id="pe-apply">✓ Apply &amp; translate</button>'+
+        '</div>'+
+      '</div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('mousedown', e=>{ if (e.target===ov) ov.style.display='none'; });
+    document.getElementById('pe-cancel').onclick = ()=>{ ov.style.display='none'; };
+    document.getElementById('pe-mode').onchange = ()=>{
+      document.getElementById('pe-hint').textContent = PANEL_HINTS[document.getElementById('pe-mode').value]; };
+  }
+  const modeSel = document.getElementById('pe-mode'), ta = document.getElementById('pe-text');
+  modeSel.value = node.properties.mode || 'friendly';
+  ta.value = node.properties.text || '';
+  document.getElementById('pe-hint').textContent = PANEL_HINTS[modeSel.value];
+  document.getElementById('pe-apply').onclick = ()=>{
+    setPanelParam(node, 'text', ta.value);
+    setPanelParam(node, 'mode', modeSel.value);
+    ov.style.display = 'none';
+    showTab('panels');          // show the translated result
+    window.runGraph();
+  };
+  ov.style.display = 'flex';
+  ta.focus();
+}
 
 // ── error node highlighting ──
 function clearHighlights(){

@@ -1083,3 +1083,30 @@ DoD fase E: per i nodi spaziali principali posso attivare "Edit on canvas",
 trascinare/ruotare/scalare il pezzo nel viewport e vedere i parametri del nodo
 aggiornarsi in tempo reale (e viceversa), con i valori calcolati a monte
 correttamente bloccati.
+
+---
+
+## F. Panel bidirezionale (text ↔ data) ✅ (2026-06-26)
+
+Il `Panel` era un inspector di sola uscita; ora è **bidirezionale**, come il
+panel di Grasshopper.
+
+- **Display** (input `value` wirato): pass-through; `mesh_extractor._summarize`
+  rende qualsiasi tipo build123d (scalar/point/plane/shape/list) nel tab Panels,
+  multi-riga e list-aware. `value` è ora `list_access=True` → riceve l'intera
+  lista come un valore (niente fan-out dell'inspector).
+- **Source** (input non wirato): il param `text` multi-riga viene **parsato** ed
+  emesso sul wire. Una riga = un item; più righe = una **lista** (Panel è in
+  `_LIST_PRODUCERS` → fan-out a valle). Esempio: `5,5,5` → `Vector(5,5,5)` in
+  `Box.origin`.
+- **Tre sintassi** via param `mode`, switchabile dal nodo (richiesta utente):
+  - `friendly`: `0,0,0` → Vector, numeri/stringhe diretti, `[..]`/`{..}` = JSON.
+  - `json`: blocco intero come un documento JSON, o un valore JSON per riga.
+  - `build123d`: ogni riga `eval`'d come build123d (`Vector(...)`, `Plane.XY`,
+    `Box(2,2,2).volume`). ⚠ codice arbitrario, stessa superficie di Expression.
+- **Engine** (`transpiler` PREAMBLE): `_panel(id, value, text, mode)` +
+  `_panel_parse`/`_panel_one`. **Frontend**: bottone "✎ Edit text" sul nodo →
+  modale con selettore sintassi + textarea + "✓ Apply & translate" (salva, runna,
+  apre il tab Panels). Verificato headless + live nel container.
+- Limite onesto: shape (solidi/sketch) restano **display-only** (non si scrive un
+  solido come testo); plane ricostruibile solo parzialmente (origin/normal).

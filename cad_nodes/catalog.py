@@ -873,10 +873,17 @@ register(NodeDef("Expression", "math", "Expression",
 # 11. Panels / inspection
 # ===========================================================================
 register(NodeDef("Panel", "panel", "Panel",
-    inputs=[Socket("value", WIRE_DATA)],
+    inputs=[Socket("value", WIRE_DATA, required=False, list_access=True)],
+    params=[Param("text", "str", "text", "", widget="text"),
+            Param("mode", "select", "mode", "friendly", widget="select",
+                  options=["friendly", "json", "build123d"])],
     outputs=_data("value"),
-    code_template={"algebra": "_panel({node_id!r}, {value})"},
-    description="Inspect a value live (passes it through)."))
+    code_template={"algebra": "_panel({node_id!r}, {value}, {text}, {mode})"},
+    description="Dual-mode Panel. Wire a value to INSPECT it (multi-line, "
+                "list-aware, passes through). Leave it unwired and type into "
+                "`text` to use it as a data SOURCE — one item per line (several "
+                "lines = a list that fans out). `mode` picks the syntax: "
+                "friendly ('0,0,0' -> Vector), json, or build123d (eval)."))
 
 register(NodeDef("BoundingBox", "panel", "Bounding Box",
     inputs=[Socket("shape", WIRE_GEOMETRY)],
