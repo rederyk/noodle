@@ -262,6 +262,147 @@ def _move(_shape, _offset, _x, _y, _z):
     return Pos(v.X, v.Y, v.Z) * _shape
 
 
+def _pt(_v):
+    \"\"\"Coerce one vector/vertex/tuple to a Vector (first item if given many);
+    None passes through. Lets curve nodes accept any point-like input.\"\"\"
+    pts = _origin_points(_v)
+    return pts[0] if pts else None
+
+
+def _curve_points(_items):
+    \"\"\"Flatten curve point inputs into [Vector, ...]. Accepts several wired
+    points AND/OR list(s) of points, so Polyline/Spline take either shape.\"\"\"
+    return _origin_points(_flatten(_items))
+
+
+def _as_curve(_c):
+    \"\"\"Coerce an input to a 1D curve (Edge/Wire) exposing location_at. Passes a
+    curve through; otherwise takes the first edge of a shape.\"\"\"
+    if _c is None:
+        return None
+    if hasattr(_c, "location_at"):
+        return _c
+    try:
+        es = list(_c.edges())
+        return es[0] if es else None
+    except Exception:
+        return None
+
+
+def _curve_frames(_curve, _count=8):
+    \"\"\"N evenly spaced frames (Planes) along a curve; each frame's local Z axis
+    is the curve tangent, so a 2D profile seated on it (ToPlane) sits perpendicular
+    to the curve — ready to Loft. Returns a list of Planes.\"\"\"
+    c = _as_curve(_curve)
+    if c is None:
+        return []
+    n = max(int(_count), 1)
+    out = []
+    for i in range(n):
+        t = i / (n - 1) if n > 1 else 0.5
+        try:
+            out.append(Plane(c.location_at(t)))
+        except Exception:
+            pass
+    return out
+
+
+def _eval_frame(_curve, _t=0.0):
+    \"\"\"The frame (Plane) at parameter t in [0,1] on a curve (Z = tangent).\"\"\"
+    c = _as_curve(_curve)
+    if c is None:
+        return None
+    try:
+        return Plane(c.location_at(min(max(float(_t), 0.0), 1.0)))
+    except Exception:
+        return None
+
+
+def _plane_origin(_p):
+    \"\"\"The origin point (Vector) of a Plane/Location; a point passes through.\"\"\"
+    if _p is None:
+        return None
+    if hasattr(_p, "origin"):
+        o = _p.origin
+        return Vector(o.X, o.Y, o.Z)
+    return _pt(_p)
+
+
+def _curve_endpoints(_curve):
+    \"\"\"[start, end] points of a curve as a 2-item list of Vectors.\"\"\"
+    c = _as_curve(_curve)
+    if c is None:
+        return []
+    try:
+        return [Vector(c @ 0.0), Vector(c @ 1.0)]
+    except Exception:
+        return []
+
+
+def _curve_length(_curve):
+    c = _as_curve(_curve)
+    try:
+        return float(c.length) if c is not None else 0.0
+    except Exception:
+        return 0.0
+
+
+def _divide_domain(_dom, _count=10):
+    \"\"\"N values evenly spanning a domain [min, max], endpoints inclusive.\"\"\"
+    d = list(_dom) if _is_seq(_dom) else [0.0, 1.0]
+    a = float(d[0]) if d else 0.0
+    b = float(d[-1]) if len(d) > 1 else a + 1.0
+    n = max(int(_count), 1)
+    if n == 1:
+        return [(a + b) / 2.0]
+    return [a + (b - a) * i / (n - 1) for i in range(n)]
+
+
+def _bounds(_lst):
+    \"\"\"The [min, max] domain spanning a flat list of numbers.\"\"\"
+    nums = [float(x) for x in _flatten(_lst) if isinstance(x, (int, float))]
+    return [min(nums), max(nums)] if nums else [0.0, 1.0]
+
+
+def _remap(_v, _src, _tgt, _smin, _smax, _tmin, _tmax):
+    \"\"\"Linearly remap _v from a source range to a target range. A [min,max]
+    domain wired into _src/_tgt overrides the scalar fallbacks.\"\"\"
+    a, b = (_src[0], _src[1]) if _is_seq(_src) and len(_src) >= 2 else (_smin, _smax)
+    c, d = (_tgt[0], _tgt[1]) if _is_seq(_tgt) and len(_tgt) >= 2 else (_tmin, _tmax)
+    a, b, c, d = float(a), float(b), float(c), float(d)
+    if b == a:
+        return c
+    return c + (float(_v) - a) / (b - a) * (d - c)
+
+
+def _loft(_sections, _ruled=False):
+    \"\"\"Loft a solid through an ordered list of sections. Accepts several wired
+    sketches AND/OR a single list of sketches (e.g. ToPlane over Divide Curve).\"\"\"
+    secs = [s for s in _flatten(_sections) if s is not None]
+    if len(secs) < 2:
+        return None
+    return loft(secs, ruled=bool(_ruled))
+
+
+def _sweep(_section, _path, _frenet=False):
+    \"\"\"Sweep a profile along a path curve. The profile is seated on the path's
+    start frame (perpendicular to the curve) so a flat XY sketch sweeps cleanly.\"\"\"
+    if _section is None or _path is None:
+        return None
+    p = _as_curve(_path)
+    sec = _to_plane(_section, _eval_frame(p, 0.0))
+    return sweep(sec, path=p, is_frenet=bool(_frenet))
+
+
+def _to_plane(_shape, _plane):
+    \"\"\"Re-seat a 2D profile onto a plane/frame: its local XY comes to lie in the
+    plane (Plane * shape). Used to place loft/sweep sections on curve frames.\"\"\"
+    if _shape is None or _plane is None:
+        return _shape
+    pl = _plane if isinstance(_plane, Plane) else Plane(_plane)
+    return pl * _shape
+
+
 def _domain2d(_region, _w, _h, _pts=None):
     \"\"\"(x0, y0, x1, y1) of a 2D domain: a region face's bounding box if given,
     else the points' extent, else a 0..w x 0..h box.\"\"\"
@@ -372,8 +513,10 @@ def _divide_surface(_shape, _u=6, _v=6):
     return out
 """
 
-# Output wire types that yield a drawable mesh (mirrors the catalog).
-_PREVIEWABLE = {catalog.WIRE_GEOMETRY, catalog.WIRE_SKETCH, catalog.WIRE_CURVE}
+# Output wire types that yield a drawable preview (mesh for solids/sketches,
+# polylines for curves, dots for points). Mirrors the mesh_extractor render paths.
+_PREVIEWABLE = {catalog.WIRE_GEOMETRY, catalog.WIRE_SKETCH, catalog.WIRE_CURVE,
+                catalog.WIRE_VECTOR}
 
 # Node types whose output is always a Python list at runtime. Feeding one of
 # these into an item-access input makes the consumer fan out. (A fanned node is
@@ -382,6 +525,8 @@ _LIST_PRODUCERS = {
     "ArrayLinear", "ListCreate", "ListRange", "ListSeries", "ListRepeat",
     "ListSlice", "ListReverse", "ListSort", "ListFlatten", "Concat",
     "Voronoi2D", "DivideSurface", "PopulateGeometry", "MapToSurface",
+    "DivideCurve", "CurveEndpoints",
+    "Series", "DivideDomain",
 }
 
 

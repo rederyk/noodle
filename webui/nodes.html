@@ -821,7 +821,8 @@ function stripMesh(v){
   if(c.previews){
     const p={};
     for(const k in c.previews){ const e=c.previews[k];
-      p[k] = {kind:e.kind, volume:e.volume, triangles:((e.mesh&&e.mesh.triangles)||[]).length}; }
+      p[k] = {kind:e.kind, volume:e.volume, triangles:((e.mesh&&e.mesh.triangles)||[]).length,
+              polylines:(e.polylines||[]).length, points:(e.points||[]).length}; }
     c.previews = p;
   }
   return c;
@@ -929,11 +930,35 @@ function renderPanels(view){
     row.appendChild(pid); row.appendChild(pval); body.appendChild(row);
   }
 }
-// mesh_extractor summarises non-scalar values to {type, ...}; show scalars raw.
-function fmtPanel(v){
-  if (v === null || typeof v !== 'object') return String(v);
-  return JSON.stringify(v, null, 2);
+// mesh_extractor standardises a panel value into typed dicts (point/plane/shape/
+// list) or a raw scalar; render Grasshopper-style — one item per line, indexed.
+function pnum(x){ return (typeof x === 'number') ? +(Math.round(x*1000)/1000) : x; }
+function panelLines(v, indent=''){
+  if (v === null || typeof v !== 'object') return [indent + String(v)];
+  switch(v.kind){
+    case 'point': return [indent + `(${pnum(v.x)}, ${pnum(v.y)}, ${pnum(v.z)})`];
+    case 'plane': return [indent + `plane @ (${v.origin.map(pnum).join(', ')})  n=(${v.normal.map(pnum).join(', ')})`];
+    case 'shape': {
+      const b=[]; if(v.volume)b.push(`vol ${pnum(v.volume)}`); if(v.area)b.push(`area ${pnum(v.area)}`);
+      if(v.faces)b.push(`${v.faces}f`); if(v.edges)b.push(`${v.edges}e`); if(v.vertices)b.push(`${v.vertices}v`);
+      return [indent + `${v.type}${b.length?' {'+b.join(', ')+'}':''}`];
+    }
+    case 'dict': return [indent + `dict {${(v.keys||[]).join(', ')}}`];
+    case 'repr': return [indent + `${v.type}: ${v.repr}`];
+    case 'list': {
+      const out=[indent + `list (${v.length})`];
+      v.items.forEach((it,i)=>{
+        const sub = panelLines(it, indent+'  ');
+        sub[0] = `${indent}  ${i}: ${sub[0].slice(indent.length+2)}`;   // prefix the index
+        out.push(...sub);
+      });
+      if(v.truncated) out.push(`${indent}  … +${v.truncated} more`);
+      return out;
+    }
+    default: return [indent + JSON.stringify(v)];
+  }
 }
+function fmtPanel(v){ return panelLines(v).join('\n'); }
 
 // ── error node highlighting ──
 function clearHighlights(){
@@ -997,6 +1022,7 @@ function initViewer(){
     vMouse.y = -((e.clientY-r.top)/r.height)*2+1;
     vRay.setFromCamera(vMouse, camera);
     vRay.params.Line.threshold = 0.5;
+    vRay.params.Points.threshold = 3;
     const hits = vRay.intersectObjects(previewGroup.children, false);
     if (hits.length && hits[0].object.userData.nodeId) selectNodeById(hits[0].object.userData.nodeId);
   });
@@ -1083,6 +1109,53 @@ function meshFromData(m, color){
   return new THREE.Mesh(geomFromData(m),
     new THREE.MeshStandardMaterial({color, roughness:.4, metalness:.12, side:THREE.DoubleSide}));
 }
+// curve preview: many polylines -> one raycastable LineSegments object
+function lineFromPolylines(polys, color){
+  const segs=[];
+  for(const poly of polys)
+    for(let i=0;i+1<poly.length;i++){ segs.push(poly[i], poly[i+1]); }
+  const g=new THREE.BufferGeometry();
+  const pos=new Float32Array(segs.length*3);
+  for(let i=0;i<segs.length;i++){ pos[3*i]=segs[i][0]; pos[3*i+1]=segs[i][1]; pos[3*i+2]=segs[i][2]; }
+  g.setAttribute('position', new THREE.BufferAttribute(pos,3));
+  return new THREE.LineSegments(g, new THREE.LineBasicMaterial({color, linewidth:2}));
+}
+// point preview: a vector list -> lit spheres (one InstancedMesh, scene-scaled so
+// they read at any zoom). Pickable per-instance (instanceId) for click + edit.
+function spheresFromData(pts, color, r){
+  const geo = new THREE.SphereGeometry(r, 12, 12);
+  const mat = new THREE.MeshStandardMaterial({color, roughness:.45, metalness:.1});
+  const im = new THREE.InstancedMesh(geo, mat, pts.length);
+  const m = new THREE.Matrix4();
+  for(let i=0;i<pts.length;i++){ m.setPosition(pts[i][0], pts[i][1], pts[i][2]); im.setMatrixAt(i, m); }
+  im.instanceMatrix.needsUpdate = true;
+  im.userData.points = pts;           // keep coords for picking / edit mode
+  return im;
+}
+// the combined extent of all drawable previews, as a length (for sizing dots etc.)
+function previewsExtent(previews, ids){
+  const box = new THREE.Box3(); let any=false;
+  for(const id of ids){ const e=previews[id]; if(!e || !e.bbox) continue;
+    box.expandByPoint(new THREE.Vector3(...e.bbox.min));
+    box.expandByPoint(new THREE.Vector3(...e.bbox.max)); any=true; }
+  if(!any) return 50;
+  const s=new THREE.Vector3(); box.getSize(s);
+  return Math.max(s.length(), 1);
+}
+// build the right THREE object for a preview entry (mesh | polylines | points)
+function objFromPreview(p, color, node, scale){
+  if(p.mesh){
+    const obj = meshFromData(p.mesh, color);
+    if(node && node.wireframe){ obj.material.wireframe = true; obj.material.metalness = 0; }
+    return obj;
+  }
+  if(p.polylines) return lineFromPolylines(p.polylines, color);
+  if(p.points){
+    const r = Math.min(Math.max(scale*0.012, 0.4), scale*0.05);
+    return spheresFromData(p.points, color, r);
+  }
+  return null;
+}
 function clearPreviewGroup(){
   for(let i=previewGroup.children.length-1;i>=0;i--){
     const c=previewGroup.children[i]; previewGroup.remove(c);
@@ -1101,7 +1174,8 @@ function renderPreviews(view){
   clearPreviewDots();
   previewMeshes = {};
   const previews = (view && view.previews) || {};
-  const ids = Object.keys(previews).filter(k => previews[k] && previews[k].mesh)
+  const drawable = e => e && (e.mesh || e.polylines || e.points);
+  const ids = Object.keys(previews).filter(k => drawable(previews[k]))
                     .sort((a,b)=>nodeNum(a)-nodeNum(b));   // stable order for colour slots
   if(!ids.length){
     renderLegend([]);
@@ -1111,11 +1185,12 @@ function renderPreviews(view){
   }
   if(currentMesh){ scene.remove(currentMesh); currentMesh.geometry.dispose(); currentMesh.material.dispose(); currentMesh=null; }
   const legend = [];
+  const scale = previewsExtent(previews, ids);   // for sizing point spheres to the scene
   for(const id of ids){
     const n = nodeIndex[id];
     const color = resolveColor(id, ids);
-    const obj = meshFromData(previews[id].mesh, color);
-    if (n && n.wireframe){ obj.material.wireframe = true; obj.material.metalness = 0; }
+    const obj = objFromPreview(previews[id], color, n, scale);
+    if (!obj) continue;
     obj.userData.nodeId = id;
     previewGroup.add(obj);
     previewMeshes[id] = obj;

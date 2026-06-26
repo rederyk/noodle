@@ -169,9 +169,21 @@ def _data(name="result"):
     return [Socket(name, WIRE_DATA)]
 
 
+def _cv(name="result"):
+    return [Socket(name, WIRE_CURVE)]
+
+
 def _origin_in():
     # optional point input; when wired, positions the primitive there (default 0,0,0)
     return [Socket("origin", WIRE_VECTOR, required=False)]
+
+
+def _pin(*names):
+    """Optional data inputs named like params: when wired, the socket overrides
+    the widget (params-as-inputs); feed a list to fan the node out (one copy per
+    value). Unwired, the node falls back to the param widget. Zero transpiler
+    cost — `_emit_simple` already resolves a same-named param/socket."""
+    return [Socket(n, WIRE_DATA, required=False) for n in names]
 
 
 def _f(name, default=0.0, lo=None, hi=None, step=0.5, label="", widget="slider"):
@@ -186,35 +198,35 @@ def _i(name, default=0, lo=None, hi=None, label="", widget="slider"):
 # 1. Primitives 3D
 # ===========================================================================
 register(NodeDef("Box", "primitives_3d", "Box",
-    inputs=_origin_in(),
+    inputs=_origin_in() + _pin("width", "height", "depth"),
     params=[_f("width", 10, 0.1, 500), _f("height", 10, 0.1, 500), _f("depth", 10, 0.1, 500)],
     outputs=_geo(),
     code_template={"algebra": "Box({width}, {height}, {depth})"},
     description="Solid box of given width, height, depth."))
 
 register(NodeDef("Cylinder", "primitives_3d", "Cylinder",
-    inputs=_origin_in(),
+    inputs=_origin_in() + _pin("radius", "height"),
     params=[_f("radius", 5, 0.1, 500), _f("height", 20, 0.1, 500)],
     outputs=_geo(),
     code_template={"algebra": "Cylinder({radius}, {height})"},
     description="Solid cylinder."))
 
 register(NodeDef("Sphere", "primitives_3d", "Sphere",
-    inputs=_origin_in(),
+    inputs=_origin_in() + _pin("radius"),
     params=[_f("radius", 10, 0.1, 500)],
     outputs=_geo(),
     code_template={"algebra": "Sphere({radius})"},
     description="Solid sphere."))
 
 register(NodeDef("Cone", "primitives_3d", "Cone",
-    inputs=_origin_in(),
+    inputs=_origin_in() + _pin("bottom_radius", "top_radius", "height"),
     params=[_f("bottom_radius", 5, 0, 500), _f("top_radius", 0, 0, 500), _f("height", 15, 0.1, 500)],
     outputs=_geo(),
     code_template={"algebra": "Cone({bottom_radius}, {top_radius}, {height})"},
     description="Truncated cone / frustum."))
 
 register(NodeDef("Torus", "primitives_3d", "Torus",
-    inputs=_origin_in(),
+    inputs=_origin_in() + _pin("major_radius", "minor_radius"),
     params=[_f("major_radius", 15, 0.1, 500), _f("minor_radius", 3, 0.1, 500)],
     outputs=_geo(),
     code_template={"algebra": "Torus({major_radius}, {minor_radius})"},
@@ -235,35 +247,35 @@ register(NodeDef("ConstructPoint", "vector", "Construct Point",
 # 2. Primitives 2D (sketch / curve)
 # ===========================================================================
 register(NodeDef("Rectangle", "primitives_2d", "Rectangle",
-    inputs=_origin_in(),
+    inputs=_origin_in() + _pin("width", "height"),
     params=[_f("width", 30, 0.1, 500), _f("height", 20, 0.1, 500)],
     outputs=_sk(),
     code_template={"algebra": "Rectangle({width}, {height})"},
     description="2D rectangle sketch."))
 
 register(NodeDef("RoundedRectangle", "primitives_2d", "Rounded Rectangle",
-    inputs=_origin_in(),
+    inputs=_origin_in() + _pin("width", "height", "radius"),
     params=[_f("width", 30, 0.1, 500), _f("height", 20, 0.1, 500), _f("radius", 3, 0, 250)],
     outputs=_sk(),
     code_template={"algebra": "RectangleRounded({width}, {height}, {radius})"},
     description="Rectangle with filleted corners."))
 
 register(NodeDef("Circle", "primitives_2d", "Circle",
-    inputs=_origin_in(),
+    inputs=_origin_in() + _pin("radius"),
     params=[_f("radius", 10, 0.1, 500)],
     outputs=_sk(),
     code_template={"algebra": "Circle({radius})"},
     description="2D circle sketch."))
 
 register(NodeDef("Ellipse", "primitives_2d", "Ellipse",
-    inputs=_origin_in(),
+    inputs=_origin_in() + _pin("x_radius", "y_radius"),
     params=[_f("x_radius", 8, 0.1, 500), _f("y_radius", 5, 0.1, 500)],
     outputs=_sk(),
     code_template={"algebra": "Ellipse({x_radius}, {y_radius})"},
     description="2D ellipse sketch."))
 
 register(NodeDef("Polygon", "primitives_2d", "Regular Polygon",
-    inputs=_origin_in(),
+    inputs=_origin_in() + _pin("radius", "sides"),
     params=[_f("radius", 10, 0.1, 500), _i("sides", 6, 3, 64)],
     outputs=_sk(),
     code_template={"algebra": "RegularPolygon({radius}, {sides})"},
@@ -278,10 +290,87 @@ register(NodeDef("Text", "primitives_2d", "Text",
     description="Text as a 2D sketch."))
 
 # ===========================================================================
+# 2b. Curves (WIRE_CURVE producers) — lines, arcs, splines along which profiles
+# are placed / lofted. Point inputs are vectors and fan out.
+# ===========================================================================
+register(NodeDef("Line", "curves", "Line",
+    inputs=[Socket("start", WIRE_VECTOR, required=False),
+            Socket("end", WIRE_VECTOR, required=False)],
+    outputs=_cv(),
+    code_template={"algebra": "Line(_pt({start}), _pt({end}))"},
+    description="Straight line between two points. Wire ConstructPoint/Vector into "
+                "start and end; feed lists to fan out (one line per pair)."))
+
+register(NodeDef("Polyline", "curves", "Polyline",
+    inputs=[Socket("points", WIRE_VECTOR, multiple=True)],
+    params=[Param("closed", "bool", "closed", False, widget="checkbox")],
+    outputs=_cv(),
+    code_template={"algebra": "Polyline(*_curve_points([{points}]), close={closed})"},
+    description="Open or closed polyline through a sequence of points. Wire "
+                "several points and/or a single list of points."))
+
+register(NodeDef("Arc3pt", "curves", "Arc (3 point)",
+    inputs=[Socket("start", WIRE_VECTOR, required=False),
+            Socket("mid", WIRE_VECTOR, required=False),
+            Socket("end", WIRE_VECTOR, required=False)],
+    outputs=_cv(),
+    code_template={"algebra": "ThreePointArc(_pt({start}), _pt({mid}), _pt({end}))"},
+    description="Circular arc through three points (start, a mid point, end)."))
+
+register(NodeDef("ArcCenter", "curves", "Arc (center)",
+    inputs=[Socket("center", WIRE_VECTOR, required=False)] + _pin("radius", "start_angle", "end_angle"),
+    params=[_f("radius", 10, 0.1, 500), _f("start_angle", 0, -360, 360),
+            _f("end_angle", 90, -360, 360)],
+    outputs=_cv(),
+    code_template={"algebra": "CenterArc(_pt({center}) or (0, 0, 0), {radius}, {start_angle}, {end_angle})"},
+    description="Circular arc by centre point, radius and start/end angle "
+                "(degrees, CCW). Centre defaults to the origin if unwired."))
+
+register(NodeDef("Spline", "curves", "Spline",
+    inputs=[Socket("points", WIRE_VECTOR, multiple=True)],
+    outputs=_cv(),
+    code_template={"algebra": "Spline(*_curve_points([{points}]))"},
+    description="Smooth spline (B-spline) through a sequence of points. Wire "
+                "several points and/or a single list of points."))
+
+# --- curve evaluation & division (the frames layer) ---
+register(NodeDef("DivideCurve", "curves", "Divide Curve",
+    inputs=[Socket("curve", WIRE_CURVE)] + _pin("count"),
+    params=[_i("count", 8, 1, 500, label="count")],
+    outputs=[Socket("frames", WIRE_PLANE)],
+    code_template={"algebra": "_curve_frames({curve}, {count})"},
+    description="Divide a curve into N evenly spaced frames (planes) whose Z axis "
+                "is the curve tangent. Feed `frames` into ToPlane to seat profiles "
+                "for a Loft, or into Plane Origin to get the points. List output — "
+                "downstream fans out (one profile/shape per frame)."))
+
+register(NodeDef("EvaluateCurve", "curves", "Evaluate Curve",
+    inputs=[Socket("curve", WIRE_CURVE)] + _pin("t"),
+    params=[_f("t", 0.0, 0.0, 1.0, 0.01, label="t")],
+    outputs=[Socket("frame", WIRE_PLANE)],
+    code_template={"algebra": "_eval_frame({curve}, {t})"},
+    description="The frame (plane) at parameter t in [0,1] along a curve, Z aligned "
+                "to the tangent. Wire a list of t values (e.g. from Range) to get "
+                "many frames (fans out)."))
+
+register(NodeDef("CurveEndpoints", "curves", "Curve Endpoints",
+    inputs=[Socket("curve", WIRE_CURVE)],
+    outputs=[Socket("points", WIRE_VECTOR)],
+    code_template={"algebra": "_curve_endpoints({curve})"},
+    description="The start and end of a curve as a 2-item list [start, end] of "
+                "points."))
+
+register(NodeDef("CurveLength", "curves", "Curve Length",
+    inputs=[Socket("curve", WIRE_CURVE)],
+    outputs=_data("length"),
+    code_template={"algebra": "_curve_length({curve})"},
+    description="Total length of a curve (a number)."))
+
+# ===========================================================================
 # 3. Operations 2D -> 3D
 # ===========================================================================
 register(NodeDef("Extrude", "operations", "Extrude",
-    inputs=[Socket("sketch", WIRE_SKETCH)],
+    inputs=[Socket("sketch", WIRE_SKETCH)] + _pin("amount", "taper"),
     params=[_f("amount", 10, 0.1, 500), _f("taper", 0, -45, 45),
             Param("both", "bool", "both", False, widget="checkbox")],
     outputs=_geo(),
@@ -291,7 +380,7 @@ register(NodeDef("Extrude", "operations", "Extrude",
                 "extrudes symmetrically in both directions."))
 
 register(NodeDef("Revolve", "operations", "Revolve",
-    inputs=[Socket("sketch", WIRE_SKETCH)],
+    inputs=[Socket("sketch", WIRE_SKETCH)] + _pin("angle"),
     params=[_f("angle", 360, 1, 360),
             Param("axis", "select", "axis", "Y", widget="select",
                   options=["X", "Y", "Z"],
@@ -305,10 +394,23 @@ register(NodeDef("Revolve", "operations", "Revolve",
 
 register(NodeDef("Loft", "operations", "Loft",
     inputs=[Socket("sections", WIRE_SKETCH, multiple=True)],
+    params=[Param("ruled", "bool", "ruled", False, widget="checkbox")],
     outputs=_geo(),
-    code_template={"algebra": "loft([{sections}])",
-                   "builder": "loft()"},
-    description="Loft through a list of sketch sections."))
+    code_template={"algebra": "_loft([{sections}], {ruled})",
+                   "builder": "loft(ruled={ruled})"},
+    description="Loft a solid through an ordered list of sections. Wire several "
+                "sketches OR a single list (e.g. ToPlane over Divide Curve frames) "
+                "for a variable-section solid. `ruled` = straight skin between "
+                "sections instead of a smooth one."))
+
+register(NodeDef("Sweep", "operations", "Sweep",
+    inputs=[Socket("section", WIRE_SKETCH), Socket("path", WIRE_CURVE)],
+    params=[Param("is_frenet", "bool", "is_frenet", False, widget="checkbox")],
+    outputs=_geo(),
+    code_template={"algebra": "_sweep({section}, {path}, {is_frenet})"},
+    description="Sweep a profile (section) along a path curve into a solid. The "
+                "profile is auto-seated perpendicular to the path start. `is_frenet` "
+                "uses the curve's natural frame (for twisting paths)."))
 
 register(NodeDef("Thicken", "operations", "Thicken",
     inputs=[Socket("sketch", WIRE_SKETCH)],
@@ -403,14 +505,14 @@ register(NodeDef("BooleanMulti", "boolean", "Union (N)",
 # 5. Modifiers
 # ===========================================================================
 register(NodeDef("Fillet", "modifiers", "Fillet",
-    inputs=[Socket("part", WIRE_GEOMETRY)],
+    inputs=[Socket("part", WIRE_GEOMETRY)] + _pin("radius"),
     params=[_f("radius", 2, 0.05, 100)],
     outputs=_geo(),
     code_template={"algebra": "fillet({part}.edges(), radius={radius})"},
     description="Round all edges of a part."))
 
 register(NodeDef("Chamfer", "modifiers", "Chamfer",
-    inputs=[Socket("part", WIRE_GEOMETRY)],
+    inputs=[Socket("part", WIRE_GEOMETRY)] + _pin("length"),
     params=[_f("length", 1.5, 0.05, 100)],
     outputs=_geo(),
     code_template={"algebra": "chamfer({part}.edges(), length={length})"},
@@ -474,7 +576,7 @@ register(NodeDef("Shell", "modifiers", "Shell",
     description="Hollow out a part with the given wall thickness, leaving the top (+Z) face open."))
 
 register(NodeDef("Offset", "modifiers", "Offset",
-    inputs=[Socket("shape", WIRE_GEOMETRY)],
+    inputs=[Socket("shape", WIRE_GEOMETRY)] + _pin("amount"),
     params=[_f("amount", 2, -100, 100)],
     outputs=_geo(),
     code_template={"algebra": "offset({shape}, amount={amount})"},
@@ -504,7 +606,7 @@ register(NodeDef("Move", "transform", "Move",
                 "to each position (one moved copy per vector)."))
 
 register(NodeDef("Rotate", "transform", "Rotate",
-    inputs=[Socket("shape", WIRE_GEOMETRY)],
+    inputs=[Socket("shape", WIRE_GEOMETRY)] + _pin("angle"),
     params=[_f("angle", 90, -360, 360),
             Param("axis", "select", "axis", "Z", widget="select",
                   options=["X", "Y", "Z"],
@@ -514,11 +616,20 @@ register(NodeDef("Rotate", "transform", "Rotate",
     description="Rotate a shape (or a plane) around a global axis."))
 
 register(NodeDef("Scale", "transform", "Scale",
-    inputs=[Socket("shape", WIRE_GEOMETRY)],
+    inputs=[Socket("shape", WIRE_GEOMETRY)] + _pin("factor"),
     params=[_f("factor", 2, 0.01, 100)],
     outputs=_geo(),
     code_template={"algebra": "scale({shape}, {factor})"},
     description="Uniform scale."))
+
+register(NodeDef("ToPlane", "transform", "To Plane",
+    inputs=[Socket("shape", WIRE_SKETCH), Socket("plane", WIRE_PLANE)],
+    outputs=_sk(),
+    code_template={"algebra": "_to_plane({shape}, {plane})"},
+    description="Re-seat a 2D profile onto a plane/frame (its local XY comes to lie "
+                "in the plane). Wire a list of frames (Divide Curve) — and optionally "
+                "a list of profiles — and it zips one profile per frame, oriented "
+                "perpendicular to the curve, ready to Loft."))
 
 register(NodeDef("Mirror", "transform", "Mirror",
     inputs=[Socket("shape", WIRE_GEOMETRY)],
@@ -560,6 +671,13 @@ register(NodeDef("BoundingPlane", "plane", "Bounding Plane",
                 "the input geometry's bounding box and slid along its normal by "
                 "position (0=min, 0.5=centre, 1=max). A real plane on the wire — "
                 "feed it to Section or any plane input; works for any geometry."))
+
+register(NodeDef("DeconstructPlane", "plane", "Plane Origin",
+    inputs=[Socket("plane", WIRE_PLANE)],
+    outputs=[Socket("point", WIRE_VECTOR)],
+    code_template={"algebra": "_plane_origin({plane})"},
+    description="The origin point of a plane/frame. Wire a list of frames (e.g. "
+                "from Divide Curve) to get the points along the curve (fans out)."))
 
 # ===========================================================================
 # 8. Vectors & points
@@ -653,6 +771,51 @@ register(NodeDef("Concat", "data", "Concat",
     outputs=_data(),
     code_template={"algebra": "(list({a}) + list({b}))"},
     description="Join two lists end to end."))
+
+# --- domains, series, remap (parametric glue) ---
+register(NodeDef("ConstructDomain", "data", "Domain",
+    inputs=_pin("min", "max"),
+    params=[_f("min", 0, widget="input"), _f("max", 1, widget="input")],
+    outputs=_data("domain"),
+    code_template={"algebra": "[{min}, {max}]"},
+    description="A numeric domain [min, max] (a 2-item list). Feed into Remap or "
+                "Divide Domain."))
+
+register(NodeDef("Series", "data", "Series",
+    inputs=_pin("start", "step", "count"),
+    params=[_f("start", 0, widget="input"), _f("step", 1, widget="input"),
+            _i("count", 10, 0, 100000)],
+    outputs=_data(),
+    code_template={"algebra": "[{start} + i*{step} for i in range(int({count}))]"},
+    description="Arithmetic series: start, start+step, … (count items). Drives "
+                "params downstream (e.g. into Circle.radius) — fans out."))
+
+register(NodeDef("DivideDomain", "data", "Divide Domain",
+    inputs=[Socket("domain", WIRE_DATA, list_access=True)] + _pin("count"),
+    params=[_i("count", 10, 1, 100000)],
+    outputs=_data(),
+    code_template={"algebra": "_divide_domain({domain}, {count})"},
+    description="N values evenly spanning a domain [min, max], endpoints "
+                "inclusive. Fans out downstream."))
+
+register(NodeDef("Remap", "data", "Remap",
+    inputs=[Socket("value", WIRE_DATA),
+            Socket("source", WIRE_DATA, required=False, list_access=True),
+            Socket("target", WIRE_DATA, required=False, list_access=True)],
+    params=[_f("source_min", 0, widget="input"), _f("source_max", 1, widget="input"),
+            _f("target_min", 0, widget="input"), _f("target_max", 10, widget="input")],
+    outputs=_data(),
+    code_template={"algebra": "_remap({value}, {source}, {target}, {source_min}, "
+                              "{source_max}, {target_min}, {target_max})"},
+    description="Remap value(s) from a source range to a target range. Wire a "
+                "[min,max] domain into source/target to override the widgets. Fans "
+                "out over a list of values (Series → Remap → radius)."))
+
+register(NodeDef("Bounds", "data", "Bounds",
+    inputs=[Socket("list", WIRE_DATA, list_access=True)],
+    outputs=_data("domain"),
+    code_template={"algebra": "_bounds({list})"},
+    description="The [min, max] domain spanning a list of numbers."))
 
 # ===========================================================================
 # 10. Math
