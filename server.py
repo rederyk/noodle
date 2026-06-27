@@ -157,9 +157,8 @@ def require_project(name: str) -> Path:
 # Health
 # ---------------------------------------------------------------------------
 @app.get("/health")
-@app.get("/")
 async def health():
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": APP_VERSION}
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +352,15 @@ async def list_feedback():
 # ---------------------------------------------------------------------------
 # WebUI
 # ---------------------------------------------------------------------------
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    page = Path("/app/webui/home.html")
+    if page.exists():
+        return page.read_text()
+    # Fall back to the editor so a fresh checkout without home.html still lands somewhere usable.
+    return HTMLResponse('<h1>noodle</h1><p><a href="/nodes">Open the node editor</a></p>')
+
+
 @app.get("/ui", response_class=HTMLResponse)
 async def webui():
     index = Path("/app/webui/index.html")

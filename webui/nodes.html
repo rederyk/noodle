@@ -2593,9 +2593,15 @@ document.addEventListener('keydown', e=>{
     log(`registered ${defs.length} node types`);
     await refreshGraphList();
     refreshCopilotStatus();
-    // restore last session
-    const last = localStorage.getItem('cadstudio:last');
-    if (last && projectNames.includes(last)) await openGraph(last);
+    // open from the landing page (?p=name / ?new=1), else restore last session
+    const qs = new URLSearchParams(location.search);
+    const want = qs.get('p');
+    if (qs.has('new')) { promptNewGraph(); }
+    else if (want && projectNames.includes(want)) { await openGraph(want); }
+    else {
+      const last = localStorage.getItem('cadstudio:last');
+      if (last && projectNames.includes(last)) await openGraph(last);
+    }
     setStatus('ready','ok');
   }catch(e){ setStatus('init failed','err'); log('init: '+e.message,'err'); }
   // background loops
