@@ -32,7 +32,7 @@ docker logs -f cad-studio         # tail logs
   restarted to re-import them.
 
 **Copilot LLM backend** (env in `docker-compose.yml`): defaults to a free local
-**Ollama** at `host.docker.internal:11434` (`COPILOT_MODEL`, e.g. `qwen3.5:cloud`).
+**Ollama** at `host.docker.internal:11434` (`COPILOT_MODEL`, e.g. `qwen2.5`).
 For a keyed OpenAI-compatible provider instead, set `COPILOT_BASE_URL` +
 `COPILOT_API_KEY` + `COPILOT_MODEL` (Groq / OpenRouter / Gemini's OpenAI endpoint…).
 

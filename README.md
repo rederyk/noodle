@@ -16,7 +16,8 @@ worker, and streams back an STL plus a live mesh preview for the 3D viewport.
 The same operations are exposed over an **MCP server**, so any MCP-capable AI
 client can read and build graphs too.
 
-![node editor](docs/screenshot.png) <!-- add a screenshot/gif here -->
+<!-- Add a screenshot or gif of the node editor here, e.g.:
+![node editor](docs/screenshot.png) -->
 
 ## Features
 
@@ -31,20 +32,54 @@ client can read and build graphs too.
 - **MCP server**: drive the same operations from Claude or any MCP client.
 - **Live per-node preview** with a per-node "eye" (auto / on / off).
 
-## Quick start (Docker — recommended)
+## Install & run
+
+noodle runs in **Docker**, so it works the same on **Windows, Linux and macOS**.
+The only thing to install is Docker itself; the B-Rep kernel (OpenCASCADE) ships
+inside the build123d wheel — **nothing to compile**.
+
+### Step 1 — install Docker (once)
+
+- **Windows** → [Docker Desktop](https://docs.docker.com/desktop/install/windows-install/)
+  (needs Windows 10/11 + WSL2; the installer enables it). Launch it once and wait
+  until it shows **“Running”**.
+- **macOS** → [Docker Desktop](https://docs.docker.com/desktop/install/mac-install/).
+- **Linux** → [Docker Engine](https://docs.docker.com/engine/install/) (or Docker Desktop).
+
+### Step 2 — get noodle and start it
+
+Download this repository (green **“Code → Download ZIP”** button on GitHub, then
+unzip — no git needed), or clone it:
 
 ```bash
 git clone https://github.com/<you>/cad-studio.git
 cd cad-studio
-docker compose up -d --build
 ```
 
-Open the node editor at <http://localhost:8090/nodes> (a read-only build123d
-code view of any graph lives at `/ui`). The B-Rep kernel (OpenCASCADE) ships
-inside the build123d wheel — **nothing to compile**.
+Then start it with **one click / one command**:
 
-To enable the AI copilot, copy `.env.example` to `.env` and configure a provider
-(or run a local [Ollama](https://ollama.com) with a tool-capable model).
+- **Windows** → double-click **`start.bat`**
+- **Linux / macOS** → run **`./start.sh`** (or double-click it)
+- **or, any OS, from a terminal** → `docker compose up -d --build`
+
+The first run downloads ~1 GB and takes a few minutes; afterwards it starts in
+seconds. The launcher waits until the app is healthy and opens your browser at
+the node editor: <http://localhost:8090/nodes> (a read-only build123d code view
+of any graph lives at `/ui`).
+
+Stop it any time with `docker compose down`.
+
+> 💡 **No Docker / more advanced?** See [_Develop without Docker_](#develop-without-docker)
+> for a host virtualenv. Docker is the supported path for now; a standalone
+> desktop app is planned (`DESIGN_APP_SHELL.md`).
+
+### Optional — AI copilot & agents
+
+To enable the in-app AI copilot, copy `.env.example` to `.env` and configure a
+provider (or run a local [Ollama](https://ollama.com) with a tool-capable model).
+
+To drive noodle from an external AI agent (Claude Code, openclaw, Claude
+Desktop…) via MCP or HTTP, see **[`AGENTS.md`](AGENTS.md)**.
 
 > ⚠️ **Security**: the engine executes graph code (including `CodeBlock` /
 > `Expression` nodes) as **arbitrary Python in a subprocess** and is **not yet
