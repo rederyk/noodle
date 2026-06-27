@@ -6,7 +6,6 @@ services:
       - "8090:8090"
     volumes:
       - ./projects:/app/projects
-      - ./backends:/app/backends:ro
       - ./cad_nodes:/app/cad_nodes:ro
       - ./webui:/app/webui:ro
       - ./server.py:/app/server.py:ro

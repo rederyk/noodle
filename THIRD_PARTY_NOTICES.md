@@ -40,14 +40,5 @@ LGPL-2.1 this permits cad-studio to remain MIT-licensed, provided we:
 | three.js | 3D viewport | MIT |
 | litegraph.js (node-editor pattern) | node graph UI | MIT |
 
-## Optional / legacy backend
-
-| Component | Role | License |
-|---|---|---|
-| **OpenSCAD** (CLI binary, used by `backends/openscad.py`) | alternate/legacy backend | **GPL-2.0-or-later** |
-
-OpenSCAD is **not part of the MIT-licensed core** and is invoked as a separate
-process ("mere aggregation"), so it does not impose GPL on cad-studio. It is
-**not required** for the default build123d pipeline. If you redistribute an image
-that bundles the OpenSCAD binary, that binary remains under GPL-2.0+ and you must
-honor its terms for that component; cad-studio's own source stays MIT.
+The geometry pipeline is build123d-only; there is no GPL component in the stack
+(the former OpenSCAD backend has been removed).

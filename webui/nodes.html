@@ -95,29 +95,196 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 .picker-count{font-size:12px;color:var(--orange);font-weight:600;}
 .picker-view{flex:1;position:relative;min-height:0;}
 #picker-canvas{width:100%;height:100%;display:block;cursor:crosshair;}
+
+/* ============================================================= *
+ *  App shell redesign — zones, button taxonomy, status, system  *
+ * ============================================================= */
+:root{ --accent-edit:#a855f7; --sys:#7c8aa5; --warn:#f59e0b; --err:#e94560; --ok:#2dd4a0; }
+/* toolbar zones */
+.tb-zone{display:flex;align-items:center;gap:6px;}
+.tb-sep{width:1px;align-self:stretch;background:var(--border);margin:8px 4px;}
+/* button taxonomy ------------------------------------------------ */
+/* (base .tb-btn / .tb-btn.primary already defined above)           */
+.tb-btn.toggle{position:relative;padding-left:24px;}
+.tb-btn.toggle::before{content:"";position:absolute;left:9px;top:50%;transform:translateY(-50%);
+  width:8px;height:8px;border-radius:50%;border:1px solid var(--text-dim);background:transparent;}
+.tb-btn.toggle.on{border-color:var(--accent);color:var(--text);background:var(--bg-2);}
+.tb-btn.toggle.on::before{background:var(--accent);border-color:var(--accent);box-shadow:0 0 6px var(--accent);}
+.tb-btn.sys:hover{border-color:var(--sys);color:#dbe2ec;}
+.tb-btn.danger:hover{background:var(--err);border-color:var(--err);color:#fff;}
+.tb-icon{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:28px;
+  padding:0 7px;border:1px solid var(--border);border-radius:5px;background:var(--bg-3);color:var(--text);
+  font-size:12px;cursor:pointer;transition:all .15s;text-decoration:none;}
+.tb-icon:hover{border-color:var(--text-dim);background:var(--bg-2);}
+.tb-btn:disabled,.tb-icon:disabled{opacity:.4;cursor:not-allowed;}
+.tb-btn:focus-visible,.tb-icon:focus-visible,.menu-item:focus-visible{outline:2px solid var(--accent-hover);outline-offset:1px;}
+.caret{font-size:9px;color:var(--text-dim);margin-left:2px;}
+/* project switcher button */
+#btn-project{max-width:220px;}
+#project-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:170px;}
+/* document status pill */
+.doc-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--text-dim);padding:0 4px;cursor:default;}
+.doc-status .dot{width:8px;height:8px;border-radius:50%;background:var(--text-dim);flex-shrink:0;}
+.doc-status.saved   .dot{background:var(--ok);}      .doc-status.saved   .lbl{color:var(--ok);}
+.doc-status.dirty   .dot{background:var(--warn);}    .doc-status.dirty   .lbl{color:var(--warn);}
+.doc-status.saving  .dot{background:var(--blue);animation:pulse 1s infinite;}
+.doc-status.failed  .dot{background:var(--err);}     .doc-status.failed  .lbl{color:var(--err);cursor:pointer;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
+/* backend health dot */
+.health-dot{width:9px;height:9px;border-radius:50%;background:var(--text-dim);flex-shrink:0;cursor:default;
+  box-shadow:0 0 0 0 transparent;transition:background .2s;}
+.health-dot.online {background:var(--ok);box-shadow:0 0 6px var(--ok);}
+.health-dot.busy   {background:var(--warn);animation:pulse 1s infinite;}
+.health-dot.offline{background:var(--err);animation:pulse .8s infinite;}
+/* popover menus (project / system) */
+.menu{position:absolute;z-index:200;min-width:208px;background:var(--bg-2);border:1px solid var(--border);
+  border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.5);padding:5px;display:none;}
+.menu.open{display:block;}
+.menu-item{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:transparent;border:none;
+  color:var(--text);font-size:12px;padding:7px 9px;border-radius:5px;cursor:pointer;font-family:var(--font);}
+.menu-item:hover{background:var(--bg-3);}
+.menu-item.danger{color:var(--err);} .menu-item.danger:hover{background:#3a1422;}
+.menu-item .k{margin-left:auto;font-size:10px;color:var(--text-dim);}
+.menu-item .ic{width:16px;text-align:center;color:var(--text-dim);}
+.menu-sep{height:1px;background:var(--border);margin:5px 4px;}
+.menu-head{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);padding:4px 9px 2px;}
+.menu-search{width:100%;margin:2px 0 4px;background:var(--bg-3);border:1px solid var(--border);border-radius:5px;
+  color:var(--text);padding:6px 8px;font-size:12px;}
+.menu-search:focus{outline:none;border-color:var(--accent);}
+.menu-list{max-height:240px;overflow:auto;}
+.menu-status{display:flex;align-items:center;gap:8px;padding:6px 9px;font-size:11px;color:var(--text-dim);}
+/* modal dialog (restart confirm / draft restore / shortcuts) */
+.modal-overlay{position:fixed;inset:0;z-index:300;background:rgba(5,7,11,.7);display:none;
+  align-items:center;justify-content:center;}
+.modal-overlay.open{display:flex;}
+.modal{background:var(--bg-2);border:1px solid var(--border);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.6);
+  width:min(540px,92vw);max-height:86vh;overflow:auto;padding:20px 22px;}
+.modal h3{font-size:15px;color:var(--text);margin-bottom:10px;}
+.modal p{font-size:12.5px;color:var(--text-dim);line-height:1.5;margin-bottom:8px;}
+.modal .cols{display:flex;gap:14px;margin:12px 0;}
+.modal .col{flex:1;background:var(--bg-1);border:1px solid var(--border);border-radius:7px;padding:10px 12px;font-size:12px;}
+.modal .col b{color:var(--text);display:block;margin-bottom:4px;}
+.modal .col span{color:var(--text-dim);display:block;line-height:1.6;}
+.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;}
+.kbd-grid{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:12px;}
+.kbd-grid kbd{background:var(--bg-3);border:1px solid var(--border);border-radius:4px;padding:1px 6px;
+  font-family:var(--mono);font-size:11px;color:var(--text);}
+.kbd-grid span{color:var(--text-dim);}
+/* toasts */
+.toast-wrap{position:fixed;right:14px;bottom:34px;z-index:400;display:flex;flex-direction:column;gap:8px;align-items:flex-end;}
+.toast{background:var(--bg-2);border:1px solid var(--border);border-left-width:3px;border-radius:7px;
+  padding:9px 12px;font-size:12px;color:var(--text);box-shadow:0 8px 24px rgba(0,0,0,.5);max-width:340px;
+  display:flex;gap:9px;align-items:flex-start;animation:toastIn .18s ease;}
+.toast.info{border-left-color:var(--blue);} .toast.success{border-left-color:var(--ok);}
+.toast.warn{border-left-color:var(--warn);} .toast.error{border-left-color:var(--err);}
+.toast .x{margin-left:6px;color:var(--text-dim);cursor:pointer;}
+.toast .act{color:var(--accent-hover);cursor:pointer;text-decoration:underline;font-size:11px;}
+@keyframes toastIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}
+/* system banner (restart in progress / backend offline) */
+.sys-banner{position:fixed;top:48px;left:0;right:0;z-index:180;display:none;align-items:center;gap:10px;
+  background:#1c2536;border-bottom:1px solid var(--sys);color:#cdd6e3;font-size:12px;padding:7px 14px;}
+.sys-banner.open{display:flex;}
+.sys-banner .spin{width:13px;height:13px;border:2px solid var(--sys);border-top-color:transparent;border-radius:50%;
+  animation:spin .8s linear infinite;flex-shrink:0;}
+@keyframes spin{to{transform:rotate(360deg);}}
+/* viewport overlay tools (Fit / Grid / Drag) */
+.vp-tools{position:absolute;bottom:8px;left:8px;z-index:6;display:flex;gap:4px;
+  background:var(--bg-1);border:1px solid var(--border);border-radius:7px;padding:3px;}
+.vp-tools .tb-icon{min-width:28px;height:24px;background:transparent;border:none;}
+.vp-tools .tb-icon:hover{background:var(--bg-3);}
+.vp-tools .tb-icon.on{background:var(--accent);color:#fff;}
+/* contextual gizmo toolbar (over the viewport during Edit on canvas) */
+#gizmo-bar{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:7;display:none;
+  align-items:center;gap:6px;background:var(--bg-1);border:1px solid var(--accent-edit);border-radius:8px;
+  padding:5px 8px;box-shadow:0 6px 20px rgba(0,0,0,.5);}
+#gizmo-bar.open{display:flex;}
+#gizmo-bar .lbl{font-size:11px;color:var(--accent-edit);font-weight:600;margin-right:2px;}
+#gizmo-bar .tb-btn{padding:4px 9px;}
+#gizmo-bar .tb-btn.on{background:var(--accent-edit);border-color:var(--accent-edit);color:#fff;}
+/* command palette */
+#cmdk{position:fixed;inset:0;z-index:350;background:rgba(5,7,11,.55);display:none;justify-content:center;align-items:flex-start;}
+#cmdk.open{display:flex;}
+.cmdk-box{margin-top:12vh;width:min(560px,92vw);background:var(--bg-2);border:1px solid var(--border);
+  border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.6);overflow:hidden;}
+.cmdk-input{width:100%;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--text);
+  font-size:14px;padding:13px 16px;font-family:var(--font);}
+.cmdk-input:focus{outline:none;}
+.cmdk-list{max-height:50vh;overflow:auto;padding:6px;}
+.cmdk-item{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:6px;cursor:pointer;font-size:12.5px;color:var(--text);}
+.cmdk-item.sel{background:var(--bg-3);}
+.cmdk-item .ic{width:18px;text-align:center;color:var(--text-dim);}
+.cmdk-item .k{margin-left:auto;font-size:10px;color:var(--text-dim);font-family:var(--mono);}
+.cmdk-foot{padding:7px 12px;border-top:1px solid var(--border);font-size:10px;color:var(--text-dim);}
+/* unified console */
+.console-bar{display:flex;align-items:center;gap:8px;padding:5px 8px;border-bottom:1px solid var(--border);
+  font-size:11px;flex-wrap:wrap;}
+.console-bar select,.console-bar label{font-size:11px;color:var(--text-dim);}
+.console-bar select{background:var(--bg-3);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 5px;}
+.console-bar .cbtn{background:var(--bg-3);border:1px solid var(--border);color:var(--text-dim);border-radius:4px;
+  padding:2px 8px;font-size:11px;cursor:pointer;}
+.console-bar .cbtn:hover{color:var(--text);border-color:var(--text-dim);}
+.console-bar .cbtn.on{color:var(--accent);border-color:var(--accent);}
+.console-bar .lvl{display:inline-flex;gap:7px;align-items:center;}
+.console-bar .lvl label{display:inline-flex;gap:3px;align-items:center;cursor:pointer;}
+#console-body{flex:1;overflow:auto;padding:4px 0;font-family:var(--mono);font-size:11px;}
+.log-line{display:flex;gap:8px;padding:1px 10px;border-left:3px solid transparent;white-space:pre-wrap;word-break:break-word;}
+.log-line .lt{color:var(--text-dim);flex-shrink:0;}
+.log-line .ls{color:var(--text-dim);flex-shrink:0;}
+.log-line.client{border-left-color:var(--blue);}
+.log-line.backend{border-left-color:var(--ok);}
+.log-line.warn{color:var(--warn);} .log-line.error{color:var(--accent-hover);border-left-color:var(--err);}
+.log-line .node-link{color:var(--accent-hover);cursor:pointer;text-decoration:underline;}
+.tab-badge{font-size:9px;background:var(--err);color:#fff;border-radius:8px;padding:0 5px;margin-left:3px;display:none;}
+.tab-badge.visible{display:inline;}
 </style>
 </head>
 <body>
 <div class="app">
   <div class="toolbar">
-    <h1>CAD Studio</h1>
-    <select id="sel-graph" title="Open graph"><option value="">— open graph —</option></select>
-    <input id="inp-name" placeholder="graph name" style="width:130px">
-    <button class="tb-btn" onclick="newGraph()">＋ New</button>
-    <button class="tb-btn" onclick="saveGraph()">💾 Save</button>
-    <button class="tb-btn primary" onclick="runGraph()">▶ Run</button>
-    <button class="tb-btn" id="btn-live" onclick="toggleLive()" title="Auto-run on every change">○ Live</button>
-    <button class="tb-btn" id="btn-fast" onclick="toggleFastDrag()" title="Drag Move/Rotate/Scale = instant local preview, exact on release">○ Drag</button>
-    <button class="tb-btn" id="btn-snap" onclick="toggleGizmoSnap()" title="Snap the on-canvas gizmo (1mm · 15° · 0.1×)" style="display:none">⌗ Snap</button>
-    <button class="tb-btn" id="btn-space" onclick="toggleGizmoSpace()" title="Gizmo orientation: world / local axes" style="display:none">🌐 World</button>
-    <button class="tb-btn" onclick="frameView()" title="Frame geometry (F · dbl-click viewer)">⛶ Fit</button>
-    <button class="tb-btn primary" id="btn-grid" onclick="toggleGrid()" title="Show/hide the grid">▦ Grid</button>
-    <button class="tb-btn" onclick="exportStep()">⬇ STEP</button>
-    <span class="hint">dbl-click = search · Ctrl+G group · Ctrl+B bypass · Del delete · Ctrl+C/V copy</span>
+    <!-- ZONA PROGETTO / SESSIONE -->
+    <div class="tb-zone">
+      <h1>CAD Studio</h1>
+      <div class="menu-wrap" style="position:relative">
+        <button class="tb-btn" id="btn-project" onclick="toggleProjectMenu(event)" title="Open / manage projects">
+          <span id="project-name">— no graph —</span><span class="caret">▾</span>
+        </button>
+        <div class="menu" id="project-menu">
+          <input class="menu-search" id="project-search" placeholder="Search projects…" oninput="renderProjectList()">
+          <div class="menu-list" id="project-list"></div>
+          <div class="menu-sep"></div>
+          <button class="menu-item" onclick="promptNewGraph()"><span class="ic">＋</span>New project…<span class="k">Ctrl+N</span></button>
+          <button class="menu-item danger" id="mi-delete" onclick="deleteCurrentGraph()"><span class="ic">🗑</span>Delete current…</button>
+        </div>
+      </div>
+      <span class="doc-status" id="doc-status" title="Document status"><span class="dot"></span><span class="lbl">No graph</span></span>
+    </div>
+    <div class="tb-sep"></div>
+    <!-- ZONA ESECUZIONE -->
+    <div class="tb-zone">
+      <button class="tb-btn primary" id="btn-run" onclick="runGraph()" title="Run the graph (Ctrl+Enter)">▶ Run</button>
+      <button class="tb-btn toggle" id="btn-live" onclick="toggleLive()" title="Auto-run on every change">Live</button>
+      <div class="status-pill" id="status">Ready</div>
+      <span class="health-dot" id="health" title="Backend health"></span>
+    </div>
     <div class="spacer"></div>
-    <a class="tb-btn" href="/ui">Code UI</a>
-    <div class="status-pill" id="status">Ready</div>
+    <!-- ZONA SISTEMA / UTILITY -->
+    <div class="tb-zone">
+      <button class="tb-icon" onclick="openPalette()" title="Command palette (Ctrl+K)">⌘K</button>
+      <button class="tb-btn" onclick="exportStep()" title="Export the model as STEP">⬇ STEP</button>
+      <div class="menu-wrap" style="position:relative">
+        <button class="tb-icon sys" id="btn-system" onclick="toggleSystemMenu(event)" title="System">⚙</button>
+        <div class="menu" id="system-menu" style="right:0">
+          <div class="menu-status"><span class="health-dot" id="health-menu"></span><span id="health-text">Backend: …</span></div>
+          <div class="menu-sep"></div>
+          <button class="menu-item" onclick="openConsole()"><span class="ic">⛌</span>Open backend console</button>
+          <button class="menu-item" onclick="confirmRestart()"><span class="ic">⟳</span>Restart backend…</button>
+        </div>
+      </div>
+      <a class="tb-icon" href="/ui" title="Open the Code UI">⧉</a>
+      <button class="tb-icon" onclick="openShortcuts()" title="Keyboard shortcuts">?</button>
+    </div>
   </div>
+  <div class="sys-banner" id="sys-banner"></div>
 
   <div class="workspace">
     <div class="graph-pane"><canvas id="graph-canvas"></canvas></div>
@@ -127,19 +294,50 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
         <canvas id="viewer-canvas"></canvas>
         <div class="viewer-stats" id="viewer-stats"></div>
         <div class="viewer-legend" id="viewer-legend"></div>
+        <!-- contextual gizmo toolbar (Edit on canvas) -->
+        <div id="gizmo-bar">
+          <span class="lbl" id="gizmo-bar-label">Editing</span>
+          <button class="tb-btn" id="btn-snap" onclick="toggleGizmoSnap()" title="Snap the gizmo (1mm · 15° · 0.1×)">⌗ Snap</button>
+          <button class="tb-btn" id="btn-space" onclick="toggleGizmoSpace()" title="Gizmo orientation: world / local axes">🌐 World</button>
+          <button class="tb-btn" onclick="exitGizmoEdit()" title="Finish editing (Esc)">✓ Done</button>
+        </div>
+        <!-- view tools overlay -->
+        <div class="vp-tools">
+          <button class="tb-icon" onclick="frameView()" title="Fit to view (F · dbl-click)">⛶</button>
+          <button class="tb-icon on" id="btn-grid" onclick="toggleGrid()" title="Show / hide grid">▦</button>
+          <button class="tb-icon" id="btn-fast" onclick="toggleFastDrag()" title="Drag Move/Rotate/Scale = instant local preview">✥</button>
+        </div>
       </div>
       <div class="panel">
         <div class="tabs">
           <div class="tab active" data-tab="code" onclick="showTab('code')">Code</div>
           <div class="tab" data-tab="view" onclick="showTab('view')">View / Data</div>
           <div class="tab" data-tab="panels" onclick="showTab('panels')">Panels <span id="panel-count" class="panel-badge"></span></div>
-          <div class="tab" data-tab="log" onclick="showTab('log')">Log</div>
+          <div class="tab" data-tab="log" onclick="showTab('log')">Console <span id="console-badge" class="tab-badge"></span></div>
           <div class="tab" data-tab="ai" onclick="showTab('ai')">🤖 AI</div>
         </div>
         <div class="tab-body code" id="body-code">// Run the graph to generate build123d code</div>
         <div class="tab-body" id="body-view" style="display:none">No execution yet.</div>
         <div class="tab-body" id="body-panels" style="display:none">No Panel nodes. Add a Panel node and wire a value into it.</div>
-        <div class="tab-body" id="body-log" style="display:none"></div>
+        <div id="body-log" style="display:none;flex:1;flex-direction:column;min-height:0;overflow:hidden;">
+          <div class="console-bar">
+            <label>Source
+              <select id="con-source" onchange="renderConsole()">
+                <option value="all">All</option><option value="client">Client</option><option value="backend">Backend</option>
+              </select>
+            </label>
+            <span class="lvl">Level
+              <label><input type="checkbox" id="lvl-info" checked onchange="renderConsole()">info</label>
+              <label><input type="checkbox" id="lvl-warn" checked onchange="renderConsole()">warn</label>
+              <label><input type="checkbox" id="lvl-error" checked onchange="renderConsole()">error</label>
+            </span>
+            <span class="spacer" style="flex:1"></span>
+            <button class="cbtn" id="con-pause" onclick="toggleConsolePause()" title="Pause auto-scroll">⏸ Pause</button>
+            <button class="cbtn" onclick="clearConsole()" title="Clear">🗑 Clear</button>
+            <button class="cbtn" onclick="copyConsole()" title="Copy visible lines">⧉ Copy</button>
+          </div>
+          <div id="console-body"></div>
+        </div>
         <div id="body-ai" style="display:none">
           <div class="ai-hint" id="ai-hint">Copilot: describe what to build (e.g. "a 20mm cube with its top edges rounded 2mm").</div>
           <div class="ai-msgs" id="ai-msgs"></div>
@@ -180,10 +378,9 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 
 <script type="module">
 import * as THREE from 'three';
-import { STLLoader } from 'three/addons/loaders/STLLoader.js';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
-import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';        // sub-shape picker modal
+import { TransformControls } from 'three/addons/controls/TransformControls.js'; // on-canvas gizmo
+import { CadViewer, PALETTE, nodeNum, meshFromData } from '/static/viewer.js';   // shared main viewport
 
 const API = '';
 const LiteGraph = window.LiteGraph;
@@ -191,6 +388,7 @@ let catalog = {};          // type -> NodeDef
 let lgraph, lcanvas;
 let currentName = null;
 let nodeIndex = {};        // our graph node-id -> Litegraph node (set on serialize)
+let nodeByGraphId = {};    // on-disk graph id -> node, for cross-view linking (/ui)
 let highlighted = [];      // nodes currently flagged with an error
 let liveMode = false;      // auto-run on every change
 let liveTimer = null;      // debounce handle
@@ -230,16 +428,76 @@ const INPUT_ACCEPTS = {
 };
 
 function log(msg, cls=''){
-  const el = document.getElementById('body-log');
-  const t = new Date().toLocaleTimeString();
-  el.textContent += `[${t}] ${msg}\n`;
-  el.scrollTop = el.scrollHeight;
+  pushLog('client', cls==='err' ? 'error' : (cls||'info'), msg);
 }
 function setStatus(msg, cls=''){
   document.getElementById('sb').textContent = msg;
   const p = document.getElementById('status'); p.textContent = msg;
   p.className = 'status-pill' + (cls?' '+cls:'');
 }
+
+/* ============================================================ *
+ *  Unified console (client + backend), source/level filtered   *
+ * ============================================================ */
+let CONSOLE = [];                 // {ts, source, level, msg}
+let consolePaused = false;
+let consoleUnread = 0;
+let clientSeq = 0;
+function pushLog(source, level, msg){
+  if (level !== 'info' && level !== 'warn' && level !== 'error') level = 'info';
+  CONSOLE.push({ts: Date.now()/1000, source, level, msg: String(msg)});
+  if (CONSOLE.length > 1500) CONSOLE.splice(0, CONSOLE.length - 1500);
+  if (level === 'error' && document.querySelector('.tab[data-tab="log"]:not(.active)')){
+    consoleUnread++; updateConsoleBadge();
+  }
+  appendConsoleLine(CONSOLE[CONSOLE.length-1]);
+}
+function logVisible(e){
+  const src = document.getElementById('con-source'); const sv = src ? src.value : 'all';
+  if (sv !== 'all' && e.source !== sv) return false;
+  const on = {info:'lvl-info', warn:'lvl-warn', error:'lvl-error'}[e.level];
+  const cb = document.getElementById(on);
+  return cb ? cb.checked : true;
+}
+function lineHTML(e){
+  const t = new Date(e.ts*1000).toLocaleTimeString();
+  let msg = e.msg.replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  msg = msg.replace(/\bnode (n[\w-]+)\b/g, (m,id)=>`node <span class="node-link" data-node="${id}">${id}</span>`);
+  return `<div class="log-line ${e.source} ${e.level}"><span class="lt">${t}</span>`+
+         `<span class="ls">·${e.source}·</span><span class="lm">${msg}</span></div>`;
+}
+function appendConsoleLine(e){
+  const body = document.getElementById('console-body');
+  if (!body || !logVisible(e)) return;
+  body.insertAdjacentHTML('beforeend', lineHTML(e));
+  if (!consolePaused) body.scrollTop = body.scrollHeight;
+}
+window.renderConsole = function(){
+  const body = document.getElementById('console-body'); if (!body) return;
+  body.innerHTML = CONSOLE.filter(logVisible).map(lineHTML).join('');
+  if (!consolePaused) body.scrollTop = body.scrollHeight;
+};
+window.toggleConsolePause = function(){
+  consolePaused = !consolePaused;
+  document.getElementById('con-pause').classList.toggle('on', consolePaused);
+  document.getElementById('con-pause').textContent = consolePaused ? '▶ Resume' : '⏸ Pause';
+};
+window.clearConsole = function(){ CONSOLE = []; renderConsole(); };
+window.copyConsole = function(){
+  const txt = CONSOLE.filter(logVisible)
+    .map(e=>`[${new Date(e.ts*1000).toLocaleTimeString()}] ${e.source} ${e.level.toUpperCase()}  ${e.msg}`).join('\n');
+  navigator.clipboard.writeText(txt).then(()=>toast('success','Console copied'));
+};
+function updateConsoleBadge(){
+  const b = document.getElementById('console-badge'); if (!b) return;
+  b.textContent = consoleUnread; b.classList.toggle('visible', consoleUnread>0);
+}
+window.openConsole = function(){ closeMenus(); showTab('log'); };
+// click a node id in a backend error → select + center it
+document.addEventListener('click', e=>{
+  const nl = e.target.closest && e.target.closest('.node-link');
+  if (nl){ try{ toGraphJSON(currentName||'_'); }catch(_){}; selectNodeById(nl.dataset.node); }
+});
 
 // ── register every catalog node as a Litegraph type ──
 function registerNodes(defs){
@@ -279,6 +537,12 @@ function registerNodes(defs){
         const pb = this.addWidget('button', '✎ Edit text', null, ()=> openPanelEditor(this));
         pb.isPanelBtn = true;
       }
+      // CodeBlock: a real multi-line editor + live `#@param` widgets/sockets.
+      if (def.type === 'CodeBlock'){
+        const cb = this.addWidget('button', '✎ Edit code', null, ()=> openCodeEditor(this));
+        cb.isCodeBtn = true;
+        syncCodeblockParams(this);   // surface any #@param in the default code
+      }
       // Eye on every geometry node (auto/on/off). Data/math/panel nodes can't draw.
       const ow = (def.outputs||[])[0];
       if ((ow && ['geometry','sketch','curve'].includes(ow.wire_type)) || def.type === 'CodeBlock')
@@ -306,6 +570,7 @@ function registerNodes(defs){
       // "stops at 2" bug).
       this.onConnectionsChange = function(type, index, connected, link_info){
         if (type !== LiteGraph.INPUT || loadingGraph) return;
+        if (this.cadType === 'CodeBlock'){ const s = this; setTimeout(()=> updateCbWired(s), 0); }
         const slot = this.inputs[index];
         const name = slot && (slot.cadName || slot.name);
         const info = name && this.cadInputs[name];
@@ -390,7 +655,11 @@ function addWidget(node, p){
   }
   if (p.type === 'str'){
     node.properties[p.name] = p.default ?? '';
-    const w = node.addWidget('text', p.name, p.default ?? '', v=>{ node.properties[p.name] = v; onParamChange(node); });
+    const w = node.addWidget('text', p.name, p.default ?? '', v=>{
+      node.properties[p.name] = v;
+      if (node.cadType === 'CodeBlock' && p.name === 'code') syncCodeblockParams(node);
+      onParamChange(node);
+    });
     w.cadParam = p.name; return;
   }
 
@@ -428,6 +697,202 @@ function addEyeWidget(node){
     window.runGraph();   // a view command: apply immediately, regardless of Live
   });
   w.isEye = true;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// CodeBlock parametric: a `#@param` declaration in the code becomes a live
+// widget on the node AND a same-named input socket (params-as-inputs, fan-out).
+// The JS parser mirrors transpiler.parse_codeblock_params (the backend is the
+// source of truth at execution); kept in sync like WIRE_COLORS / INPUT_ACCEPTS.
+// ════════════════════════════════════════════════════════════════════
+function parseCbParams(code){
+  const out = [], seen = new Set();
+  for (const line of String(code||'').split('\n')){
+    const d = parseCbLine(line);
+    if (d && !seen.has(d.name)){ seen.add(d.name); out.push(d); }
+  }
+  return out;
+}
+function parseCbLine(line){
+  const mi = line.indexOf('#@param');
+  if (mi < 0) return null;
+  const codePart = line.slice(0, mi);
+  const eq = codePart.indexOf('=');
+  if (eq < 0) return null;
+  const name = codePart.slice(0, eq).trim();
+  const rhs  = codePart.slice(eq + 1).trim();
+  if (!/^[A-Za-z_]\w*$/.test(name)) return null;
+  const def = parseCbLiteral(rhs);
+  if (def === undefined) return null;
+  const spec = parseCbAnnot(line.slice(mi + 7));
+  let kind = spec.type;
+  if (!kind){
+    if (rhs === 'True' || rhs === 'False') kind = 'bool';
+    else if (/^-?\d+$/.test(rhs)) kind = 'int';
+    else if (/^-?\d*\.\d+$|^-?\d+\.\d*$/.test(rhs)) kind = 'float';
+    else kind = 'str';
+  }
+  return {name, type:kind, default:def,
+          min:spec.min ?? null, max:spec.max ?? null,
+          step:spec.step ?? null, options:spec.options ?? null};
+}
+function parseCbLiteral(rhs){
+  if (rhs === 'True')  return true;
+  if (rhs === 'False') return false;
+  if (/^-?\d+$/.test(rhs)) return parseInt(rhs, 10);
+  if (/^-?\d*\.\d+$|^-?\d+\.\d*$/.test(rhs)) return parseFloat(rhs);
+  const m = rhs.match(/^(['"])([\s\S]*)\1$/);
+  if (m) return m[2];
+  return undefined;
+}
+function parseCbAnnot(s){
+  const spec = {};
+  for (const tok of s.trim().split(/\s+/)){
+    if (!tok) continue;
+    const i = tok.indexOf('=');
+    if (i >= 0){
+      const k = tok.slice(0, i), v = tok.slice(i + 1);
+      if (k === 'min' || k === 'max' || k === 'step'){
+        const f = parseFloat(v); if (!isNaN(f)) spec[k] = f;
+      } else if (k === 'select' || k === 'options'){
+        const o = v.split(',').filter(Boolean);
+        if (o.length){ spec.options = o; if (!spec.type) spec.type = 'select'; }
+      }
+    } else if (['int','float','bool','str','select'].includes(tok)){
+      spec.type = tok;
+    }
+  }
+  return spec;
+}
+
+function cbClamp(v, d){
+  v = parseFloat(v);
+  if (isNaN(v)) v = (typeof d.default === 'number') ? d.default : 0;
+  if (d.min != null) v = Math.max(d.min, v);
+  if (d.max != null) v = Math.min(d.max, v);
+  return d.type === 'int' ? Math.round(v) : Math.round(v * 1e4) / 1e4;
+}
+function cbEq(a, b){
+  if (typeof a === 'number' && typeof b === 'number') return Math.abs(a - b) < 1e-9;
+  return a === b;
+}
+
+// Rebuild a CodeBlock's dynamic widgets + input sockets from its current code.
+// Override values live on node._cb; the in-code default applies until changed.
+function syncCodeblockParams(node){
+  if (!node || node.cadType !== 'CodeBlock') return;
+  const codeW = (node.widgets||[]).find(w => w.cadParam === 'code');
+  const code  = (codeW ? codeW.value : node.properties.code) || '';
+  const decls = parseCbParams(code);
+  const names = new Set(decls.map(d => d.name));
+  node._cb = node._cb || {};
+
+  // drop widgets/sockets for params no longer declared
+  node.widgets = (node.widgets||[]).filter(w => !(w.cbParam && !names.has(w.cbParam)));
+  for (let i = node.inputs.length - 1; i >= 0; i--){
+    const s = node.inputs[i];
+    if (s.cbName && !names.has(s.cbName)){
+      if (s.link != null) node.disconnectInput(i);
+      node.removeInput(i);
+      if (node.cadInputs) delete node.cadInputs[s.cbName];
+    }
+  }
+  // add/refresh a widget + socket for each declared param
+  const accepts = (INPUT_ACCEPTS['data'] || ['data']).join(',');
+  for (const d of decls){
+    if (!node.cadInputs[d.name]){
+      node.cadInputs[d.name] = {accepts, grow:true};
+      node.addInput(d.name, accepts);
+      const slot = node.inputs[node.inputs.length - 1];
+      slot.cadName = d.name; slot.cbName = d.name;
+    }
+    let w = (node.widgets||[]).find(x => x.cbParam === d.name);
+    const val = (d.name in node._cb) ? node._cb[d.name] : d.default;
+    if (!w) makeCbWidget(node, d, val);
+    else { w.cbDefault = d.default; w.cbMeta = d; }
+  }
+  node.size = node.computeSize(); node.size[0] = Math.max(node.size[0], 180);
+  updateCbWired(node);
+  node.setDirtyCanvas && node.setDirtyCanvas(true, true);
+}
+
+function makeCbWidget(node, d, val){
+  const set = v => { node._cb = node._cb || {}; node._cb[d.name] = v; onParamChange(node); };
+  let w;
+  if (d.type === 'bool'){
+    w = node.addWidget('toggle', '◆ ' + d.name, !!val, v => set(!!v));
+  } else if (d.type === 'select'){
+    w = node.addWidget('combo', '◆ ' + d.name, val, v => set(v), {values:d.options||[]});
+  } else if (d.type === 'str'){
+    w = node.addWidget('text', '◆ ' + d.name, val ?? '', v => set(v));
+  } else {   // int / float
+    const hasRange = (d.min != null && d.max != null);
+    const init = cbClamp(val, d);
+    const apply = raw => { const v = cbClamp(evalNum(raw), d); w.value = v; set(v); };
+    w = hasRange
+      ? node.addWidget('slider', `◆ ${d.name} (${d.min}–${d.max})`, init, apply, {min:d.min, max:d.max})
+      : node.addWidget('text', '◆ ' + d.name, init, apply);
+  }
+  w.cbParam = d.name; w.cbDefault = d.default; w.cbMeta = d;
+  return w;
+}
+
+// Grey out a param's widget while its socket is wired (the wire drives it).
+function updateCbWired(node){
+  if (!node || node.cadType !== 'CodeBlock') return;
+  for (const w of (node.widgets||[])){
+    if (!w.cbParam) continue;
+    w.disabled = node.inputs.some(s => s.cbName === w.cbParam && s.link != null);
+  }
+  node.setDirtyCanvas && node.setDirtyCanvas(true, true);
+}
+
+function setCodeParam(node, code){
+  const w = (node.widgets||[]).find(x => x.cadParam === 'code');
+  if (w) w.value = code;
+  node.properties.code = code;
+  syncCodeblockParams(node);
+  onParamChange(node);
+}
+
+// Multi-line code editor for CodeBlock (the single-line widget can't show it).
+function openCodeEditor(node){
+  let ov = document.getElementById('code-editor');
+  if (!ov){
+    ov = document.createElement('div'); ov.id = 'code-editor';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:200;display:none;align-items:center;'+
+      'justify-content:center;background:rgba(0,0,0,.5)';
+    ov.innerHTML =
+      '<div style="background:var(--bg-1);border:1px solid var(--border);border-radius:10px;'+
+        'width:640px;max-width:94vw;padding:14px;display:flex;flex-direction:column;gap:10px">'+
+        '<div style="display:flex;align-items:center;gap:10px">'+
+          '<b style="color:var(--accent)">Code Block — build123d</b><span style="flex:1"></span>'+
+          '<span style="font-size:11px;color:#39ff14">tip: <code>teeth = 12  #@param int min=6 max=40</code> → a live knob + input</span>'+
+        '</div>'+
+        '<textarea id="ce-text" rows="14" spellcheck="false" '+
+          'style="resize:vertical;background:#04140a;color:#9affad;border:1px solid #1f8a0f;'+
+          'border-radius:6px;padding:10px;font-family:var(--mono);font-size:13px;line-height:1.55"></textarea>'+
+        '<div style="font-size:11px;color:var(--text-dim)">must assign <code>result</code>. '+
+          'inputs <code>in_0…in_5</code> + any <code>#@param</code> names are available.</div>'+
+        '<div style="display:flex;gap:8px;justify-content:flex-end">'+
+          '<button class="tb-btn" id="ce-cancel">Cancel</button>'+
+          '<button class="tb-btn primary" id="ce-apply">✓ Apply &amp; scan</button>'+
+        '</div>'+
+      '</div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('mousedown', e => { if (e.target === ov) ov.style.display = 'none'; });
+    document.getElementById('ce-cancel').onclick = () => { ov.style.display = 'none'; };
+  }
+  const ta = document.getElementById('ce-text');
+  const codeW = (node.widgets||[]).find(x => x.cadParam === 'code');
+  ta.value = (codeW ? codeW.value : node.properties.code) || '';
+  document.getElementById('ce-apply').onclick = () => {
+    setCodeParam(node, ta.value);
+    ov.style.display = 'none';
+    window.runGraph();
+  };
+  ov.style.display = 'flex';
+  ta.focus();
 }
 
 // ── serialize Litegraph -> our graph JSON ──
@@ -496,6 +961,13 @@ function toGraphJSON(name){
     const params = {};
     const nd = {id, type:n.cadType, params, position:[Math.round(n.pos[0]),Math.round(n.pos[1])]};
     if (n.widgets) for (const w of n.widgets) if (w.cadParam) params[w.cadParam] = w.value;
+    // CodeBlock #@param overrides -> a `_cb` namespace (only what differs from the
+    // in-code default, so editing a default still takes effect; mirrors the backend).
+    if (n.cadType === 'CodeBlock'){
+      const cb = {};
+      for (const w of (n.widgets||[])) if (w.cbParam && !cbEq(w.value, w.cbDefault)) cb[w.cbParam] = w.value;
+      if (Object.keys(cb).length) params._cb = cb;
+    }
     if (n.selectionData) params.selection = n.selectionData;   // SelectEdge picks
     if (n.previewMode === 'on') nd.preview = true;
     else if (n.previewMode === 'off') nd.preview = false;   // 'auto' -> omitted
@@ -541,6 +1013,12 @@ function fromGraphJSON(data){
       }
       if (w.isEye) w.name = eyeLabel(node.previewMode);
     }
+    // CodeBlock: seed #@param overrides, then build the dynamic widgets + input
+    // sockets BEFORE connections are restored (so a wired `teeth` socket exists).
+    if (nd.type === 'CodeBlock'){
+      node._cb = Object.assign({}, (nd.params && nd.params._cb) || {});
+      syncCodeblockParams(node);
+    }
     lgraph.add(node);
     map[nd.id] = node;
   }
@@ -562,45 +1040,61 @@ function fromGraphJSON(data){
   // every enabled multi input gets a trailing empty spare + its toggle set on.
   for (const node of lgraph._nodes){
     const counts = {};
-    for (const s of node.inputs) if (s.link!=null){ const nm=s.cadName||s.name; counts[nm]=(counts[nm]||0)+1; }
+    for (const s of (node.inputs||[])) if (s.link!=null){ const nm=s.cadName||s.name; counts[nm]=(counts[nm]||0)+1; }
     for (const nm in counts) if (counts[nm]>=2) node.multiInputs.add(nm);
     for (const nm of node.multiInputs){
       const info = node.cadInputs[nm];
-      if (info && info.grow && !node.inputs.some(s=>(s.cadName||s.name)===nm && s.link==null)){
+      if (info && info.grow && !(node.inputs||[]).some(s=>(s.cadName||s.name)===nm && s.link==null)){
         node.addInput(nm, info.accepts); node.inputs[node.inputs.length-1].cadName = nm;
       }
       const w = (node.widgets||[]).find(x => x.cadMultiFor===nm); if (w) w.value = true;
     }
+    if (node.cadType === 'CodeBlock') updateCbWired(node);   // grey out wired params
     node.size = node.computeSize(); node.size[0] = Math.max(node.size[0], 150);
   }
+  nodeByGraphId = Object.assign({}, map);   // disk ids -> node (matches /ui until next save)
   lgraph.setDirtyCanvas(true,true);
   loadingGraph = false;
 }
 
 // ── API actions ──
-window.newGraph = async function(){
-  const name = (document.getElementById('inp-name').value || '').trim();
+window.newGraph = async function(name){
+  name = (name||'').trim();
   if(!name){ setStatus('enter a name','err'); return; }
-  lgraph.clear(); viewerFramed = false;
+  if (!(await guardUnsaved())) return;
+  lgraph.clear(); if (viewer) viewer.resetFraming();
   await fetch(`${API}/api/graph/${name}`, {method:'POST',headers:{'Content-Type':'application/json'},
     body: JSON.stringify({name, nodes:[], connections:[]})});
   currentName = name;
-  document.getElementById('sb-graph').textContent = name;
+  setCurrentName(name);
+  lastSavedJSON = JSON.stringify(toGraphJSON(name));
+  clearDraft(name); setDocState('saved');
   await refreshGraphList();
   setStatus('new graph: '+name,'ok');
 };
 
+// Single writer to the server, shared by manual Save + autosave.
+async function persistToServer(){
+  if (!currentName) return false;
+  const payload = toGraphJSON(currentName);
+  const json = JSON.stringify(payload);
+  setDocState('saving');
+  let res;
+  try{
+    res = await fetch(`${API}/api/graph/${currentName}`, {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: json});
+  }catch(e){ setDocState('failed'); log('save: '+e.message,'err'); return false; }
+  if(!res.ok){ const e=await res.json().catch(()=>({})); setDocState('failed');
+    log('save: '+JSON.stringify(e.detail||e),'err'); return false; }
+  lastSavedJSON = json; clearDraft(currentName); setDocState('saved');
+  nodeByGraphId = Object.assign({}, nodeIndex);   // saved disk ids now equal serialized ids
+  return true;
+}
+
 window.saveGraph = async function(){
-  const name = currentName || (document.getElementById('inp-name').value||'').trim();
-  if(!name){ setStatus('enter a name','err'); return; }
-  const payload = toGraphJSON(name);
-  const res = await fetch(`${API}/api/graph/${name}`, {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-  if(!res.ok){ const e=await res.json(); setStatus('save failed','err'); log('save: '+JSON.stringify(e.detail),'err'); return; }
-  currentName = name;
-  document.getElementById('sb-graph').textContent = name;
-  await refreshGraphList();
-  setStatus('saved ✓','ok');
+  if(!currentName){ setStatus('create or open a graph first','err'); return; }
+  const ok = await persistToServer();
+  if (ok){ await refreshGraphList(); setStatus('saved ✓','ok'); }
 };
 
 // ── live mode: debounced auto-run on any graph change ──
@@ -612,15 +1106,12 @@ function scheduleLive(){
 window.toggleLive = function(){
   liveMode = !liveMode;
   const b = document.getElementById('btn-live');
-  b.classList.toggle('primary', liveMode);
-  b.textContent = liveMode ? '● Live' : '○ Live';
+  b.classList.toggle('on', liveMode);
   if(liveMode) scheduleLive();
 };
 window.toggleFastDrag = function(){
   fastDrag = !fastDrag;
-  const b = document.getElementById('btn-fast');
-  b.classList.toggle('primary', fastDrag);
-  b.textContent = fastDrag ? '⚡ Drag' : '○ Drag';
+  document.getElementById('btn-fast').classList.toggle('on', fastDrag);
 };
 
 // ── selection actions (shared by keyboard, context menu, floating toolbar) ──
@@ -873,8 +1364,8 @@ function enterGizmoEdit(node){
   applyGizmoPrefs();
   transformControls.attach(gizmoAnchor);
   transformControls.enabled = true;
-  document.getElementById('btn-snap').style.display = '';
-  document.getElementById('btn-space').style.display = '';
+  document.getElementById('gizmo-bar').classList.add('open');
+  document.getElementById('gizmo-bar-label').textContent = 'Editing: ' + (node.title || node.cadType);
   if (lcanvas && lcanvas.selectNode) lcanvas.selectNode(node);   // highlight the edited node
   refreshGizmoButtons();
   showGizmoHint(node);
@@ -893,8 +1384,7 @@ function exitGizmoEdit(){
     transformControls.detach(); transformControls.enabled = false;
     transformControls.showX = transformControls.showY = transformControls.showZ = true;
   }
-  document.getElementById('btn-snap').style.display = 'none';
-  document.getElementById('btn-space').style.display = 'none';
+  document.getElementById('gizmo-bar').classList.remove('open');
   clearTimeout(gizmoRunTimer); gizmoRunTimer = null;
   gizmoStart = gizmoParamStart = null;
   refreshGizmoButtons();
@@ -947,7 +1437,7 @@ function scheduleGizmoRun(){
 
 window.toggleGizmoSnap = function(){
   gizmoSnap = !gizmoSnap;
-  const b = document.getElementById('btn-snap'); b.classList.toggle('primary', gizmoSnap);
+  const b = document.getElementById('btn-snap'); b.classList.toggle('on', gizmoSnap);
   applyGizmoPrefs();
 };
 window.toggleGizmoSpace = function(){
@@ -1050,28 +1540,41 @@ function stripMesh(v){
   return c;
 }
 
+let projectNames = [];   // cached for the project menu + palette
 async function refreshGraphList(){
   const res = await fetch(`${API}/api/projects`);
-  const projects = (await res.json()).filter(p=>p.backend==='nodegraph');
-  const sel = document.getElementById('sel-graph');
-  sel.innerHTML = '<option value="">— open graph —</option>';
-  for (const p of projects){
-    const o = document.createElement('option'); o.value=p.name; o.textContent=p.name;
-    if(p.name===currentName) o.selected=true;
-    sel.appendChild(o);
-  }
+  projectNames = (await res.json()).filter(p=>p.backend==='nodegraph').map(p=>p.name).sort();
+  renderProjectList();
 }
+window.renderProjectList = function(){
+  const list = document.getElementById('project-list'); if (!list) return;
+  const q = (document.getElementById('project-search').value||'').toLowerCase();
+  list.innerHTML = '';
+  const names = projectNames.filter(n=>n.toLowerCase().includes(q));
+  if (!names.length){ list.innerHTML = '<div class="menu-status">No projects</div>'; }
+  for (const n of names){
+    const b = document.createElement('button'); b.className = 'menu-item';
+    b.innerHTML = `<span class="ic">${n===currentName?'●':''}</span>${n}`;
+    b.onclick = ()=>{ closeMenus(); openGraph(n); };
+    list.appendChild(b);
+  }
+  document.getElementById('mi-delete').style.display = currentName ? '' : 'none';
+};
 
 window.openGraph = async function(name){
-  if(!name) return;
+  if(!name || name===currentName) { closeMenus(); return; }
+  if (!(await guardUnsaved())) return;
   const res = await fetch(`${API}/api/graph/${name}`);
   if(!res.ok){ setStatus('open failed','err'); return; }
   const data = await res.json();
   fromGraphJSON(data);
-  currentName = name; viewerFramed = false;   // frame the freshly opened graph once
-  document.getElementById('inp-name').value = name;
-  document.getElementById('sb-graph').textContent = name;
+  currentName = name; if (viewer) viewer.resetFraming();   // frame the freshly opened graph once
+  setCurrentName(name);
+  lastSavedJSON = JSON.stringify(toGraphJSON(name));   // normalized disk baseline
+  setDocState('saved');
+  localStorage.setItem('cadstudio:last', name);
   setStatus('opened '+name,'ok');
+  maybeRestoreDraft(name);
 };
 
 window.showTab = function(t){
@@ -1079,9 +1582,10 @@ window.showTab = function(t){
   document.getElementById('body-code').style.display   = t==='code'?'block':'none';
   document.getElementById('body-view').style.display   = t==='view'?'block':'none';
   document.getElementById('body-panels').style.display = t==='panels'?'block':'none';
-  document.getElementById('body-log').style.display    = t==='log'?'block':'none';
+  document.getElementById('body-log').style.display    = t==='log'?'flex':'none';
   document.getElementById('body-ai').style.display     = t==='ai'?'flex':'none';
   if (t==='ai') document.getElementById('ai-input').focus();
+  if (t==='log'){ consoleUnread=0; updateConsoleBadge(); renderConsole(); }
 };
 
 // ── AI copilot chat ──
@@ -1256,127 +1760,50 @@ function highlightNode(graphId){
 }
 
 // ── Three.js viewer (same setup as the code UI) ──
-let scene, camera, renderer, controls, currentMesh, stlLoader, previewGroup;
-let viewHelper, viewClock, viewerFramed = false, gridHelper;
+// The main 3D viewport is the SHARED CadViewer (see webui/viewer.js); /ui uses
+// the very same module. Node-editor-only behaviour (the on-canvas gizmo and
+// click-to-select picking) is layered on top of the viewer's exposed objects.
+let viewer = null;
 function initViewer(){
   const canvas = document.getElementById('viewer-canvas');
-  const c = canvas.parentElement;
-  scene = new THREE.Scene(); scene.background = new THREE.Color(0x0b0e14);
-  // Z-up (build123d/CAD convention): the grid IS the XY construction plane,
-  // fixed at the world origin — it never follows the geometry.
-  gridHelper = new THREE.GridHelper(200,40,0x2a3346,0x161b25);
-  gridHelper.rotation.x = Math.PI/2; scene.add(gridHelper);
-  // origin marker so you always see where (0,0,0) is, even when shapes move off it
-  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.8,16,16),
-                             new THREE.MeshBasicMaterial({color:0xe94560}));
-  scene.add(dot);
-  previewGroup = new THREE.Group(); scene.add(previewGroup);
-  const ax = new THREE.AxesHelper(20); ax.material.transparent=true; ax.material.opacity=.6; scene.add(ax);
-  scene.add(new THREE.AmbientLight(0x404060,2.5));
-  const key=new THREE.DirectionalLight(0xffffff,2); key.position.set(40,60,80); scene.add(key);
-  const fill=new THREE.DirectionalLight(0x8888cc,.8); fill.position.set(-40,-20,40); scene.add(fill);
-  camera = new THREE.PerspectiveCamera(40, c.clientWidth/c.clientHeight, .1, 5000);
-  camera.up.set(0,0,1);                 // Z is up
-  camera.position.set(60,-60,45);
-  renderer = new THREE.WebGLRenderer({canvas, antialias:true});
-  renderer.setSize(c.clientWidth, c.clientHeight); renderer.setPixelRatio(Math.min(devicePixelRatio,2));
-  renderer.autoClear = false;           // ViewHelper overlays after the main render
-  controls = new OrbitControls(camera, canvas); controls.enableDamping=true; controls.dampingFactor=.08;
-  // ── on-canvas edit gizmo (E1: translate) ──
+  viewer = new CadViewer(canvas);
+
+  // ── on-canvas edit gizmo (translate/rotate/scale) ──
   // an invisible proxy the gizmo moves; we read its delta back into node params
-  gizmoAnchor = new THREE.Object3D(); scene.add(gizmoAnchor);
-  transformControls = new TransformControls(camera, canvas);
+  gizmoAnchor = new THREE.Object3D(); viewer.scene.add(gizmoAnchor);
+  transformControls = new TransformControls(viewer.camera, canvas);
   transformControls.setSize(0.9);
   transformControls.setSpace('world');
   // r0.169+ : the visual is a separate helper object you add to the scene
-  scene.add(transformControls.getHelper ? transformControls.getHelper() : transformControls);
+  viewer.scene.add(transformControls.getHelper ? transformControls.getHelper() : transformControls);
   transformControls.enabled = false;
-  transformControls.addEventListener('dragging-changed', e=>{ controls.enabled = !e.value; });
+  transformControls.addEventListener('dragging-changed', e=>{ viewer.controls.enabled = !e.value; });
   transformControls.addEventListener('objectChange', ()=> gizmoDragUpdate());
-  stlLoader = new STLLoader();
-  // navigation gizmo (click an axis to snap to that ortho view)
-  viewHelper = new ViewHelper(camera, canvas);
-  viewClock = new THREE.Clock();
-  const vRay = new THREE.Raycaster(); const vMouse = new THREE.Vector2();
-  canvas.addEventListener('dblclick', ()=> frameView());
+
+  // click-to-select: a non-drag click picks the preview under it and selects the
+  // owning graph node (the nav ViewHelper + gizmo get first refusal).
   let vDown = null;
   canvas.addEventListener('pointerdown', e=>{ vDown=[e.clientX,e.clientY]; });
   canvas.addEventListener('pointerup', (e)=>{
     if (transformControls && transformControls.dragging){ vDown=null; return; }  // gizmo drag
-    viewHelper.center.copy(controls.target);
-    if (viewHelper.handleClick(e)){ vDown=null; return; }   // gizmo consumed it
+    viewer.viewHelper.center.copy(viewer.controls.target);
+    if (viewer.viewHelper.handleClick(e)){ vDown=null; return; }   // nav gizmo consumed it
     if (!vDown) return;
     const moved = Math.hypot(e.clientX-vDown[0], e.clientY-vDown[1]); vDown=null;
-    if (moved > 5) return;                                   // a drag (orbit), not a pick
-    // click-to-select: raycast the previews, select the owning graph node
-    const r = canvas.getBoundingClientRect();
-    vMouse.x = ((e.clientX-r.left)/r.width)*2-1;
-    vMouse.y = -((e.clientY-r.top)/r.height)*2+1;
-    vRay.setFromCamera(vMouse, camera);
-    vRay.params.Line.threshold = 0.5;
-    vRay.params.Points.threshold = 3;
-    const hits = vRay.intersectObjects(previewGroup.children, false);
-    if (hits.length && hits[0].object.userData.nodeId) selectNodeById(hits[0].object.userData.nodeId);
+    if (moved > 5) return;                                          // a drag (orbit), not a pick
+    const id = viewer.pick(e.clientX, e.clientY);
+    if (id) selectNodeById(id);
   });
-  (function loop(){
-    requestAnimationFrame(loop);
-    const dt = viewClock.getDelta();
-    if (viewHelper.animating) viewHelper.update(dt);
-    controls.update();
-    renderer.clear();
-    renderer.render(scene,camera);
-    viewHelper.render(renderer);
-  })();
 }
 
-// Frame whatever geometry is shown WITHOUT moving it: keep the current view
-// direction, just re-target + re-distance the camera to fit the real bounds.
-window.frameView = function(){
-  const box = new THREE.Box3();
-  if (previewGroup.children.length) box.setFromObject(previewGroup);
-  else if (currentMesh) box.setFromObject(currentMesh);
-  if (box.isEmpty()) return;
-  const ctr = new THREE.Vector3(); box.getCenter(ctr);
-  const size = new THREE.Vector3(); box.getSize(size);
-  const md = Math.max(size.x,size.y,size.z) || 10, d = md*2.0;
-  let dir = new THREE.Vector3().subVectors(camera.position, controls.target);
-  if (dir.lengthSq() < 1e-6) dir.set(1,-1,0.8);
-  dir.normalize().multiplyScalar(d);
-  controls.target.copy(ctr);
-  camera.position.copy(ctr).add(dir);
-  controls.update();
-};
-
+window.frameView = function(){ if (viewer) viewer.frame(); };
 window.toggleGrid = function(){
-  if(!gridHelper) return;
-  gridHelper.visible = !gridHelper.visible;
-  const b = document.getElementById('btn-grid');
-  if(b){ b.classList.toggle('primary', gridHelper.visible); b.textContent = (gridHelper.visible?'▦':'▢')+' Grid'; }
+  if(!viewer) return;
+  const on = !viewer.grid.visible; viewer.setGrid(on);
+  const b = document.getElementById('btn-grid'); if(b) b.classList.toggle('on', on);
 };
-function resizeViewer(){
-  const c = document.getElementById('viewer-canvas').parentElement;
-  camera.aspect = c.clientWidth/c.clientHeight; camera.updateProjectionMatrix();
-  renderer.setSize(c.clientWidth, c.clientHeight);
-}
-function loadSTL(url){
-  stlLoader.load(url, (geo)=>{
-    if(currentMesh){ scene.remove(currentMesh); currentMesh.geometry.dispose(); currentMesh.material.dispose(); }
-    geo.computeVertexNormals();
-    currentMesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color:0xe94560, roughness:.35, metalness:.15, side:THREE.DoubleSide}));
-    geo.computeBoundingBox(); const size=new THREE.Vector3(); geo.boundingBox.getSize(size);
-    scene.add(currentMesh);                    // real coords — no recentering
-    if(!viewerFramed){ frameView(); viewerFramed=true; }
-    const st=document.getElementById('viewer-stats');
-    st.innerHTML = `${(size.x).toFixed(1)} × ${(size.y).toFixed(1)} × ${(size.z).toFixed(1)} mm`;
-    st.classList.add('visible');
-  }, undefined, (err)=>{ setStatus('STL load failed','err'); log('stl: '+err.message,'err'); });
-}
+function resizeViewer(){ if (viewer) viewer.resize(); }
 
-// ── multi-mesh preview (one mesh per rendered terminal node) ──
-// distinct, legible-on-dark palette; terminals cycle through it by default
-const PALETTE = ['#2dd4a0','#3b82f6','#f59e0b','#e94560','#a855f7','#fb923c',
-  '#22d3ee','#84cc16','#ec4899','#eab308','#14b8a6','#8b5cf6','#f43f5e','#38bdf8'];
-function nodeNum(id){ const m=/(\d+)/.exec(id); return m?parseInt(m[1]):0; }
 // resolve a node's preview colour: explicit choice wins, else a stable palette
 // slot from its position among the rendered ids (so all terminals differ)
 function resolveColor(id, order){
@@ -1385,120 +1812,36 @@ function resolveColor(id, order){
   const i = order.indexOf(id);
   return PALETTE[(i<0?nodeNum(id):i) % PALETTE.length];
 }
-function geomFromData(m){
-  const g = new THREE.BufferGeometry();
-  const verts=m.vertices, tris=m.triangles;
-  const pos = new Float32Array(verts.length*3);
-  for(let i=0;i<verts.length;i++){ pos[3*i]=verts[i][0]; pos[3*i+1]=verts[i][1]; pos[3*i+2]=verts[i][2]; }
-  g.setAttribute('position', new THREE.BufferAttribute(pos,3));
-  const idx = new Uint32Array(tris.length*3);
-  for(let i=0;i<tris.length;i++){ idx[3*i]=tris[i][0]; idx[3*i+1]=tris[i][1]; idx[3*i+2]=tris[i][2]; }
-  g.setIndex(new THREE.BufferAttribute(idx,1));
-  g.computeVertexNormals();
-  return g;
-}
-function meshFromData(m, color){
-  return new THREE.Mesh(geomFromData(m),
-    new THREE.MeshStandardMaterial({color, roughness:.4, metalness:.12, side:THREE.DoubleSide}));
-}
-// curve preview: many polylines -> one raycastable LineSegments object
-function lineFromPolylines(polys, color){
-  const segs=[];
-  for(const poly of polys)
-    for(let i=0;i+1<poly.length;i++){ segs.push(poly[i], poly[i+1]); }
-  const g=new THREE.BufferGeometry();
-  const pos=new Float32Array(segs.length*3);
-  for(let i=0;i<segs.length;i++){ pos[3*i]=segs[i][0]; pos[3*i+1]=segs[i][1]; pos[3*i+2]=segs[i][2]; }
-  g.setAttribute('position', new THREE.BufferAttribute(pos,3));
-  return new THREE.LineSegments(g, new THREE.LineBasicMaterial({color, linewidth:2}));
-}
-// point preview: a vector list -> lit spheres (one InstancedMesh, scene-scaled so
-// they read at any zoom). Pickable per-instance (instanceId) for click + edit.
-function spheresFromData(pts, color, r){
-  const geo = new THREE.SphereGeometry(r, 12, 12);
-  const mat = new THREE.MeshStandardMaterial({color, roughness:.45, metalness:.1});
-  const im = new THREE.InstancedMesh(geo, mat, pts.length);
-  const m = new THREE.Matrix4();
-  for(let i=0;i<pts.length;i++){ m.setPosition(pts[i][0], pts[i][1], pts[i][2]); im.setMatrixAt(i, m); }
-  im.instanceMatrix.needsUpdate = true;
-  im.userData.points = pts;           // keep coords for picking / edit mode
-  return im;
-}
-// the combined extent of all drawable previews, as a length (for sizing dots etc.)
-function previewsExtent(previews, ids){
-  const box = new THREE.Box3(); let any=false;
-  for(const id of ids){ const e=previews[id]; if(!e || !e.bbox) continue;
-    box.expandByPoint(new THREE.Vector3(...e.bbox.min));
-    box.expandByPoint(new THREE.Vector3(...e.bbox.max)); any=true; }
-  if(!any) return 50;
-  const s=new THREE.Vector3(); box.getSize(s);
-  return Math.max(s.length(), 1);
-}
-// build the right THREE object for a preview entry (mesh | polylines | points)
-function objFromPreview(p, color, node, scale){
-  if(p.mesh){
-    const obj = meshFromData(p.mesh, color);
-    if(node && node.wireframe){ obj.material.wireframe = true; obj.material.metalness = 0; }
-    return obj;
-  }
-  if(p.polylines) return lineFromPolylines(p.polylines, color);
-  if(p.points){
-    const r = Math.min(Math.max(scale*0.012, 0.4), scale*0.05);
-    return spheresFromData(p.points, color, r);
-  }
-  return null;
-}
-function clearPreviewGroup(){
-  for(let i=previewGroup.children.length-1;i>=0;i--){
-    const c=previewGroup.children[i]; previewGroup.remove(c);
-    c.geometry.dispose(); c.material.dispose();
-  }
-  previewGroup.position.set(0,0,0);
-}
 // the title-bar dot (LiteGraph node.boxcolor) mirrors the preview colour, so each
 // node shows its own swatch — only for nodes actually rendered right now.
 function clearPreviewDots(){
   if(lgraph) for(const n of lgraph._nodes) n.boxcolor = undefined;
 }
+// Draw the execution view via the shared viewer, then apply node-editor glue:
+// per-node title dots, baked-param snapshots (for gizmo/fastDrag), and the legend.
 function renderPreviews(view){
   lastView = view;                       // cache so colour/wireframe changes re-render instantly
-  clearPreviewGroup();
   clearPreviewDots();
-  previewMeshes = {};
-  const previews = (view && view.previews) || {};
-  const drawable = e => e && (e.mesh || e.polylines || e.points);
-  const ids = Object.keys(previews).filter(k => drawable(previews[k]))
-                    .sort((a,b)=>nodeNum(a)-nodeNum(b));   // stable order for colour slots
-  if(!ids.length){
-    renderLegend([]);
-    if(lcanvas) lcanvas.setDirty(true, true);
-    loadSTL(`${API}/api/projects/${currentName}/download?t=`+Date.now());
-    return;
-  }
-  if(currentMesh){ scene.remove(currentMesh); currentMesh.geometry.dispose(); currentMesh.material.dispose(); currentMesh=null; }
+  const setStats = (txt)=>{ const st=document.getElementById('viewer-stats'); st.innerHTML=txt; st.classList.add('visible'); };
+  const r = viewer.renderPreviews((view && view.previews) || {}, {
+    colorOf: (id, order)=> resolveColor(id, order),
+    wireOf:  (id)=> !!(nodeIndex[id] && nodeIndex[id].wireframe),
+    onEmpty: ()=>{ previewMeshes = {}; renderLegend([]); if(lcanvas) lcanvas.setDirty(true, true);
+      viewer.loadSTL(`${API}/api/projects/${currentName}/download?t=`+Date.now(),
+        { onSize:(s)=>{ if(s) setStats(`${s.x.toFixed(1)} × ${s.y.toFixed(1)} × ${s.z.toFixed(1)} mm`); } }); },
+  });
+  previewMeshes = r.meshes;
+  if(!r.order.length) return;            // onEmpty handled the legend / STL fallback
   const legend = [];
-  const scale = previewsExtent(previews, ids);   // for sizing point spheres to the scene
-  for(const id of ids){
-    const n = nodeIndex[id];
-    const color = resolveColor(id, ids);
-    const obj = objFromPreview(previews[id], color, n, scale);
-    if (!obj) continue;
-    obj.userData.nodeId = id;
-    previewGroup.add(obj);
-    previewMeshes[id] = obj;
+  for(const id of r.order){
+    const n = nodeIndex[id], color = r.colors[id];
     if(n){ n._baked = {...n.properties}; n.boxcolor = color; }   // snapshot + title dot
     legend.push({id, color, label:(n && (n.title||n.cadType)) || id, wire: !!(n && n.wireframe)});
   }
   renderLegend(legend);
   if(lcanvas) lcanvas.setDirty(true, true);   // repaint node dots
-  // shapes stay at their real world coordinates (no recentering), so moving a
-  // node visibly moves it on the fixed grid. Frame once; then preserve the view.
-  const box = new THREE.Box3().setFromObject(previewGroup);
-  const size = new THREE.Vector3(); box.getSize(size);
-  if(!viewerFramed){ frameView(); viewerFramed = true; }
-  const st = document.getElementById('viewer-stats');
-  st.innerHTML = `${ids.length} preview · ${size.x.toFixed(1)} × ${size.y.toFixed(1)} × ${size.z.toFixed(1)} mm`;
-  st.classList.add('visible');
+  const s = r.size;
+  setStats(`${r.order.length} preview · ${s.x.toFixed(1)} × ${s.y.toFixed(1)} × ${s.z.toFixed(1)} mm`);
 }
 
 // instant display-only refresh (colour / wireframe) without re-executing
@@ -1526,6 +1869,43 @@ function selectNodeById(id){
   lcanvas.selectNode ? lcanvas.selectNode(n) : (lcanvas.selected_nodes={[n.id]:n});
   if(lcanvas.centerOnNode) lcanvas.centerOnNode(n);
   lcanvas.setDirty(true, true);
+}
+
+// ── cross-view linking with the /ui code view (BroadcastChannel) ──
+// We RECEIVE "locate" (the code view clicked a value) and select+flash the node;
+// we SEND "reveal" when a node is selected so the code view scrolls to it.
+const xlink = (() => { try { return new BroadcastChannel('cadstudio:link'); } catch(_){ return null; } })();
+let _xlinkEcho = false;   // guard against reacting to our own selection
+function initCrossView(){
+  if (!xlink) return;
+  xlink.addEventListener('message', ev => {
+    const m = ev.data || {};
+    if (m.graph && m.graph !== currentName) return;
+    if (m.cmd === 'locate' && m.node_id) locateNode(m.node_id);
+  });
+}
+function locateNode(graphId){
+  const n = nodeByGraphId[graphId] || nodeIndex[graphId];
+  if (!n) return;
+  _xlinkEcho = true;        // selecting shouldn't bounce a reveal back
+  lcanvas.deselectAllNodes && lcanvas.deselectAllNodes();
+  lcanvas.selectNode ? lcanvas.selectNode(n) : (lcanvas.selected_nodes = {[n.id]: n});
+  if (lcanvas.centerOnNode) lcanvas.centerOnNode(n);
+  flashNode(n);
+  _xlinkEcho = false;
+}
+function flashNode(n){
+  const base = n.boxcolor;
+  let i = 0;
+  const t = setInterval(() => {
+    n.boxcolor = (i++ % 2) ? base : '#39ff14';
+    lcanvas.setDirty(true, true);
+    if (i > 5){ clearInterval(t); n.boxcolor = base; lcanvas.setDirty(true, true); }
+  }, 170);
+}
+function broadcastReveal(node){
+  if (!xlink || !node || _xlinkEcho) return;
+  xlink.postMessage({cmd:'reveal', graph: currentName, node_id: 'n' + node.id});
 }
 
 // ── sub-shape selection picker (modal 3D viewer) ───────────────────────────
@@ -1741,7 +2121,9 @@ function initGraph(){
   lgraph.onNodeAdded = ()=>scheduleLive();
   lgraph.onNodeRemoved = ()=>scheduleLive();
   lgraph.onConnectionChange = ()=>scheduleLive();
+  lcanvas.onNodeSelected = (node)=> broadcastReveal(node);   // tell /ui to scroll to it
   lgraph.start();
+  initCrossView();
   resizeGraph();
 }
 function resizeGraph(){
@@ -1765,7 +2147,6 @@ function resizeGraph(){
   document.addEventListener('mouseup',()=>{drag=false;document.body.style.cursor='';});
 })();
 window.addEventListener('resize', ()=>{ resizeGraph(); resizeViewer(); });
-document.getElementById('sel-graph').addEventListener('change', e=>openGraph(e.target.value));
 // picker modal controls
 document.getElementById('picker-confirm').addEventListener('click', ()=>closePicker(true));
 document.getElementById('picker-cancel').addEventListener('click', ()=>closePicker(false));
@@ -1787,18 +2168,328 @@ document.addEventListener('keydown', e=>{   // Esc cancels, Enter confirms the p
   ta.addEventListener('input', ()=>{ ta.style.height='auto'; ta.style.height=Math.min(ta.scrollHeight,120)+'px'; });
 })();
 
+/* ============================================================ *
+ *  Session: document state, dirty tracking, autosave, restore   *
+ * ============================================================ */
+let lastSavedJSON = null;      // normalized graph last confirmed on disk
+let docState = 'none';         // none | saved | dirty | saving | failed
+let serverSaveTimer = null;
+
+function setCurrentName(name){
+  document.getElementById('project-name').textContent = name || '— no graph —';
+  document.getElementById('sb-graph').textContent = name || 'no graph';
+  renderProjectList();
+}
+function setDocState(s){
+  docState = s;
+  const el = document.getElementById('doc-status');
+  el.className = 'doc-status ' + s;
+  el.querySelector('.lbl').textContent =
+    ({none:'No graph', saved:'Saved', dirty:'Unsaved', saving:'Saving…', failed:'Save failed'})[s];
+  el.onclick = (s==='failed') ? (()=>persistToServer().then(ok=>ok&&refreshGraphList())) : null;
+}
+// local draft (browser safety net) ---------------------------------
+function draftKey(name){ return 'cadstudio:draft:'+name; }
+function saveDraft(name, json){
+  try{ localStorage.setItem(draftKey(name), JSON.stringify({json, base:lastSavedJSON, ts:Date.now()})); }catch(_){}
+}
+function clearDraft(name){ try{ localStorage.removeItem(draftKey(name)); }catch(_){} }
+function readDraft(name){ try{ return JSON.parse(localStorage.getItem(draftKey(name))||'null'); }catch(_){ return null; } }
+function applyDraft(d){
+  loadingGraph = true;
+  fromGraphJSON(JSON.parse(d.json));
+  loadingGraph = false;
+  setDocState('dirty');
+  scheduleServerSave();
+}
+function maybeRestoreDraft(name){
+  const d = readDraft(name); if (!d) return;
+  if (d.json === lastSavedJSON){ clearDraft(name); return; }       // nothing unsaved
+  if (d.base === lastSavedJSON){ applyDraft(d); toast('info','Recovered unsaved changes'); return; }
+  showRestoreModal(name, d);                                       // disk changed under the draft
+}
+// dirty-detection + autosave loop (covers param edits, no per-widget hook)
+function checkDirty(){
+  if (loadingGraph || !currentName || lastSavedJSON===null) return;
+  let cur; try{ cur = JSON.stringify(toGraphJSON(currentName)); }catch(_){ return; }
+  if (cur === lastSavedJSON){
+    if (docState==='dirty') setDocState('saved');
+  } else if (docState!=='saving') {
+    if (docState!=='dirty') setDocState('dirty');
+    saveDraft(currentName, cur);          // instant local safety net
+    scheduleServerSave();                  // debounced server autosave
+  }
+}
+function scheduleServerSave(){
+  clearTimeout(serverSaveTimer);
+  serverSaveTimer = setTimeout(()=>{ if (docState==='dirty') persistToServer().then(ok=>ok&&refreshGraphList()); }, 2500);
+}
+async function guardUnsaved(){
+  if (docState!=='dirty' && docState!=='failed') return true;
+  const choice = await confirmModal('Unsaved changes',
+    'You have unsaved changes in “'+currentName+'”. Save before continuing?',
+    [{id:'save',label:'Save',cls:'primary'},{id:'discard',label:'Discard',cls:'danger'},{id:'cancel',label:'Cancel'}]);
+  if (choice==='cancel') return false;
+  if (choice==='save') return await persistToServer();
+  clearDraft(currentName); return true;   // discard
+}
+window.addEventListener('beforeunload', e=>{
+  if (docState==='dirty' || docState==='saving'){ e.preventDefault(); e.returnValue=''; return ''; }
+});
+window.promptNewGraph = async function(){
+  closeMenus();
+  const name = await promptModal('New project','Project name:','');
+  if (name) newGraph(name);
+};
+window.deleteCurrentGraph = async function(){
+  closeMenus();
+  if (!currentName) return;
+  const ok = await confirmModal('Delete project',
+    'Permanently delete “'+currentName+'” from disk? This cannot be undone.',
+    [{id:'del',label:'Delete',cls:'danger'},{id:'cancel',label:'Cancel'}]);
+  if (ok!=='del') return;
+  const gone = currentName;
+  await fetch(`${API}/api/projects/${gone}`, {method:'DELETE'});
+  clearDraft(gone); localStorage.removeItem('cadstudio:last');
+  lgraph.clear(); currentName=null; lastSavedJSON=null; setCurrentName(null); setDocState('none');
+  await refreshGraphList();
+  toast('success','Deleted “'+gone+'”');
+};
+
+/* ============================================================ *
+ *  Menus, modals, toasts                                        *
+ * ============================================================ */
+function closeMenus(){ document.querySelectorAll('.menu.open').forEach(m=>m.classList.remove('open')); }
+window.toggleProjectMenu = function(e){ e.stopPropagation();
+  const m=document.getElementById('project-menu'); const open=m.classList.contains('open');
+  closeMenus(); if(!open){ m.classList.add('open'); renderProjectList();
+    setTimeout(()=>document.getElementById('project-search').focus(),0); } };
+window.toggleSystemMenu = function(e){ e.stopPropagation();
+  const m=document.getElementById('system-menu'); const open=m.classList.contains('open');
+  closeMenus(); if(!open){ m.classList.add('open'); refreshHealthText(); } };
+document.addEventListener('click', ()=>closeMenus());
+document.querySelectorAll('.menu').forEach(m=>m.addEventListener('click', e=>e.stopPropagation()));
+
+function toast(kind, msg, action){
+  let wrap=document.getElementById('toast-wrap');
+  if(!wrap){ wrap=document.createElement('div'); wrap.id='toast-wrap'; wrap.className='toast-wrap'; document.body.appendChild(wrap); }
+  const t=document.createElement('div'); t.className='toast '+kind;
+  t.innerHTML=`<span class="m">${msg}</span>`;
+  if(action){ const a=document.createElement('span'); a.className='act'; a.textContent=action.label;
+    a.onclick=()=>{ action.run(); t.remove(); }; t.appendChild(a); }
+  const x=document.createElement('span'); x.className='x'; x.textContent='✕'; x.onclick=()=>t.remove(); t.appendChild(x);
+  wrap.appendChild(t);
+  if(kind!=='error') setTimeout(()=>t.remove(), 4000);
+}
+
+// generic modal helpers (return a Promise) ------------------------
+function buildModal(html){
+  const ov=document.createElement('div'); ov.className='modal-overlay open';
+  ov.innerHTML='<div class="modal">'+html+'</div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('click', e=>{ if(e.target===ov) close('cancel'); });
+  let resolver; const p=new Promise(r=>resolver=r);
+  function close(v){ ov.remove(); resolver(v); }
+  return {ov, close, p};
+}
+function confirmModal(title, body, buttons){
+  const m=buildModal(`<h3>${title}</h3><p>${body}</p><div class="modal-actions"></div>`);
+  const bar=m.ov.querySelector('.modal-actions');
+  for(const b of buttons){ const el=document.createElement('button');
+    el.className='tb-btn '+(b.cls==='primary'?'primary':b.cls==='danger'?'danger':'');
+    el.textContent=b.label; el.onclick=()=>m.close(b.id); bar.appendChild(el); }
+  return m.p;
+}
+function promptModal(title, label, def){
+  const m=buildModal(`<h3>${title}</h3><p>${label}</p>`+
+    `<input class="menu-search" id="__pm" value="${def||''}" style="margin:6px 0 0">`+
+    `<div class="modal-actions"><button class="tb-btn" id="__pc">Cancel</button>`+
+    `<button class="tb-btn primary" id="__po">OK</button></div>`);
+  const inp=m.ov.querySelector('#__pm'); setTimeout(()=>{inp.focus();inp.select();},0);
+  m.ov.querySelector('#__pc').onclick=()=>m.close(null);
+  m.ov.querySelector('#__po').onclick=()=>m.close(inp.value.trim());
+  inp.addEventListener('keydown',e=>{ if(e.key==='Enter')m.close(inp.value.trim()); if(e.key==='Escape')m.close(null); });
+  return m.p;
+}
+function showRestoreModal(name, d){
+  const cur = JSON.parse(lastSavedJSON), dr = JSON.parse(d.json);
+  const m=buildModal(`<h3>Unsaved changes found</h3>`+
+    `<p>You have a local draft of “${name}” that diverges from the version now on disk `+
+    `(it may have been changed by the copilot, MCP, or another tab).</p>`+
+    `<div class="cols"><div class="col"><b>Local draft (browser)</b>`+
+      `<span>${dr.nodes.length} nodes · ${dr.connections.length} connections</span>`+
+      `<span>saved ${new Date(d.ts).toLocaleTimeString()}</span></div>`+
+    `<div class="col"><b>Version on disk</b>`+
+      `<span>${cur.nodes.length} nodes · ${cur.connections.length} connections</span></div></div>`+
+    `<div class="modal-actions"><button class="tb-btn" id="__disk">Open from disk (discard draft)</button>`+
+    `<button class="tb-btn primary" id="__draft">Restore draft</button></div>`);
+  m.ov.querySelector('#__disk').onclick=()=>{ clearDraft(name); m.close(); };
+  m.ov.querySelector('#__draft').onclick=()=>{ applyDraft(d); m.close(); };
+}
+window.openShortcuts = function(){
+  closeMenus();
+  const rows=[['Ctrl+Enter','Run graph'],['Ctrl+S','Save'],['Ctrl+N','New project'],['Ctrl+K','Command palette'],
+    ['F','Fit to view'],['Ctrl+G','Group selection'],['Ctrl+B','Bypass'],['Del','Delete'],
+    ['Ctrl+C / Ctrl+V','Copy / paste'],['Esc','Exit edit / close'],['dbl-click','Search nodes']];
+  buildModal(`<h3>Keyboard shortcuts</h3><div class="kbd-grid">`+
+    rows.map(([k,v])=>`<kbd>${k}</kbd><span>${v}</span>`).join('')+
+    `</div><div class="modal-actions"><button class="tb-btn primary" onclick="this.closest('.modal-overlay').remove()">Close</button></div>`);
+};
+
+/* ============================================================ *
+ *  System controls: health, backend logs, restart              *
+ * ============================================================ */
+let backendOnline = null, logSince = 0, restarting = false;
+function setHealth(state){            // 'online' | 'busy' | 'offline'
+  for (const id of ['health','health-menu']){
+    const el=document.getElementById(id); if(el){ el.className='health-dot '+state; }
+  }
+  const txt={online:'Backend online',busy:'Backend busy',offline:'Backend offline'}[state];
+  document.getElementById('health').title=txt;
+}
+function refreshHealthText(){
+  const el=document.getElementById('health-text');
+  if(el) el.textContent = restarting?'Backend: restarting…':backendOnline?'Backend: online':'Backend: offline';
+}
+async function pollHealth(){
+  if (restarting) return;
+  try{
+    const r=await fetch(`${API}/api/system/health`,{cache:'no-store'});
+    backendOnline = r.ok; setHealth(r.ok?'online':'offline');
+  }catch(_){ backendOnline=false; setHealth('offline'); }
+  refreshHealthText();
+}
+async function pollLogs(){
+  if (restarting) return;
+  try{
+    const r=await fetch(`${API}/api/system/logs?since=${logSince}`,{cache:'no-store'});
+    if(!r.ok) return; const d=await r.json(); logSince=d.last;
+    for(const e of d.entries){
+      CONSOLE.push({ts:e.ts, source:'backend', level:e.level, msg:e.msg});
+      if(e.level==='error' && document.querySelector('.tab[data-tab="log"]:not(.active)')){ consoleUnread++; updateConsoleBadge(); }
+      appendConsoleLine(CONSOLE[CONSOLE.length-1]);
+    }
+    if(CONSOLE.length>1500) CONSOLE.splice(0,CONSOLE.length-1500);
+  }catch(_){}
+}
+window.confirmRestart = async function(){
+  closeMenus();
+  const ok=await confirmModal('Restart backend?',
+    'Stops any running execution and reloads the Python backend. ~3–5s of downtime. '+
+    'This is a local app, so no other users are affected.',
+    [{id:'go',label:'⟳ Restart',cls:'primary'},{id:'cancel',label:'Cancel'}]);
+  if(ok==='go') doRestart();
+};
+async function doRestart(){
+  restarting=true;
+  document.getElementById('btn-run').disabled=true;
+  setHealth('busy'); refreshHealthText();
+  showBanner('<span class="spin"></span> Restarting backend… waiting for health');
+  try{ await fetch(`${API}/api/system/restart`,{method:'POST'}); }catch(_){}
+  // wait for the process to go down then come back up
+  await sleep(1200);
+  const deadline=Date.now()+30000; let up=false;
+  while(Date.now()<deadline){
+    try{ const r=await fetch(`${API}/api/system/health`,{cache:'no-store'}); if(r.ok){ up=true; break; } }catch(_){}
+    await sleep(800);
+  }
+  restarting=false; logSince=0;   // backend log seq resets on a fresh process
+  document.getElementById('btn-run').disabled=false;
+  hideBanner();
+  if(up){ setHealth('online'); backendOnline=true; toast('success','Backend is back online'); }
+  else  { setHealth('offline'); backendOnline=false; toast('error','Backend did not come back — check the terminal'); }
+  refreshHealthText();
+}
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function showBanner(html){ const b=document.getElementById('sys-banner'); b.innerHTML=html; b.classList.add('open'); }
+function hideBanner(){ document.getElementById('sys-banner').classList.remove('open'); }
+
+/* ============================================================ *
+ *  Command palette (Ctrl+K)                                     *
+ * ============================================================ */
+function paletteCommands(){
+  return [
+    {ic:'▶', label:'Run graph', k:'Ctrl+Enter', run:()=>runGraph()},
+    {ic:'●', label:'Toggle Live', k:'', run:()=>toggleLive()},
+    {ic:'💾',label:'Save', k:'Ctrl+S', run:()=>saveGraph()},
+    {ic:'＋',label:'New project…', k:'Ctrl+N', run:()=>promptNewGraph()},
+    {ic:'⛶', label:'Fit to view', k:'F', run:()=>frameView()},
+    {ic:'▦', label:'Toggle grid', k:'', run:()=>toggleGrid()},
+    {ic:'⬇', label:'Export STEP', k:'', run:()=>exportStep()},
+    {ic:'⛌', label:'Open backend console', k:'', run:()=>openConsole()},
+    {ic:'⟳', label:'Restart backend…', k:'', run:()=>confirmRestart()},
+    {ic:'?', label:'Keyboard shortcuts', k:'', run:()=>openShortcuts()},
+  ];
+}
+let palSel=0, palItems=[];
+window.openPalette = function(){
+  closeMenus();
+  let box=document.getElementById('cmdk');
+  if(!box){
+    box=document.createElement('div'); box.id='cmdk';
+    box.innerHTML=`<div class="cmdk-box"><input class="cmdk-input" id="cmdk-input" placeholder="Type a command…">`+
+      `<div class="cmdk-list" id="cmdk-list"></div><div class="cmdk-foot">↑↓ navigate · ⏎ run · esc close</div></div>`;
+    document.body.appendChild(box);
+    box.addEventListener('click', e=>{ if(e.target===box) box.classList.remove('open'); });
+    box.querySelector('.cmdk-box').addEventListener('click', e=>e.stopPropagation());
+    const inp=box.querySelector('#cmdk-input');
+    inp.addEventListener('input', renderPalette);
+    inp.addEventListener('keydown', e=>{
+      if(e.key==='ArrowDown'){ e.preventDefault(); palSel=Math.min(palSel+1,palItems.length-1); renderPalette(true); }
+      else if(e.key==='ArrowUp'){ e.preventDefault(); palSel=Math.max(palSel-1,0); renderPalette(true); }
+      else if(e.key==='Enter'){ e.preventDefault(); runPalette(palSel); }
+      else if(e.key==='Escape'){ e.preventDefault(); closePalette(); }
+    });
+  }
+  box.classList.add('open'); palSel=0;
+  const inp=box.querySelector('#cmdk-input'); inp.value=''; setTimeout(()=>inp.focus(),0);
+  renderPalette();
+};
+function closePalette(){ const b=document.getElementById('cmdk'); if(b) b.classList.remove('open'); }
+function renderPalette(keepSel){
+  const q=(document.getElementById('cmdk-input').value||'').toLowerCase();
+  palItems=paletteCommands().filter(c=>c.label.toLowerCase().includes(q));
+  if(!keepSel) palSel=0; palSel=Math.min(palSel,Math.max(0,palItems.length-1));
+  document.getElementById('cmdk-list').innerHTML=palItems.map((c,i)=>
+    `<div class="cmdk-item ${i===palSel?'sel':''}" data-i="${i}"><span class="ic">${c.ic}</span>${c.label}<span class="k">${c.k}</span></div>`).join('');
+  document.querySelectorAll('.cmdk-item').forEach(el=>el.onclick=()=>runPalette(+el.dataset.i));
+}
+function runPalette(i){ const c=palItems[i]; closePalette(); if(c) c.run(); }
+
+/* ============================================================ *
+ *  Global shortcuts (work even with focus in inputs)           *
+ * ============================================================ */
+document.addEventListener('keydown', e=>{
+  const k=(e.key||'').toLowerCase();
+  if((e.ctrlKey||e.metaKey) && k==='k'){ e.preventDefault(); openPalette(); }
+  else if((e.ctrlKey||e.metaKey) && k==='s'){ e.preventDefault(); saveGraph(); }
+  else if((e.ctrlKey||e.metaKey) && k==='enter'){ e.preventDefault(); runGraph(); }
+  else if((e.ctrlKey||e.metaKey) && k==='n'){ e.preventDefault(); promptNewGraph(); }
+  else if(k==='escape'){ closeMenus(); closePalette(); }
+});
+
 // ── boot ──
 (async function(){
   initGraph();
-  initViewer();
+  // Never let a viewport failure (e.g. WebGL unavailable) block node registration
+  // or graph editing — the editor must stay usable even without the 3D preview.
+  try { initViewer(); } catch(e){ log('3D viewer disabled: '+(e.message||e), 'err'); }
+  setHealth('busy'); setDocState('none');
   try{
     const defs = await (await fetch(`${API}/api/nodes`)).json();
     registerNodes(defs);
     log(`registered ${defs.length} node types`);
     await refreshGraphList();
     refreshCopilotStatus();
+    // restore last session
+    const last = localStorage.getItem('cadstudio:last');
+    if (last && projectNames.includes(last)) await openGraph(last);
     setStatus('ready','ok');
   }catch(e){ setStatus('init failed','err'); log('init: '+e.message,'err'); }
+  // background loops
+  setInterval(checkDirty, 1000);
+  pollHealth(); setInterval(pollHealth, 4000);
+  pollLogs();   setInterval(pollLogs, 3000);
 })();
 </script>
 </body>

@@ -33,8 +33,9 @@ cd cad-studio
 docker compose up -d --build
 ```
 
-Open <http://localhost:8090/ui> (node editor at `/nodes`). The B-Rep kernel
-(OpenCASCADE) ships inside the build123d wheel — **nothing to compile**.
+Open the node editor at <http://localhost:8090/nodes> (a read-only build123d
+code view of any graph lives at `/ui`). The B-Rep kernel (OpenCASCADE) ships
+inside the build123d wheel — **nothing to compile**.
 
 To enable the AI copilot, copy `.env.example` to `.env` and configure a provider
 (or run a local [Ollama](https://ollama.com) with a tool-capable model).
@@ -71,8 +72,7 @@ python -m pytest tests/ -v   # pure-Python: toposort, validation, transpiler, ap
 **MIT** — see [`LICENSE`](LICENSE).
 
 This project builds on third-party components with their own licenses, most
-notably **OpenCASCADE / OCCT (LGPL-2.1)** via build123d, and the optional/legacy
-**OpenSCAD (GPL-2.0+)** backend. Because these are used as a dynamically-linked
-library and a separate-process binary respectively, they do not change
-cad-studio's MIT license. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)
-for the full map and the LGPL compliance note.
+notably **OpenCASCADE / OCCT (LGPL-2.1)** via build123d. Because it is used as a
+dynamically-linked library, it does not change cad-studio's MIT license. See
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the full map and the LGPL
+compliance note.

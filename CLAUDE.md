@@ -23,10 +23,11 @@ docker restart cad-studio         # after backend code changes (see §6)
 docker logs -f cad-studio         # tail logs
 ```
 
-- UI: <http://localhost:8090/ui>   ·   node editor: `/nodes`   ·   health: `/health`
+- Node editor: <http://localhost:8090/nodes>   ·   code view: `/ui` (read-only
+  build123d generated from the graph)   ·   health: `/health`
 - The container runs as **root**, Python 3.10, serving `uvicorn server:app` on 8090.
 - Volumes (see `docker-compose.yml`): `./projects` is read-write; `cad_nodes/`,
-  `webui/`, `server.py`, `mcp_server.py`, `backends/` are mounted **read-only**, so
+  `webui/`, `server.py`, `mcp_server.py` are mounted **read-only**, so
   host edits are visible to the container but the running process must be
   restarted to re-import them.
 
@@ -59,14 +60,42 @@ Or drive the live server: `curl -s -X POST localhost:8090/api/graph/<name>/execu
 
 ```
 server.py            FastAPI HTTP API (port 8090). Routes under /api/* :
-                       projects CRUD, /api/graph/{name}/execute, /api/nodes
-                       (serves the catalog), /api/copilot/chat|status.
+                       projects list/delete, /api/graph/{name}/execute|code,
+                       /api/graph/{name}/code?map=1 (code + editable param
+                       source map), PATCH /api/graph/{name}/param (clamped
+                       single-param edit; `_cb.<name>` targets a CodeBlock
+                       override), /api/graph/{name}/codeblock/{id}/scan,
+                       /api/nodes (catalog), /api/copilot/chat|status,
+                       /api/system/health|logs|restart.
 mcp_server.py        MCP server exposing the same cad_nodes.api operations.
 webui/
-  index.html         landing / project list
+  viewer.js          ★ the SHARED Three.js viewport (ES module served at
+                       /static/viewer.js), imported by BOTH pages. `CadViewer`
+                       owns the Z-up CAD scene (grid/lights/ViewHelper), the
+                       animate loop, framing/resize, `loadSTL`, and the live
+                       multi-mesh `renderPreviews(previews, {colorOf,wireOf,
+                       onEmpty})` from a view.json. Page-specific behaviour stays
+                       in the pages and hooks onto the exposed scene/camera/
+                       previewGroup (nodes.html: the gizmo + click-to-select via
+                       viewer.pick()). Both pages now render identically.
+  index.html         the `/ui` code view — generated build123d source (read-only
+                       text) + STL preview. Parameter literals are highlighted
+                       and click-to-edit via a terminal-style inline editor that
+                       PATCHes the graph param and re-renders — non-destructive
+                       (the code is regenerated; structure stays in nodes.html).
+                       See PLAN_CODE_PARAMS.md.
   nodes.html         the node editor + 3D viewer (litegraph-style). Holds
                        WIRE_COLORS and INPUT_ACCEPTS — a MIRROR of the backend
                        wire-compatibility table that MUST be kept in sync (§5).
+                       parseCbParams() mirrors transpiler.parse_codeblock_params:
+                       a CodeBlock's `#@param`s become live widgets + dynamic
+                       input sockets (overrides in the `_cb` param namespace),
+                       editable via the ✎ Edit code modal. A BroadcastChannel
+                       ('cadstudio:link') cross-links the two views: clicking a
+                       value in /ui selects+flashes the node here; selecting a
+                       node here scrolls /ui to it (nodeByGraphId tracks on-disk
+                       ids). The /ui code view also scrubs numbers by drag,
+                       Tab-cycles spans, and Ctrl+Z-undoes param edits.
 cad_nodes/
   catalog.py         ★ the node registry. Declarative NodeDef per node type:
                        sockets (typed wires), params (widgets+defaults), and a
@@ -78,6 +107,15 @@ cad_nodes/
                        (_at, _pushpull, _section, _bbox_plane, _rotate,
                        _select_subshapes). Each node is wrapped in try/except so
                        one failing node is recorded in __errors__, not fatal.
+                       run(emit_map=True) / transpile_with_map() also return a
+                       param<->code source map (sentinel-wrapped literals measured
+                       on the final text) for the editable code view. A CodeBlock
+                       transpiles like two connected nodes: `#@param` decls
+                       (parse_codeblock_params) become the generated function's
+                       named ARGUMENTS — body stays pure (declaration lines dropped),
+                       each value appears once at the call site as an editable span
+                       (override in node.params["_cb"], wired socket drives + fans
+                       out). The body itself is an editable `code` span (kind=code).
   executor.py        Runs the generated script in a worker subprocess; captures
                        STL + view JSON + per-node errors. execute_graph(graph, workdir).
   worker.py / mesh_extractor.py   the subprocess + meshing.
@@ -91,7 +129,6 @@ cad_nodes/
   copilot.py         ★ in-app NL copilot (§7). OpenAI-compatible tool loop.
   toposort.py        topological sort + cycle detection.
   catalog … examples/  sample graphs used by tests.
-backends/            openscad.py, pythonocc.py — alternate/legacy backends.
 projects/            saved graphs (root-owned — see §6 gotcha).
 tests/               test_engine.py, test_api.py — pure-Python (no build123d).
 PLAN_NODE_CAD.md     the full design doc + node roadmap (~150 planned nodes).

@@ -198,6 +198,15 @@ class Graph:
                     f"Connection {c.id}: node {c.from_node} ({src_def.type}) "
                     f"has no output {c.from_socket!r}")
             if inp is None:
+                # A CodeBlock exposes a per-instance input socket for each of its
+                # declared `#@param`s (params-as-inputs); these aren't in the
+                # static catalog def, so accept them as universal `data` sinks.
+                if dst_def.type == "CodeBlock":
+                    from .transpiler import parse_codeblock_params  # lazy: avoid cycle
+                    decls = parse_codeblock_params(
+                        node_by_id[c.to_node].params.get("code", ""))
+                    if any(d["name"] == c.to_socket for d in decls):
+                        continue
                 raise ValidationError(
                     f"Connection {c.id}: node {c.to_node} ({dst_def.type}) "
                     f"has no input {c.to_socket!r}")

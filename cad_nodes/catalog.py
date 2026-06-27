@@ -967,4 +967,9 @@ register(NodeDef("CodeBlock", "code", "Code Block",
     outputs=_data("result"),
     code_template={},  # handled specially by the transpiler
     description="Arbitrary build123d code; must assign `result`. Inputs in_0..in_5 "
-                "(all optional) are available as variables; unconnected ones are None."))
+                "(all optional) are available as variables; unconnected ones are None. "
+                "Declare parameters with a `#@param` annotation — e.g. "
+                "`teeth = 12  #@param int min=6 max=40` — to get a live knob on the "
+                "node, an editable span in the code view, and a same-named input "
+                "socket that fans out (Range -> CodeBlock.teeth = one result each). "
+                "Overrides live in the `_cb` param namespace; the source is never rewritten."))

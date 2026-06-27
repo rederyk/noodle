@@ -1,8 +1,7 @@
 FROM python:3.10-slim
 
-# Install OpenSCAD + system deps for CadQuery
+# System libs OCCT/build123d needs at runtime (OpenGL/X stack for cadquery-ocp)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    openscad \
     libgl1 \
     libegl1 \
     libglu1-mesa \
@@ -24,7 +23,6 @@ RUN pip install --no-cache-dir --timeout 120 --retries 5 -r requirements.txt
 
 COPY server.py .
 COPY mcp_server.py .
-COPY backends/ ./backends/
 COPY cad_nodes/ ./cad_nodes/
 COPY webui/ ./webui/
 

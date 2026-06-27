@@ -16,7 +16,7 @@ from . import catalog
 from .executor import execute_graph, export_graph
 from .graph import Connection, Graph, Node
 from .store import GraphStore
-from .transpiler import transpile
+from .transpiler import parse_codeblock_params, transpile, transpile_with_map
 
 
 # --- catalog --------------------------------------------------------------
@@ -98,6 +98,76 @@ def set_param(store: GraphStore, graph_id: str, node_id: str, params: dict) -> b
     return True
 
 
+def _coerce_clamp(kind: str, value, *, lo=None, hi=None, options=None):
+    """Coerce a UI value to its declared type and clamp numerics to [lo, hi].
+    Raises ValueError on an out-of-set select. Shared by built-in params and
+    CodeBlock `#@param` overrides."""
+    if kind == "bool":
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
+    if kind == "select":
+        value = str(value)
+        if options and value not in options:
+            raise ValueError(f"{value!r} is not one of {options}")
+        return value
+    if kind in ("int", "float"):
+        num = float(value)
+        if lo is not None:
+            num = max(num, float(lo))
+        if hi is not None:
+            num = min(num, float(hi))
+        return int(round(num)) if kind == "int" else num
+    return str(value)
+
+
+def patch_param(store: GraphStore, graph_id: str, node_id: str,
+                param: str, value) -> Any:
+    """Structured single-param edit from the code view. Validates/clamps against
+    the catalog Param (built-ins) or the `#@param` annotation (CodeBlock, when
+    `param` is prefixed `_cb.`). Returns the stored value. Non-destructive: a
+    CodeBlock override lives in a `_cb` namespace, never touching its source."""
+    graph = store.load(graph_id)
+    node = graph.node(node_id)
+
+    if param.startswith("_cb."):
+        if node.type != "CodeBlock":
+            raise ValueError(f"Node {node_id} is {node.type}, not a CodeBlock")
+        name = param[4:]
+        decl = next((d for d in parse_codeblock_params(node.params.get("code", ""))
+                     if d["name"] == name), None)
+        if decl is None:
+            raise ValueError(f"CodeBlock {node_id} declares no #@param {name!r}")
+        value = _coerce_clamp(decl["type"], value, lo=decl["min"], hi=decl["max"],
+                              options=decl["options"])
+        overrides = dict(node.params.get("_cb") or {})
+        overrides[name] = value
+        node.params["_cb"] = overrides
+    else:
+        pdef = next((p for p in catalog.get(node.type).params if p.name == param), None)
+        if pdef is None:
+            raise ValueError(f"Node {node.type} has no param {param!r}")
+        value = _coerce_clamp(pdef.type, value, lo=pdef.min, hi=pdef.max,
+                              options=pdef.options or None)
+        node.params[param] = value
+
+    store.save(graph_id, graph)
+    return value
+
+
+def scan_codeblock(store: GraphStore, graph_id: str, node_id: str) -> list[dict]:
+    """The `#@param` schema declared by a CodeBlock, merged with current
+    overrides (so each entry reports its effective `value`)."""
+    node = store.load(graph_id).node(node_id)
+    if node.type != "CodeBlock":
+        raise ValueError(f"Node {node_id} is {node.type}, not a CodeBlock")
+    overrides = node.params.get("_cb") or {}
+    schema = parse_codeblock_params(node.params.get("code", ""))
+    for d in schema:
+        d["value"] = overrides.get(d["name"], d["default"])
+    return schema
+
+
 def set_code(store: GraphStore, graph_id: str, node_id: str, code: str) -> bool:
     graph = store.load(graph_id)
     node = graph.node(node_id)
@@ -127,6 +197,12 @@ def delete_connection(store: GraphStore, graph_id: str, connection_id: str) -> b
 # --- code / execution / inspection ---------------------------------------
 def get_code(store: GraphStore, graph_id: str) -> str:
     return transpile(store.load(graph_id))
+
+
+def get_code_map(store: GraphStore, graph_id: str) -> dict:
+    """Generated source + a param<->code source map for the editable code view."""
+    code, params = transpile_with_map(store.load(graph_id))
+    return {"code": code, "params": params}
 
 
 def execute(store: GraphStore, graph_id: str, timeout: int = 120) -> dict:

@@ -89,3 +89,44 @@ def test_catalog(store):
     cats = api.list_catalog("boolean")
     assert all(n["category"] == "boolean" for n in cats)
     assert api.get_node_def("Box")["type"] == "Box"
+
+
+# --- patch_param: clamp + CodeBlock override (code-view editing) ----------
+def test_patch_param_clamps_builtin(store):
+    api.create_graph(store, "g")
+    api.add_node(store, "g", "Box", {"width": 10})
+    assert api.patch_param(store, "g", "box_1", "width", 9999) == 500.0   # max
+    assert api.patch_param(store, "g", "box_1", "width", -5) == 0.1       # min
+    assert store.load("g").node("box_1").params["width"] == 0.1
+
+
+def test_patch_param_int_coerced(store):
+    api.create_graph(store, "g")
+    api.add_node(store, "g", "ArrayLinear", {})   # `count` is an int param
+    # a float string lands as a rounded int, clamped to range
+    assert api.patch_param(store, "g", "arraylinear_1", "count", "5.7") == 6
+    assert api.patch_param(store, "g", "arraylinear_1", "count", 999) == 200
+
+
+def test_patch_param_unknown_raises(store):
+    api.create_graph(store, "g")
+    api.add_node(store, "g", "Box")
+    with pytest.raises(ValueError):
+        api.patch_param(store, "g", "box_1", "nope", 1)
+
+
+def test_patch_codeblock_override(store):
+    api.create_graph(store, "g")
+    api.add_node(store, "g", "CodeBlock",
+                 {"code": "teeth = 12 #@param int min=6 max=40\nresult=None"})
+    assert api.patch_param(store, "g", "codeblock_1", "_cb.teeth", 99) == 40  # clamp
+    assert store.load("g").node("codeblock_1").params["_cb"] == {"teeth": 40}
+    schema = api.scan_codeblock(store, "g", "codeblock_1")
+    assert schema[0]["name"] == "teeth" and schema[0]["value"] == 40
+
+
+def test_patch_codeblock_unknown_param(store):
+    api.create_graph(store, "g")
+    api.add_node(store, "g", "CodeBlock", {"code": "result=None"})
+    with pytest.raises(ValueError):
+        api.patch_param(store, "g", "codeblock_1", "_cb.ghost", 1)

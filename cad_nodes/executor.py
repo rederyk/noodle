@@ -2,8 +2,8 @@
 Executor — runs transpiled build123d code in a sandboxed subprocess and
 collects the STL + view JSON via mesh_extractor.
 
-Mirrors the subprocess pattern already used in backends/pythonocc.py: write a
-wrapper script, run `python3` with a timeout, capture stdout/stderr.
+Subprocess pattern: write a wrapper script, run `python3` with a timeout,
+capture stdout/stderr.
 """
 
 from __future__ import annotations

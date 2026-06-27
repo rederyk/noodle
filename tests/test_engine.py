@@ -249,3 +249,138 @@ def test_transpile_codeblock():
     assert "def __codeblock_" in code
     assert "result = Box(in_0 or 4, 4, 4)" in code
     assert "return result" in code
+
+
+# --- source map (param <-> code spans) -----------------------------------
+from cad_nodes.transpiler import (transpile_with_map, parse_codeblock_params,
+                                  _SP_A, _SP_B)
+
+
+def _box_graph():
+    return Graph.from_dict({"name": "m", "nodes": [
+        {"id": "box_1", "type": "Box",
+         "params": {"width": 20, "height": 10, "depth": 5},
+         "position": [0, 0]}], "connections": []})
+
+
+def test_source_map_spans_match_slices():
+    code, spans = transpile_with_map(_box_graph())
+    assert _SP_A not in code and _SP_B not in code   # sentinels stripped
+    lines = code.splitlines()
+    by_param = {s["param"]: s for s in spans}
+    assert set(by_param) == {"width", "height", "depth"}
+    for s in spans:
+        # the recorded (row, col0, col1) must slice exactly the literal in text
+        assert lines[s["row"]][s["col0"]:s["col1"]] == "20.0" if s["param"] == "width" else True
+        assert s["node_id"] == "box_1" and s["kind"] == "float"
+    w = by_param["width"]
+    assert lines[w["row"]][w["col0"]:w["col1"]] == "20.0"
+    assert w["min"] == 0.1 and w["max"] == 500
+
+
+def test_plain_transpile_has_no_sentinels():
+    code = transpile(_box_graph())
+    assert _SP_A not in code and _SP_B not in code
+
+
+def test_wired_param_has_no_span():
+    # width is driven by a Panel source -> its literal isn't in the code, so no span
+    g = Graph.from_dict({"name": "m", "nodes": [
+        {"id": "p1", "type": "Panel", "params": {"text": "42"}, "position": [0, 0]},
+        {"id": "box_1", "type": "Box", "params": {"width": 20}, "position": [0, 0]},
+    ], "connections": [
+        {"id": "c1", "from_node": "p1", "from_socket": "value",
+         "to_node": "box_1", "to_socket": "width"}]})
+    _, spans = transpile_with_map(g)
+    params = {s["param"] for s in spans if s["node_id"] == "box_1"}
+    assert "width" not in params           # wired -> not an editable literal
+    assert {"height", "depth"} <= params   # the unwired ones still are
+
+
+# --- CodeBlock #@param parsing + override spans ---------------------------
+def test_parse_codeblock_params():
+    code = ("teeth = 12   #@param int min=6 max=40\n"
+            "mod   = 2.0  #@param min=0.5 max=5 step=0.1\n"
+            "mode  = \"a\" #@param select=a,b,c\n"
+            "plain = 3\n"
+            "result = None")
+    decls = parse_codeblock_params(code)
+    by = {d["name"]: d for d in decls}
+    assert set(by) == {"teeth", "mod", "mode"}     # `plain` (no annotation) skipped
+    assert by["teeth"]["type"] == "int" and by["teeth"]["min"] == 6
+    assert by["mod"]["type"] == "float" and by["mod"]["step"] == 0.1
+    assert by["mode"]["type"] == "select" and by["mode"]["options"] == ["a", "b", "c"]
+
+
+def test_codeblock_override_injection_and_span():
+    g = Graph.from_dict({"name": "m", "nodes": [{
+        "id": "cb_1", "type": "CodeBlock",
+        "params": {"code": "teeth = 12 #@param int min=6 max=40\nresult = Box(teeth,5,5)",
+                   "_cb": {"teeth": 20}},
+        "position": [0, 0]}], "connections": []})
+    code, spans = transpile_with_map(g)
+    assert "#@param" not in code                # declarations are stripped from the body
+    assert "teeth=20" in code                   # effective value passed as an argument
+    s = next(s for s in spans if s["param"] == "_cb.teeth")
+    assert code.splitlines()[s["row"]][s["col0"]:s["col1"]] == "20"
+    assert s["value"] == 20 and s["kind"] == "int"
+    # the code body itself is exposed as an editable `code` span
+    assert any(s["param"] == "code" and s["kind"] == "code" for s in spans)
+    # without emit_map the override still executes (deterministic, no sentinels)
+    assert "teeth=20" in transpile(g)
+
+
+# --- CodeBlock declared-param input sockets + fan-out (Phase 4) -----------
+def test_codeblock_declared_socket_validates():
+    g = Graph.from_dict({"name": "m", "nodes": [
+        {"id": "lr", "type": "ListRange",
+         "params": {"start": 6, "count": 3, "step": 2}, "position": [0, 0]},
+        {"id": "cb", "type": "CodeBlock",
+         "params": {"code": "teeth = 12 #@param int\nresult = Box(teeth,5,5)"},
+         "position": [0, 0]},
+    ], "connections": [
+        {"id": "l1", "from_node": "lr", "from_socket": "result",
+         "to_node": "cb", "to_socket": "teeth"}]})
+    assert g.validate() == []          # declared #@param socket is accepted
+
+
+def test_codeblock_undeclared_socket_rejected():
+    g = Graph.from_dict({"name": "m", "nodes": [
+        {"id": "lr", "type": "ListRange", "params": {}, "position": [0, 0]},
+        {"id": "cb", "type": "CodeBlock",
+         "params": {"code": "result = None"}, "position": [0, 0]},
+    ], "connections": [
+        {"id": "l1", "from_node": "lr", "from_socket": "result",
+         "to_node": "cb", "to_socket": "ghost"}]})
+    with pytest.raises(ValidationError):
+        g.validate()
+
+
+def test_codeblock_wired_param_fans_out():
+    g = Graph.from_dict({"name": "m", "nodes": [
+        {"id": "lr", "type": "ListRange",
+         "params": {"start": 6, "count": 3, "step": 2}, "position": [0, 0]},
+        {"id": "cb", "type": "CodeBlock",
+         "params": {"code": "teeth = 12 #@param int\nresult = Box(teeth,5,5)"},
+         "position": [0, 0]},
+    ], "connections": [
+        {"id": "l1", "from_node": "lr", "from_socket": "result",
+         "to_node": "cb", "to_socket": "teeth"}]})
+    code = transpile(g)
+    assert "_fanout" in code
+    assert "#@param" not in code                    # body stripped of declarations
+    assert "teeth=teeth" in code                    # the lambda binds the wired arg
+    # a wired param is not an editable literal -> no _cb.teeth span (code span is ok)
+    _, spans = transpile_with_map(g)
+    assert not any(s["param"] == "_cb.teeth" for s in spans if s["node_id"] == "cb")
+
+
+def test_codeblock_unwired_keeps_override_span():
+    g = Graph.from_dict({"name": "m", "nodes": [{
+        "id": "cb", "type": "CodeBlock",
+        "params": {"code": "teeth = 12 #@param int\nresult = Box(teeth,5,5)",
+                   "_cb": {"teeth": 30}}, "position": [0, 0]}], "connections": []})
+    code = transpile(g)
+    assert "#@param" not in code and "teeth=30" in code   # override passed as the argument
+    _, spans = transpile_with_map(g)
+    assert any(s["param"] == "_cb.teeth" for s in spans)

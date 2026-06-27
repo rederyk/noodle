@@ -3,12 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CAD Studio</title>
+<title>CAD Studio — Code View</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.2/ace.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.2/mode-scad.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.2/mode-python.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.2/theme-one_dark.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.2/ext-language_tools.js"></script>
 <style>
 :root {
   --bg-0: #0b0e14;
@@ -43,6 +41,7 @@ body { font-family:var(--font); background:var(--bg-0); color:var(--text); }
 .sidebar-header { padding:14px 16px 10px; display:flex; align-items:center; justify-content:space-between; }
 .sidebar-header h1 { font-size:14px; font-weight:700; letter-spacing:.5px; color:var(--accent); }
 .sidebar-header span { font-size:10px; color:var(--text-dim); background:var(--bg-3); padding:2px 6px; border-radius:4px; }
+.sidebar-sub { padding:0 16px 8px; font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.5px; }
 .project-list { flex:1; overflow-y:auto; padding:4px 8px; }
 .project-list::-webkit-scrollbar { width:4px; }
 .project-list::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
@@ -51,16 +50,13 @@ body { font-family:var(--font); background:var(--bg-0); color:var(--text); }
 .proj-item.active { background:var(--accent-glow); border-color:var(--accent); color:#fff; }
 .proj-item .icon { font-size:14px; opacity:.6; }
 .proj-item .name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.proj-item .badge { font-size:9px; padding:1px 5px; border-radius:3px; background:var(--bg-3); color:var(--text-dim); text-transform:uppercase; font-weight:600; }
-.proj-item.active .badge { background:var(--accent); color:#fff; }
+.proj-empty { padding:16px; font-size:11px; color:var(--text-dim); text-align:center; line-height:1.5; }
 .sidebar-footer { padding:8px; border-top:1px solid var(--border); }
-.btn-new { width:100%; padding:8px; background:var(--bg-3); border:1px dashed var(--border); border-radius:6px; color:var(--text-dim); cursor:pointer; font-size:12px; transition:all .15s; }
+.btn-new { display:block; width:100%; padding:8px; background:var(--bg-3); border:1px dashed var(--border); border-radius:6px; color:var(--text-dim); cursor:pointer; font-size:12px; transition:all .15s; text-align:center; text-decoration:none; }
 .btn-new:hover { border-color:var(--accent); color:var(--accent); background:var(--accent-glow); }
 
 /* ── Toolbar ── */
-.toolbar select { background:var(--bg-3); color:var(--text); border:1px solid var(--border); padding:5px 8px; border-radius:5px; font-size:12px; cursor:pointer; }
-.toolbar select:focus { outline:none; border-color:var(--accent); }
-.tb-btn { display:inline-flex; align-items:center; gap:5px; padding:5px 12px; border:1px solid var(--border); border-radius:5px; background:var(--bg-3); color:var(--text); font-size:12px; cursor:pointer; transition:all .15s; white-space:nowrap; }
+.tb-btn { display:inline-flex; align-items:center; gap:5px; padding:5px 12px; border:1px solid var(--border); border-radius:5px; background:var(--bg-3); color:var(--text); font-size:12px; cursor:pointer; transition:all .15s; white-space:nowrap; text-decoration:none; }
 .tb-btn:hover { border-color:var(--text-dim); background:var(--bg-2); }
 .tb-btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
 .tb-btn.primary:hover { background:var(--accent-hover); border-color:var(--accent-hover); }
@@ -69,6 +65,14 @@ body { font-family:var(--font); background:var(--bg-0); color:var(--text); }
 .tb-btn.loading .spinner { display:inline-block; }
 @keyframes spin { to { transform:rotate(360deg); } }
 .toolbar .spacer { flex:1; }
+/* ‹ n/N › cycler for the editable code values */
+.param-cycle { display:inline-flex; align-items:center; gap:2px; }
+.param-cycle .pc-arrow { padding:5px 9px; font-size:14px; line-height:1; font-weight:700; }
+.param-cycle .pc-arrow:hover:not(:disabled) { border-color:var(--term, #39ff14); color:var(--term, #39ff14); }
+.param-cycle .pc-arrow:disabled { opacity:.4; cursor:not-allowed; }
+.param-cycle .pc-count { font-family:var(--mono); font-size:11px; color:var(--text-dim);
+  min-width:34px; text-align:center; padding:0 4px; }
+.toolbar .gen-tag { font-size:10px; color:var(--text-dim); border:1px solid var(--border); border-radius:4px; padding:2px 7px; }
 .toolbar .status-pill { font-size:11px; padding:3px 8px; border-radius:10px; background:var(--bg-3); color:var(--text-dim); }
 .toolbar .status-pill.ok { color:var(--green); }
 .toolbar .status-pill.err { color:var(--accent); }
@@ -79,55 +83,134 @@ body { font-family:var(--font); background:var(--bg-0); color:var(--text); }
 .split-handle { width:5px; background:var(--border); cursor:col-resize; transition:background .15s; flex-shrink:0; }
 .split-handle:hover, .split-handle.dragging { background:var(--accent); }
 #ace-editor { position:absolute; inset:0; font-size:14px; }
+.code-banner { position:absolute; top:8px; left:8px; z-index:6; font-size:10px; color:var(--text-dim);
+  background:var(--bg-1); border:1px solid var(--border); border-radius:5px; padding:3px 8px; pointer-events:none; }
 
 /* ── 3D Viewer ── */
 #viewer-canvas { width:100%; height:100%; display:block; }
 .viewer-overlay { position:absolute; bottom:12px; left:12px; font-size:10px; color:var(--text-dim); pointer-events:none; display:flex; gap:12px; }
 .viewer-overlay kbd { background:var(--bg-3); padding:1px 4px; border-radius:3px; font-size:9px; border:1px solid var(--border); }
-.viewer-stats { position:absolute; top:12px; right:12px; font-size:11px; color:var(--text-dim); background:var(--bg-1ee); padding:6px 10px; border-radius:6px; border:1px solid var(--border); display:none; }
+.viewer-stats { position:absolute; top:12px; right:12px; font-size:11px; color:var(--text-dim); background:var(--bg-1); padding:6px 10px; border-radius:6px; border:1px solid var(--border); display:none; }
 .viewer-stats.visible { display:block; }
-
-/* ── Params panel ── */
-.params-panel { position:absolute; right:12px; top:12px; width:240px; background:var(--bg-1); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; display:none; z-index:10; box-shadow:0 8px 32px rgba(0,0,0,.4); }
-.params-panel.open { display:block; }
-.params-header { padding:10px 12px; font-size:12px; font-weight:600; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
-.params-header .close { cursor:pointer; color:var(--text-dim); }
-.params-body { padding:10px 12px; max-height:300px; overflow-y:auto; }
-.param-row { display:flex; align-items:center; justify-content:space-between; margin:6px 0; }
-.param-row label { font-size:12px; color:var(--text); font-family:var(--mono); }
-.param-row input { width:72px; background:var(--bg-3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:12px; font-family:var(--mono); text-align:right; }
-.param-row input:focus { outline:none; border-color:var(--accent); }
-.params-footer { padding:8px 12px; border-top:1px solid var(--border); }
-.params-footer button { width:100%; padding:6px; background:var(--accent); color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600; }
-.params-footer button:hover { background:var(--accent-hover); }
-.params-empty { padding:16px; text-align:center; font-size:11px; color:var(--text-dim); }
-.params-empty code { background:var(--bg-3); padding:1px 4px; border-radius:3px; font-size:10px; }
 
 /* ── Console ── */
 .console-panel { position:absolute; bottom:0; left:0; right:0; height:0; background:var(--bg-1); border-top:1px solid var(--border); overflow:hidden; transition:height .2s; z-index:5; }
 .console-panel.open { height:140px; }
 .console-header { padding:4px 10px; font-size:11px; color:var(--text-dim); border-bottom:1px solid var(--border); display:flex; justify-content:space-between; }
 .console-body { padding:6px 10px; font-family:var(--mono); font-size:11px; color:var(--text-dim); overflow-y:auto; height:calc(100% - 26px); }
-.console-body .log { margin:2px 0; }
+.console-body .log { margin:2px 0; white-space:pre-wrap; }
 .console-body .log.err { color:var(--accent); }
 .console-body .log.ok { color:var(--green); }
-
-/* ── Modal ── */
-.modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:100; display:none; align-items:center; justify-content:center; }
-.modal-overlay.open { display:flex; }
-.modal { background:var(--bg-1); border:1px solid var(--border); border-radius:12px; padding:24px; width:360px; }
-.modal h3 { font-size:16px; margin-bottom:16px; }
-.modal label { display:block; font-size:12px; color:var(--text-dim); margin-bottom:4px; }
-.modal input, .modal select { width:100%; padding:8px 10px; background:var(--bg-3); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:13px; margin-bottom:12px; }
-.modal input:focus, .modal select:focus { outline:none; border-color:var(--accent); }
-.modal .actions { display:flex; gap:8px; justify-content:flex-end; margin-top:8px; }
-.modal .actions button { padding:7px 16px; border-radius:6px; border:1px solid var(--border); background:var(--bg-3); color:var(--text); cursor:pointer; font-size:13px; }
-.modal .actions button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
 
 /* ── Statusbar ── */
 .statusbar .left { display:flex; gap:12px; align-items:center; }
 .statusbar .right { display:flex; gap:12px; align-items:center; }
 .statusbar .dot { width:6px; height:6px; border-radius:50%; background:var(--green); }
+
+/* ════════════════════════════════════════════════════════════════════
+   Editable parameter spans + terminal-style inline editor
+   ════════════════════════════════════════════════════════════════════ */
+:root { --term: #39ff14; --term-dim: #1f8a0f; --term-glow: rgba(57,255,20,.35); }
+
+/* Ace markers sit in the marker layer (behind the glyphs). We tint the value
+   and underline it so a parameter reads as a "live" editable token. */
+.pm { position:absolute; z-index:2; border-radius:3px;
+  border-bottom:1px solid var(--term-dim);
+  box-shadow: inset 0 -6px 10px -8px var(--term-glow); }
+.pm-num    { background:rgba(57,255,20,.10);  border-bottom-color:var(--term); }
+.pm-int    { background:rgba(57,255,20,.10);  border-bottom-color:var(--term); }
+.pm-float  { background:rgba(57,255,20,.10);  border-bottom-color:var(--term); }
+.pm-bool   { background:rgba(245,158,11,.12); border-bottom-color:var(--orange); }
+.pm-select { background:rgba(59,130,246,.12); border-bottom-color:var(--blue); }
+.pm-str    { background:rgba(168,85,247,.12); border-bottom-color:#a855f7; }
+.pm-code   { background:rgba(57,255,20,.07); border-bottom:1px dashed var(--term); font-style:italic; }
+.pm-cb     { box-shadow: inset 0 -7px 10px -8px var(--term-glow), 0 0 0 1px rgba(57,255,20,.18); }
+.pm-hot    { background:rgba(57,255,20,.22) !important; box-shadow:0 0 8px var(--term-glow); }
+/* a node line flashed when revealed from the /nodes editor */
+.pm-reveal { position:absolute; z-index:1; background:rgba(57,255,20,.10);
+  border-left:2px solid var(--term); box-shadow:inset 0 0 18px -6px var(--term-glow);
+  animation:pmReveal 1.6s ease-out; }
+@keyframes pmReveal { 0% { background:rgba(57,255,20,.32); } 100% { background:rgba(57,255,20,.05); } }
+
+/* hover tooltip */
+.pm-tip { position:fixed; z-index:60; pointer-events:none; display:none;
+  font-family:var(--mono); font-size:11px; color:var(--term);
+  background:#04140a; border:1px solid var(--term-dim); border-radius:4px;
+  padding:3px 8px; white-space:nowrap; box-shadow:0 4px 14px rgba(0,0,0,.6); }
+.pm-tip b { color:#9affad; font-weight:600; }
+.pm-tip .k { color:var(--text-dim); }
+
+/* ── the inline terminal editor ── */
+.pm-pop { position:fixed; z-index:70; display:none; min-width:210px;
+  font-family:var(--mono); font-size:12px; color:var(--term);
+  background:linear-gradient(180deg,#06160c,#040d07);
+  border:1px solid var(--term-dim); border-radius:7px; overflow:hidden;
+  box-shadow:0 0 0 1px rgba(57,255,20,.10), 0 10px 30px rgba(0,0,0,.7),
+             0 0 22px -6px var(--term-glow); }
+.pm-pop.open { display:block; animation:pmIn .12s ease-out; }
+@keyframes pmIn { from { opacity:0; transform:translateY(-4px) scale(.98); } to { opacity:1; transform:none; } }
+/* faux CRT scanlines */
+.pm-pop::after { content:""; position:absolute; inset:0; pointer-events:none;
+  background:repeating-linear-gradient(0deg, rgba(57,255,20,.04) 0 1px, transparent 1px 3px); }
+.pm-bar { display:flex; align-items:center; gap:6px; padding:5px 9px;
+  background:rgba(57,255,20,.07); border-bottom:1px solid var(--term-dim);
+  text-shadow:0 0 6px var(--term-glow); letter-spacing:.3px; }
+.pm-bar .led { width:7px; height:7px; border-radius:50%; background:var(--term);
+  box-shadow:0 0 6px var(--term); animation:pmBlink 1.4s steps(2) infinite; }
+@keyframes pmBlink { 50% { opacity:.35; } }
+.pm-bar .who { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pm-bar .who b { color:#9affad; }
+.pm-bar .who .ns { color:var(--orange); }
+.pm-bar .x { cursor:pointer; color:var(--term-dim); }
+.pm-bar .x:hover { color:var(--term); }
+.pm-body { padding:9px; position:relative; z-index:1; }
+.pm-row { display:flex; align-items:center; gap:7px; }
+.pm-prompt { color:var(--term-dim); }
+.pm-input { flex:1; background:#020a05; border:1px solid var(--term-dim); border-radius:4px;
+  color:var(--term); font-family:var(--mono); font-size:13px; padding:5px 8px; outline:none;
+  text-shadow:0 0 5px var(--term-glow); caret-color:var(--term); }
+.pm-input:focus { border-color:var(--term); box-shadow:0 0 0 1px var(--term-glow); }
+.pm-slider { -webkit-appearance:none; appearance:none; width:100%; height:4px; margin:11px 0 4px;
+  background:linear-gradient(90deg,var(--term-dim),var(--term)); border-radius:3px; outline:none; }
+.pm-slider::-webkit-slider-thumb { -webkit-appearance:none; width:13px; height:13px; border-radius:50%;
+  background:var(--term); cursor:pointer; box-shadow:0 0 8px var(--term-glow); border:1px solid #061a0b; }
+.pm-slider::-moz-range-thumb { width:13px; height:13px; border:1px solid #061a0b; border-radius:50%;
+  background:var(--term); cursor:pointer; box-shadow:0 0 8px var(--term-glow); }
+.pm-meta { display:flex; justify-content:space-between; color:var(--term-dim); font-size:10px; margin-top:6px; }
+.pm-opts { display:flex; flex-wrap:wrap; gap:5px; }
+.pm-opt { padding:4px 9px; border:1px solid var(--term-dim); border-radius:4px; background:#020a05;
+  color:var(--term); cursor:pointer; font-family:var(--mono); font-size:12px; transition:all .12s; }
+.pm-opt:hover { border-color:var(--term); background:rgba(57,255,20,.10); }
+.pm-opt.sel { background:var(--term); color:#04140a; border-color:var(--term); font-weight:700;
+  box-shadow:0 0 10px var(--term-glow); }
+.pm-foot { display:flex; gap:7px; margin-top:9px; }
+.pm-btn { flex:1; text-align:center; padding:5px; border:1px solid var(--term-dim); border-radius:4px;
+  background:#020a05; color:var(--term); cursor:pointer; font-family:var(--mono); font-size:11px;
+  letter-spacing:.5px; transition:all .12s; }
+.pm-btn:hover { background:rgba(57,255,20,.12); border-color:var(--term); }
+.pm-btn.go { background:var(--term-dim); color:#bfffc6; }
+.pm-btn.go:hover { background:var(--term); color:#04140a; box-shadow:0 0 12px var(--term-glow); }
+.pm-hint { font-size:10px; color:var(--term-dim); padding:1px 9px 8px; position:relative; z-index:1; }
+
+/* ── code-body editor modal (the `code` input, edited from the code view) ── */
+.code-modal { position:fixed; inset:0; z-index:80; display:none; align-items:center; justify-content:center;
+  background:rgba(0,0,0,.55); }
+.code-modal.open { display:flex; }
+.code-modal .cm-box { width:680px; max-width:94vw; font-family:var(--mono);
+  background:linear-gradient(180deg,#06160c,#040d07); border:1px solid var(--term-dim); border-radius:9px;
+  overflow:hidden; box-shadow:0 0 0 1px rgba(57,255,20,.10), 0 18px 50px rgba(0,0,0,.7), 0 0 26px -6px var(--term-glow); }
+.code-modal .cm-bar { display:flex; align-items:center; gap:7px; padding:7px 11px; color:var(--term);
+  background:rgba(57,255,20,.07); border-bottom:1px solid var(--term-dim); text-shadow:0 0 6px var(--term-glow); }
+.code-modal .cm-bar .led { width:7px; height:7px; border-radius:50%; background:var(--term); box-shadow:0 0 6px var(--term);
+  animation:pmBlink 1.4s steps(2) infinite; }
+.code-modal .cm-bar .who { flex:1; } .code-modal .cm-bar .who b { color:#9affad; }
+.code-modal .cm-bar .x { cursor:pointer; color:var(--term-dim); } .code-modal .cm-bar .x:hover { color:var(--term); }
+.code-modal textarea { display:block; width:100%; height:340px; resize:vertical; box-sizing:border-box;
+  background:#04140a; color:#9affad; border:0; border-bottom:1px solid var(--term-dim); padding:11px 12px;
+  font-family:var(--mono); font-size:13px; line-height:1.55; outline:none; }
+.code-modal .cm-hint { font-size:11px; color:var(--term-dim); padding:7px 12px; }
+.code-modal .cm-hint code { color:var(--term); }
+.code-modal .cm-foot { display:flex; gap:8px; justify-content:flex-end; padding:0 12px 11px; }
 </style>
 </head>
 <body>
@@ -136,26 +219,29 @@ body { font-family:var(--font); background:var(--bg-0); color:var(--text); }
   <div class="sidebar">
     <div class="sidebar-header">
       <h1>CAD Studio</h1>
-      <span>v0.2</span>
+      <span>code</span>
     </div>
+    <div class="sidebar-sub">Node graphs</div>
     <div class="project-list" id="project-list"></div>
     <div class="sidebar-footer">
-      <button class="btn-new" onclick="showNewModal()">+ New Project</button>
+      <a class="btn-new" href="/nodes">✎ Open node editor</a>
     </div>
   </div>
 
   <!-- Toolbar -->
   <div class="toolbar">
-    <select id="sel-backend" onchange="switchBackend()">
-      <option value="openscad">OpenSCAD</option>
-      <option value="cadquery">CadQuery</option>
-    </select>
-    <button class="tb-btn" onclick="saveProject()">💾 Save</button>
-    <button class="tb-btn primary" id="btn-render" onclick="renderProject()">▶ Render</button>
+    <button class="tb-btn primary" id="btn-render" onclick="renderProject()">▶ Render <span class="spinner"></span></button>
+    <button class="tb-btn" onclick="refreshCode()" title="Re-transpile the graph">↻ Refresh code</button>
     <button class="tb-btn" onclick="downloadSTL()">⬇ STL</button>
-    <button class="tb-btn" onclick="toggleParams()">⚙ Params</button>
+    <button class="tb-btn" onclick="copyCode()">⧉ Copy</button>
     <button class="tb-btn" onclick="toggleConsole()">📟 Console</button>
+    <div class="param-cycle" id="param-cycle" title="Cycle editable values in the code (Tab / Shift+Tab)">
+      <button class="tb-btn pc-arrow" id="btn-prev-param" onclick="cycleSpan(-1)" title="Previous editable value (Shift+Tab)">‹</button>
+      <span class="pc-count" id="pc-count">0</span>
+      <button class="tb-btn pc-arrow" id="btn-next-param" onclick="cycleSpan(1)" title="Next editable value (Tab)">›</button>
+    </div>
     <div class="spacer"></div>
+    <span class="gen-tag">build123d · generated · params editable</span>
     <div class="status-pill" id="status-pill">Ready</div>
   </div>
 
@@ -163,8 +249,9 @@ body { font-family:var(--font); background:var(--bg-0); color:var(--text); }
   <div class="workspace">
     <div class="editor-pane" id="editor-pane">
       <div id="ace-editor"></div>
+      <div class="code-banner">Generated · <span style="color:var(--term)">click a highlighted value to edit ▸</span></div>
       <div class="console-panel" id="console-panel">
-        <div class="console-header"><span>Console</span><span class="close" onclick="toggleConsole()">✕</span></div>
+        <div class="console-header"><span>Console</span><span class="close" style="cursor:pointer" onclick="toggleConsole()">✕</span></div>
         <div class="console-body" id="console-body"></div>
       </div>
     </div>
@@ -178,11 +265,6 @@ body { font-family:var(--font); background:var(--bg-0); color:var(--text); }
         <span><kbd>Ctrl+Enter</kbd> Render</span>
       </div>
       <div class="viewer-stats" id="viewer-stats"></div>
-      <div class="params-panel" id="params-panel">
-        <div class="params-header"><span>Parameters</span><span class="close" onclick="toggleParams()">✕</span></div>
-        <div class="params-body" id="params-body"></div>
-        <div class="params-footer"><button onclick="applyParams()">Apply & Render</button></div>
-      </div>
     </div>
   </div>
 
@@ -193,28 +275,22 @@ body { font-family:var(--font); background:var(--bg-0); color:var(--text); }
       <span id="sb-status">Ready</span>
     </div>
     <div class="right">
-      <span id="sb-project">No project</span>
-      <span id="sb-backend">openscad</span>
+      <span id="sb-project">No graph</span>
+      <span>build123d</span>
     </div>
   </div>
 </div>
 
-<!-- New Project Modal -->
-<div class="modal-overlay" id="modal-new">
-  <div class="modal">
-    <h3>New Project</h3>
-    <label>Project name</label>
-    <input id="inp-name" placeholder="my-part" autofocus>
-    <label>Backend</label>
-    <select id="inp-backend">
-      <option value="openscad">OpenSCAD — CSG text</option>
-      <option value="cadquery">CadQuery — B-Rep Python</option>
-    </select>
-    <div class="actions">
-      <button onclick="hideNewModal()">Cancel</button>
-      <button class="primary" onclick="createProject()">Create</button>
-    </div>
+<!-- hover tooltip + terminal-style inline param editor (built once, reused) -->
+<div class="pm-tip" id="pm-tip"></div>
+<div class="pm-pop" id="pm-pop">
+  <div class="pm-bar">
+    <span class="led"></span>
+    <span class="who" id="pm-who"></span>
+    <span class="x" id="pm-x">✕</span>
   </div>
+  <div class="pm-body" id="pm-body"></div>
+  <div class="pm-hint" id="pm-hint"></div>
 </div>
 
 <script type="importmap">
@@ -227,238 +303,599 @@ body { font-family:var(--font); background:var(--bg-0); color:var(--text); }
 </script>
 
 <script type="module">
-import * as THREE from 'three';
-import { STLLoader } from 'three/addons/loaders/STLLoader.js';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CadViewer } from '/static/viewer.js';   // shared viewer (same as the /nodes editor)
 
 const API = '';
 let currentProject = null;
 let aceEditor = null;
 
-// ── Ace Editor ──
+// ── Ace Editor (read-only build123d viewer) ──
 function initAce() {
+  // let Ace lazy-load any mode/theme it needs from the same CDN as the preloads
+  ace.config.set('basePath', 'https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.2/');
   aceEditor = ace.edit('ace-editor');
-  aceEditor.setTheme('one_dark');
+  try { aceEditor.setTheme('ace/theme/one_dark'); } catch (e) { /* theme is cosmetic */ }
   aceEditor.setOptions({
     fontSize: 14,
     fontFamily: 'JetBrains Mono, Fira Code, Consolas, monospace',
     showPrintMargin: false,
     tabSize: 4,
     useSoftTabs: true,
-    enableBasicAutocompletion: true,
+    readOnly: true,
+    highlightActiveLine: false,
     scrollPastEnd: 0.5,
   });
+  aceEditor.session.setMode('ace/mode/python');
   aceEditor.commands.addCommand({
     name: 'render',
     bindKey: { win: 'Ctrl-Enter', mac: 'Cmd-Enter' },
     exec: () => renderProject(),
   });
-  aceEditor.commands.addCommand({
-    name: 'save',
-    bindKey: { win: 'Ctrl-S', mac: 'Cmd-S' },
-    exec: () => saveProject(),
-  });
-  setAceMode('openscad');
+  aceEditor.setValue('# Select a node graph on the left to view its generated build123d code.\n', -1);
+  aceEditor.clearSelection();
 }
 
-function setAceMode(backend) {
-  if (backend === 'cadquery') {
-    aceEditor.session.setMode('ace/mode/python');
+// ════════════════════════════════════════════════════════════════════
+// Editable parameters in the (read-only) generated code
+// Each span from /code?map=1 becomes a highlighted, clickable token that
+// opens a terminal-style inline editor; committing PATCHes the graph param
+// and re-renders. Non-destructive: the code is always regenerated.
+// ════════════════════════════════════════════════════════════════════
+const AceRange = ace.require('ace/range').Range;
+let paramSpans = [];       // current source-map entries
+let paramMarkers = [];     // Ace marker ids (so we can clear them)
+let activeSpan = null;     // span being edited
+let hotMarker = null;      // hover-highlight marker id
+
+function clearParamMarkers() {
+  for (const id of paramMarkers) aceEditor.session.removeMarker(id);
+  paramMarkers = [];
+}
+
+function applyParamMap(spans) {
+  paramSpans = spans || [];
+  clearParamMarkers();
+  const session = aceEditor.session;
+  for (const s of paramSpans) {
+    const kindCls = s.param && s.param.startsWith('_cb.') ? 'pm-cb' : '';
+    const cls = `pm pm-${s.kind} ${s.kind === 'int' || s.kind === 'float' ? 'pm-num' : ''} ${kindCls}`;
+    const range = new AceRange(s.row, s.col0, s.row, s.col1);
+    paramMarkers.push(session.addMarker(range, cls.trim(), 'text', false));
+  }
+  document.getElementById('ace-editor').classList.toggle('has-params', paramSpans.length > 0);
+  if (lastSpanIdx >= paramSpans.length) lastSpanIdx = -1;
+  updateParamCount();
+}
+
+function spanAt(row, col) {
+  // last match wins so nested/adjacent spans resolve to the tightest one
+  let hit = null;
+  for (const s of paramSpans) {
+    if (s.row === row && col >= s.col0 && col <= s.col1) hit = s;
+  }
+  return hit;
+}
+
+function spanFromEvent(e) {
+  const r = aceEditor.renderer;
+  const pos = r.screenToTextCoordinates(e.clientX, e.clientY);
+  return spanAt(pos.row, pos.column);
+}
+
+// ── hover: tooltip + pointer ──
+const pmTip = document.getElementById('pm-tip');
+function onCodeMove(e) {
+  if (isScrubbing) return;          // don't fight the scrub readout/cursor
+  const s = spanFromEvent(e);
+  const content = aceEditor.renderer.content;
+  if (s) {
+    content.style.cursor = 'pointer';
+    if (s.kind === 'code') {
+      pmTip.innerHTML = `✎ <b>${s.node_type}</b> <span class="k">·</span> click to edit code body`;
+    } else {
+      const ns = s.param.startsWith('_cb.') ? '<span class="ns">#@param</span> ' : '';
+      pmTip.innerHTML = `${ns}<b>${s.node_type}</b> <span class="k">·</span> ${s.label} <span class="k">=</span> ${fmtVal(s)}`;
+    }
+    pmTip.style.display = 'block';
+    pmTip.style.left = (e.clientX + 14) + 'px';
+    pmTip.style.top = (e.clientY + 16) + 'px';
   } else {
-    aceEditor.session.setMode('ace/mode/scad');
+    content.style.cursor = 'default';
+    pmTip.style.display = 'none';
+  }
+}
+function onCodeLeave() { pmTip.style.display = 'none'; }
+
+function fmtVal(s) {
+  if (s.kind === 'bool') return s.value ? 'true' : 'false';
+  if (s.kind === 'str') return JSON.stringify(s.value);
+  return String(s.value);
+}
+
+// ── the inline editor ──
+const pmPop = document.getElementById('pm-pop');
+const pmBody = document.getElementById('pm-body');
+const pmWho = document.getElementById('pm-who');
+const pmHint = document.getElementById('pm-hint');
+let renderTimer = null, dirty = false;
+let editOrigin = null;          // {node_id,param,value} captured when editing starts
+let lastSpanIdx = -1;           // last cycled span (for the ‹ › toolbar arrows)
+let isScrubbing = false;        // true while drag-scrubbing a numeric span
+const undoStack = [];           // past param edits, for Ctrl+Z
+// cross-view link with the /nodes editor (other tab): we send "locate", receive "reveal"
+const xlink = (() => { try { return new BroadcastChannel('cadstudio:link'); } catch (_) { return null; } })();
+function valuesEqual(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return Math.abs(a - b) < 1e-9;
+  return a === b;
+}
+function broadcastLocate(nodeId) {
+  if (xlink && currentProject) xlink.postMessage({ cmd: 'locate', graph: currentProject, node_id: nodeId });
+}
+
+// Open the inline editor for span `s`. `e` is the originating mouse event (for
+// positioning); when absent (keyboard Tab / programmatic) we anchor to the span.
+function openEditor(s, e) {
+  if (s.kind === 'code') { openCodeModal(s); return; }   // the code body opens a full editor
+  activeSpan = s;
+  editOrigin = { node_id: s.node_id, param: s.param, value: s.value };
+  pmTip.style.display = 'none';
+  broadcastLocate(s.node_id);          // highlight the matching node in /nodes
+  const ns = s.param.startsWith('_cb.') ? '<span class="ns">_cb.</span>' : '';
+  pmWho.innerHTML = `<b>${s.node_id}</b> · ${ns}${s.label}`;
+  pmHint.textContent = s.param.startsWith('_cb.')
+    ? 'CodeBlock #@param override — source stays intact'
+    : '↹ next · ⎋ close · drag value to scrub';
+  buildBody(s);
+  // anchor near the click, or at the span's screen position for keyboard nav
+  pmPop.classList.add('open');
+  const pw = pmPop.offsetWidth, ph = pmPop.offsetHeight;
+  let ax, ay;
+  if (e) { ax = e.clientX; ay = e.clientY + 14; }
+  else {
+    const p = aceEditor.renderer.textToScreenCoordinates(s.row, s.col0);
+    ax = p.pageX; ay = p.pageY + aceEditor.renderer.lineHeight + 4;
+  }
+  pmPop.style.left = Math.max(8, Math.min(ax, window.innerWidth - pw - 12)) + 'px';
+  pmPop.style.top = Math.max(8, Math.min(ay, window.innerHeight - ph - 12)) + 'px';
+  const inp = pmPop.querySelector('.pm-input');
+  if (inp) { inp.focus(); inp.select(); }
+  lastSpanIdx = paramSpans.indexOf(s);
+  updateParamCount();
+}
+
+function closeEditor(sync = true) {
+  if (!pmPop.classList.contains('open')) return;
+  const s = activeSpan;
+  pmPop.classList.remove('open');
+  activeSpan = null;
+  if (editOrigin && s && !valuesEqual(editOrigin.value, s.value)) undoStack.push(editOrigin);
+  editOrigin = null;
+  updateParamCount();
+  if (sync && dirty) { dirty = false; refreshCode(true); }
+}
+
+// Cycle to the prev/next editable value in document order (toolbar ‹ › arrows AND
+// keyboard Tab/Shift+Tab). Works from any state: scrolls the target into view and
+// opens its inline editor. Wraps around.
+window.cycleSpan = function(dir) {
+  const n = paramSpans.length;
+  if (!n) { setStatus('no editable values in this graph'); return; }
+  const cur = activeSpan ? paramSpans.indexOf(activeSpan) : lastSpanIdx;
+  const next = cur < 0 ? (dir > 0 ? 0 : n - 1) : ((cur + dir) % n + n) % n;
+  lastSpanIdx = next;
+  const s = paramSpans[next];
+  closeEditor(false);
+  aceEditor.scrollToLine(s.row, true, false);   // centre the line, no animation
+  openEditor(s, null);
+  updateParamCount();
+};
+function gotoSpan(dir) { window.cycleSpan(dir); }   // keyboard alias
+
+// Toolbar counter "idx/N" + enable/disable the arrows.
+function updateParamCount() {
+  const elc = document.getElementById('pc-count');
+  if (!elc) return;
+  const n = paramSpans.length;
+  const cur = activeSpan ? paramSpans.indexOf(activeSpan) : lastSpanIdx;
+  elc.textContent = n ? (cur >= 0 ? `${cur + 1}/${n}` : String(n)) : '0';
+  for (const id of ['btn-prev-param', 'btn-next-param']) {
+    const b = document.getElementById(id); if (b) b.disabled = (n === 0);
   }
 }
 
+// The CodeBlock body is itself an editable input: a `code` span opens a full
+// (terminal-style) editor that PATCHes the `code` param — re-transpiled + re-run.
+function openCodeModal(s) {
+  closeEditor(false);
+  let ov = document.getElementById('code-modal');
+  if (!ov) {
+    ov = document.createElement('div'); ov.id = 'code-modal'; ov.className = 'code-modal';
+    ov.innerHTML =
+      '<div class="cm-box">' +
+        '<div class="cm-bar"><span class="led"></span>' +
+          '<span class="who">✎ edit code · <b id="cm-node"></b></span><span class="x" id="cm-x">✕</span></div>' +
+        '<textarea id="cm-text" spellcheck="false"></textarea>' +
+        '<div class="cm-hint">must assign <code>result</code> · <code>name = 5 #@param</code> declares a knob + input · inputs <code>in_0…in_5</code> · <b>Ctrl+Enter</b> to apply</div>' +
+        '<div class="cm-foot"><button class="pm-btn" id="cm-cancel">esc</button>' +
+          '<button class="pm-btn go" id="cm-apply">apply ⏎</button></div>' +
+      '</div>';
+    document.body.appendChild(ov);
+    const close = () => ov.classList.remove('open');
+    ov.addEventListener('mousedown', e => { if (e.target === ov) close(); });
+    document.getElementById('cm-x').onclick = close;
+    document.getElementById('cm-cancel').onclick = close;
+  }
+  const ta = document.getElementById('cm-text');
+  ta.value = s.value || '';
+  document.getElementById('cm-node').textContent = s.node_id;
+  broadcastLocate(s.node_id);
+  lastSpanIdx = paramSpans.indexOf(s); updateParamCount();
+  document.getElementById('cm-apply').onclick = async () => {
+    ov.classList.remove('open');
+    await commitCode(s.node_id, ta.value);
+  };
+  ta.onkeydown = ev => {
+    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); document.getElementById('cm-apply').click(); }
+    else if (ev.key === 'Escape') ov.classList.remove('open');
+  };
+  ov.classList.add('open');
+  setTimeout(() => ta.focus(), 0);
+}
+
+async function commitCode(nodeId, code) {
+  if (!currentProject) return;
+  const prevSpan = paramSpans.find(s => s.node_id === nodeId && s.kind === 'code');
+  try {
+    const res = await fetch(`${API}/api/graph/${currentProject}/param`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ node_id: nodeId, param: 'code', value: code }),
+    });
+    if (!res.ok) { const e = await res.json().catch(() => ({})); setStatus('Code rejected', 'err'); logConsole('code: ' + JSON.stringify(e.detail || e), 'err'); return; }
+    if (prevSpan && prevSpan.value !== code) undoStack.push({ node_id: nodeId, param: 'code', value: prevSpan.value });
+    setStatus('Code updated ✓', 'ok');
+    await refreshCode(true);
+    renderProject();
+  } catch (e) { logConsole('code error: ' + e.message, 'err'); }
+}
+
+// Ctrl+Z: revert the most recent committed param edit via a fresh PATCH.
+async function undoParam() {
+  const e = undoStack.pop();
+  if (!e) { setStatus('nothing to undo'); return; }
+  try {
+    const res = await fetch(`${API}/api/graph/${currentProject}/param`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ node_id: e.node_id, param: e.param, value: e.value }),
+    });
+    if (!res.ok) { setStatus('Undo failed', 'err'); return; }
+    setStatus(`↶ ${e.param} = ${e.value}`, 'ok');
+    await refreshCode(true);
+    renderProject();
+  } catch (err) { logConsole('undo error: ' + err.message, 'err'); }
+}
+
+function buildBody(s) {
+  pmBody.innerHTML = '';
+  if (s.kind === 'bool') return buildBool(s);
+  if (s.kind === 'select') return buildSelect(s);
+  return buildScalar(s);   // int / float / str
+}
+
+function buildScalar(s) {
+  const numeric = s.kind === 'int' || s.kind === 'float';
+  const row = el('div', 'pm-row');
+  row.appendChild(el('span', 'pm-prompt', '›'));
+  const inp = el('input', 'pm-input');
+  inp.type = 'text';
+  inp.value = String(s.value);
+  row.appendChild(inp);
+  pmBody.appendChild(row);
+
+  let slider = null;
+  if (numeric && s.min != null && s.max != null) {
+    slider = el('input', 'pm-slider');
+    slider.type = 'range';
+    slider.min = s.min; slider.max = s.max;
+    slider.step = s.step || (s.kind === 'int' ? 1 : (s.max - s.min) / 200 || 0.01);
+    slider.value = clampNum(s.value, s.min, s.max);
+    pmBody.appendChild(slider);
+    const meta = el('div', 'pm-meta');
+    meta.appendChild(el('span', '', 'min ' + s.min));
+    meta.appendChild(el('span', '', 'max ' + s.max));
+    pmBody.appendChild(meta);
+    slider.addEventListener('input', () => { inp.value = slider.value; commit(slider.value, true); });
+  }
+
+  inp.addEventListener('input', () => { if (slider) slider.value = clampNum(parseFloat(inp.value), s.min, s.max); });
+  inp.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter') { commit(inp.value, false); closeEditor(); }
+    else if (ev.key === 'Escape') closeEditor();
+    else if (numeric && (ev.key === 'ArrowUp' || ev.key === 'ArrowDown')) {
+      ev.preventDefault();
+      const step = (s.step || (s.kind === 'int' ? 1 : 0.5)) * (ev.shiftKey ? 10 : 1);
+      const nv = (parseFloat(inp.value) || 0) + (ev.key === 'ArrowUp' ? step : -step);
+      inp.value = s.kind === 'int' ? Math.round(nv) : +nv.toFixed(4);
+      if (slider) slider.value = clampNum(nv, s.min, s.max);
+      commit(inp.value, true);
+    }
+  });
+  addFoot(() => { commit(inp.value, false); closeEditor(); });
+}
+
+function buildBool(s) {
+  const wrap = el('div', 'pm-opts');
+  for (const v of [true, false]) {
+    const b = el('div', 'pm-opt' + (!!s.value === v ? ' sel' : ''), v ? 'TRUE' : 'FALSE');
+    b.onclick = () => { commit(v, false); markSel(wrap, b); s.value = v; setTimeout(() => closeEditor(), 120); };
+    wrap.appendChild(b);
+  }
+  pmBody.appendChild(wrap);
+}
+
+function buildSelect(s) {
+  const wrap = el('div', 'pm-opts');
+  for (const opt of (s.options || [])) {
+    const b = el('div', 'pm-opt' + (s.value === opt ? ' sel' : ''), opt);
+    b.onclick = () => { commit(opt, false); markSel(wrap, b); s.value = opt; setTimeout(() => closeEditor(), 120); };
+    wrap.appendChild(b);
+  }
+  pmBody.appendChild(wrap);
+}
+
+function addFoot(onGo) {
+  const foot = el('div', 'pm-foot');
+  const go = el('div', 'pm-btn go', 'apply ⏎');
+  go.onclick = onGo;
+  const esc = el('div', 'pm-btn', 'esc');
+  esc.onclick = () => closeEditor();
+  foot.appendChild(go); foot.appendChild(esc);
+  pmBody.appendChild(foot);
+}
+
+function markSel(wrap, btn) {
+  wrap.querySelectorAll('.pm-opt').forEach(o => o.classList.remove('sel'));
+  btn.classList.add('sel');
+}
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+function clampNum(v, lo, hi) {
+  v = parseFloat(v); if (isNaN(v)) v = lo != null ? lo : 0;
+  if (lo != null) v = Math.max(v, lo);
+  if (hi != null) v = Math.min(v, hi);
+  return v;
+}
+
+// PATCH the value; `live` debounces the re-render for slider scrubbing.
+async function commit(value, live) {
+  if (!activeSpan || !currentProject) return;
+  if (activeSpan.kind === 'int') value = Math.round(parseFloat(value));
+  else if (activeSpan.kind === 'float') value = parseFloat(value);
+  const span = activeSpan;
+  try {
+    const res = await fetch(`${API}/api/graph/${currentProject}/param`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ node_id: span.node_id, param: span.param, value }),
+    });
+    if (!res.ok) { const e = await res.json().catch(() => ({})); setStatus('Edit rejected', 'err'); logConsole('param: ' + JSON.stringify(e.detail || e), 'err'); return; }
+    const data = await res.json();
+    span.value = data.value;
+    dirty = true;
+    setStatus(`${span.label} = ${data.value}`, 'ok');
+    clearTimeout(renderTimer);
+    renderTimer = setTimeout(() => renderProject(), live ? 280 : 0);
+  } catch (e) { logConsole('param error: ' + e.message, 'err'); }
+}
+
+// Drag horizontally on a numeric token to scrub it live (Blender-style). A press
+// with no movement falls through to opening the inline editor.
+function startScrub(s, e) {
+  const startX = e.clientX, startVal = parseFloat(s.value) || 0;
+  const range = (s.min != null && s.max != null) ? (s.max - s.min) : null;
+  const perPx = range ? range / 320 : (s.step || (s.kind === 'int' ? 1 : 0.5)) / 4;
+  const origin = { node_id: s.node_id, param: s.param, value: s.value };
+  let scrubbing = false;
+  activeSpan = s;
+  function mv(ev) {
+    const dx = ev.clientX - startX;
+    if (!scrubbing && Math.abs(dx) < 4) return;
+    scrubbing = true; isScrubbing = true;
+    document.body.style.cursor = 'ew-resize';
+    let v = startVal + dx * perPx;
+    v = s.kind === 'int' ? Math.round(v) : Math.round(v * 1e4) / 1e4;
+    if (s.min != null) v = Math.max(s.min, v);
+    if (s.max != null) v = Math.min(s.max, v);
+    s.value = v;
+    pmTip.style.display = 'block';
+    pmTip.innerHTML = `⇆ <b>${s.label}</b> = ${v}`;
+    pmTip.style.left = (ev.clientX + 14) + 'px';
+    pmTip.style.top = (ev.clientY + 16) + 'px';
+    commit(v, true);
+  }
+  function up(ev) {
+    window.removeEventListener('mousemove', mv, true);
+    window.removeEventListener('mouseup', up, true);
+    isScrubbing = false;
+    document.body.style.cursor = '';
+    pmTip.style.display = 'none';
+    if (!scrubbing) { activeSpan = null; openEditor(s, ev); return; }   // a click
+    if (!valuesEqual(origin.value, s.value)) undoStack.push(origin);
+    activeSpan = null;
+    if (dirty) { dirty = false; refreshCode(true); }
+  }
+  window.addEventListener('mousemove', mv, true);
+  window.addEventListener('mouseup', up, true);
+}
+
+// reveal a node coming FROM the /nodes editor: scroll to it + flash its line
+let revealMarker = null, revealTimer = null;
+function revealNode(nodeId) {
+  let row = null;
+  const sp = paramSpans.find(s => s.node_id === nodeId);
+  if (sp) row = sp.row;
+  else {
+    const lines = aceEditor.session.getDocument().getAllLines();
+    const i = lines.findIndex(l => l.includes('@node:' + nodeId + ' '));
+    if (i >= 0) row = i;
+  }
+  if (row == null) return;
+  aceEditor.scrollToLine(Math.max(0, row - 4), false, true, () => {});
+  if (revealMarker != null) aceEditor.session.removeMarker(revealMarker);
+  clearTimeout(revealTimer);
+  revealMarker = aceEditor.session.addMarker(new AceRange(row, 0, row, 1), 'pm-reveal', 'fullLine');
+  revealTimer = setTimeout(() => {
+    if (revealMarker != null) { aceEditor.session.removeMarker(revealMarker); revealMarker = null; }
+  }, 1600);
+}
+
+function initParamEditing() {
+  const scroller = aceEditor.renderer.scroller;
+  scroller.addEventListener('mousemove', onCodeMove);
+  scroller.addEventListener('mouseleave', onCodeLeave);
+  scroller.addEventListener('mousedown', e => {
+    const s = spanFromEvent(e);
+    if (!s) return;
+    e.preventDefault(); e.stopPropagation();
+    if (s.kind === 'int' || s.kind === 'float') startScrub(s, e);   // drag = scrub, click = edit
+    else openEditor(s, e);
+  }, true);
+  document.getElementById('pm-x').onclick = () => closeEditor();
+  document.addEventListener('mousedown', e => {
+    if (pmPop.classList.contains('open') && !pmPop.contains(e.target)
+        && !aceEditor.renderer.scroller.contains(e.target)) closeEditor();
+  });
+  document.addEventListener('keydown', e => {
+    const open = pmPop.classList.contains('open');
+    if (e.key === 'Escape') { closeEditor(); return; }
+    if (open && e.key === 'Tab') { e.preventDefault(); gotoSpan(e.shiftKey ? -1 : 1); return; }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z') && !open) {
+      e.preventDefault(); undoParam();
+    }
+  });
+  // cross-view: the /nodes editor tells us which node was selected -> reveal it
+  if (xlink) xlink.addEventListener('message', ev => {
+    const m = ev.data || {};
+    if (m.cmd === 'reveal' && m.graph === currentProject && m.node_id) revealNode(m.node_id);
+  });
+  // pick up edits made elsewhere (copilot / node editor / another tab) on focus
+  window.addEventListener('focus', () => { if (currentProject && !pmPop.classList.contains('open')) refreshCode(true); });
+}
+
 // ── Three.js Viewer ──
-let scene, camera, renderer, controls, currentMesh, gridHelper;
-let stlLoader;
+// The 3D viewport is the SHARED CadViewer (identical to the /nodes editor): a
+// Z-up CAD scene with the live multi-mesh, per-node-coloured preview renderer.
+let viewer = null;
 
 function initViewer() {
-  const canvas = document.getElementById('viewer-canvas');
-  const container = canvas.parentElement;
-
-  scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0b0e14);
-
-  // Grid
-  gridHelper = new THREE.GridHelper(100, 50, 0x1e2738, 0x151a22);
-  scene.add(gridHelper);
-
-  // Axes
-  const axes = new THREE.AxesHelper(25);
-  axes.material.transparent = true;
-  axes.material.opacity = 0.5;
-  scene.add(axes);
-
-  // Lights
-  scene.add(new THREE.AmbientLight(0x404060, 2.5));
-  const key = new THREE.DirectionalLight(0xffffff, 2);
-  key.position.set(40, 60, 40);
-  scene.add(key);
-  const fill = new THREE.DirectionalLight(0x8888cc, 0.8);
-  fill.position.set(-40, 20, -40);
-  scene.add(fill);
-  const rim = new THREE.DirectionalLight(0xe94560, 0.3);
-  rim.position.set(0, -20, 50);
-  scene.add(rim);
-
-  // Camera
-  camera = new THREE.PerspectiveCamera(40, container.clientWidth / container.clientHeight, 0.1, 2000);
-  camera.position.set(50, 35, 50);
-
-  // Renderer
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setSize(container.clientWidth, container.clientHeight);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.1;
-
-  // Controls
-  controls = new OrbitControls(camera, canvas);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.08;
-  controls.target.set(0, 5, 0);
-
-  stlLoader = new STLLoader();
-  animate();
+  viewer = new CadViewer(document.getElementById('viewer-canvas'));
   window.addEventListener('resize', onResize);
 }
 
 function onResize() {
-  const container = document.getElementById('viewer-canvas').parentElement;
-  const w = container.clientWidth;
-  const h = container.clientHeight;
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
-  renderer.setSize(w, h);
+  if (viewer) viewer.resize();
   if (aceEditor) aceEditor.resize();
 }
 
-function animate() {
-  requestAnimationFrame(animate);
-  controls.update();
-  renderer.render(scene, camera);
+// Draw an execution `view` (per-node coloured meshes), or fall back to the STL.
+function showView(view) {
+  if (!viewer) return;
+  const { order, size } = viewer.renderPreviews((view && view.previews) || {}, {
+    onEmpty: () => viewer.loadSTL(`${API}/api/projects/${currentProject}/download?t=${Date.now()}`,
+      { onSize: (s) => showSize(s) }),
+  });
+  if (order.length && size) showSize(size, order.length);
 }
 
-function loadSTL(url) {
-  stlLoader.load(url, (geometry) => {
-    if (currentMesh) {
-      scene.remove(currentMesh);
-      currentMesh.geometry.dispose();
-      currentMesh.material.dispose();
-    }
-
-    geometry.computeVertexNormals();
-    const material = new THREE.MeshStandardMaterial({
-      color: 0xe94560,
-      roughness: 0.35,
-      metalness: 0.15,
-      side: THREE.DoubleSide,
-    });
-    currentMesh = new THREE.Mesh(geometry, material);
-
-    // Center
-    geometry.computeBoundingBox();
-    const box = geometry.boundingBox;
-    const center = new THREE.Vector3();
-    box.getCenter(center);
-    currentMesh.position.sub(center);
-    currentMesh.position.y += (box.max.y - box.min.y) / 2; // sit on grid
-
-    // Fit camera
-    const size = new THREE.Vector3();
-    box.getSize(size);
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const dist = maxDim * 2.2;
-    camera.position.set(dist * 0.6, dist * 0.45, dist * 0.6);
-    controls.target.set(0, size.y / 2, 0);
-    controls.update();
-
-    scene.add(currentMesh);
-
-    // Stats
-    const verts = geometry.attributes.position.count;
-    const faces = verts / 3;
-    const stats = document.getElementById('viewer-stats');
-    stats.innerHTML = `${Math.round(size.x*10)/10} × ${Math.round(size.y*10)/10} × ${Math.round(size.z*10)/10} mm<br>${verts} verts · ${faces} faces`;
-    stats.classList.add('visible');
-
-    setStatus('Rendered ✓', 'ok');
-    logConsole(`Rendered: ${Math.round(size.x*10)/10}×${Math.round(size.y*10)/10}×${Math.round(size.z*10)/10} mm — ${verts} vertices`, 'ok');
-  }, (progress) => {
-    if (progress.total) setStatus(`Loading ${(progress.loaded/progress.total*100)|0}%...`);
-  }, (err) => {
-    setStatus('STL load failed', 'err');
-    logConsole('STL load error: ' + err.message, 'err');
-  });
+function showSize(size, count) {
+  if (!size) return;
+  const stats = document.getElementById('viewer-stats');
+  const dims = `${(size.x).toFixed(1)} × ${(size.y).toFixed(1)} × ${(size.z).toFixed(1)} mm`;
+  stats.innerHTML = count ? `${count} preview · ${dims}` : dims;
+  stats.classList.add('visible');
 }
 
 // ── API ──
 async function loadProjects() {
   const res = await fetch(`${API}/api/projects`);
-  const projects = await res.json();
+  const projects = (await res.json()).filter(p => p.backend === 'nodegraph');
   const list = document.getElementById('project-list');
   list.innerHTML = '';
+  if (!projects.length) {
+    list.innerHTML = `<div class="proj-empty">No node graphs yet.<br>Create one in the<br><a href="/nodes" style="color:var(--accent)">node editor</a>.</div>`;
+    return;
+  }
   for (const p of projects) {
     const div = document.createElement('div');
     div.className = 'proj-item' + (p.name === currentProject ? ' active' : '');
-    const icon = p.backend === 'cadquery' ? '🐍' : '🔷';
-    div.innerHTML = `<span class="icon">${icon}</span><span class="name">${p.name}</span><span class="badge">${p.backend}</span>`;
+    div.innerHTML = `<span class="icon">◇</span><span class="name">${p.name}</span>`;
     div.onclick = () => openProject(p.name);
     list.appendChild(div);
   }
 }
 
 async function openProject(name) {
-  const res = await fetch(`${API}/api/projects/${name}`);
-  const data = await res.json();
   currentProject = name;
-  aceEditor.setValue(data.code || '', -1);
-  document.getElementById('sel-backend').value = data.backend || 'openscad';
-  setAceMode(data.backend || 'openscad');
   document.getElementById('sb-project').textContent = name;
-  document.getElementById('sb-backend').textContent = data.backend || 'openscad';
-  setStatus('Opened: ' + name);
+  setStatus('Opening: ' + name);
+  await refreshCode();
   loadProjects();
-  loadParams();
+  renderProject();   // execute the graph for an immediate preview
 }
 
-window.switchBackend = function() {
-  const backend = document.getElementById('sel-backend').value;
-  setAceMode(backend);
-  document.getElementById('sb-backend').textContent = backend;
-};
-
-window.saveProject = async function() {
+// (re)transpile the current graph and show the generated build123d source
+window.refreshCode = async function(preserveScroll = false) {
   if (!currentProject) return;
-  const code = aceEditor.getValue();
-  const backend = document.getElementById('sel-backend').value;
-  await fetch(`${API}/api/projects/${currentProject}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code, backend }),
-  });
-  setStatus('Saved ✓');
-  logConsole('Project saved');
+  try {
+    const res = await fetch(`${API}/api/graph/${currentProject}/code?map=1`);
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      aceEditor.setValue('# Could not transpile graph:\n# ' + JSON.stringify(e.detail || e), -1);
+      aceEditor.clearSelection();
+      setStatus('Transpile failed', 'err');
+      return;
+    }
+    const data = await res.json();
+    const keepScroll = preserveScroll ? aceEditor.session.getScrollTop() : 0;
+    aceEditor.setValue(data.code || '', -1);
+    aceEditor.clearSelection();
+    applyParamMap(data.params || []);
+    if (preserveScroll) aceEditor.session.setScrollTop(keepScroll);
+    else aceEditor.scrollToLine(0);
+    setStatus('Code loaded');
+  } catch (e) {
+    logConsole('Code load error: ' + e.message, 'err');
+  }
 };
 
 window.renderProject = async function() {
   if (!currentProject) return;
-  await window.saveProject();
   const btn = document.getElementById('btn-render');
   btn.classList.add('loading');
   btn.disabled = true;
   setStatus('Rendering...');
-  logConsole('Rendering...');
+  logConsole('Rendering ' + currentProject + '...');
   try {
-    const res = await fetch(`${API}/api/projects/${currentProject}/render`, { method: 'POST' });
+    // /execute returns the rich view (per-node previews + node errors), the same
+    // payload the node editor renders — so /ui now shows the identical live result.
+    const res = await fetch(`${API}/api/graph/${currentProject}/execute`, { method: 'POST' });
     const data = await res.json();
-    if (data.status === 'rendered') {
-      loadSTL(`${API}/api/projects/${currentProject}/download?t=${Date.now()}`);
-      if (data.warnings) logConsole('Warnings: ' + data.warnings, 'err');
+    if (res.ok && data.status === 'executed') {
+      showView(data.view);
+      const ne = (data.view && data.view.node_errors) || data.node_errors || {};
+      if (Object.keys(ne).length) {
+        for (const [nid, err] of Object.entries(ne)) logConsole(`node ${nid}: ${err}`, 'err');
+        setStatus(`Rendered · ${Object.keys(ne).length} node error(s)`, 'err');
+      } else {
+        setStatus('Rendered ✓', 'ok');
+      }
     } else {
       setStatus('Render failed', 'err');
-      logConsole('Render failed: ' + JSON.stringify(data), 'err');
+      const d = data.detail || data;
+      logConsole('Render failed: ' + JSON.stringify(d.errors || d.message || d), 'err');
     }
   } catch (e) {
     setStatus('Error', 'err');
@@ -474,64 +911,8 @@ window.downloadSTL = function() {
   window.open(`${API}/api/projects/${currentProject}/download`, '_blank');
 };
 
-window.createProject = async function() {
-  const name = document.getElementById('inp-name').value.trim();
-  const backend = document.getElementById('inp-backend').value;
-  if (!name) return;
-  const code = backend === 'openscad'
-    ? '// Param: width = 20\n// Param: height = 20\n// Param: depth = 10\n\ndifference() {\n    cube([width, height, depth], center=true);\n    cylinder(h=depth+2, r=width/4, center=true, $fn=64);\n}'
-    : 'import cadquery as cq\n\nresult = (\n    cq.Workplane("XY")\n    .box(20, 20, 10)\n    .faces(">Z").workplane()\n    .hole(6)\n)\ncq.exporters.export(result, __output_stl__)';
-  await fetch(`${API}/api/projects/${name}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code, backend }),
-  });
-  hideNewModal();
-  await openProject(name);
-  loadProjects();
-};
-
-// ── Params ──
-async function loadParams() {
-  if (!currentProject) return;
-  const body = document.getElementById('params-body');
-  try {
-    const res = await fetch(`${API}/api/projects/${currentProject}/params`);
-    if (!res.ok) throw new Error('Not available');
-    const params = await res.json();
-    if (Object.keys(params).length === 0) {
-      body.innerHTML = `<div class="params-empty">No params found.<br>Use <code>// Param: name = value</code></div>`;
-      return;
-    }
-    body.innerHTML = '';
-    for (const [key, val] of Object.entries(params)) {
-      const row = document.createElement('div');
-      row.className = 'param-row';
-      row.innerHTML = `<label>${key}</label><input type="number" step="any" value="${val}" data-param="${key}">`;
-      body.appendChild(row);
-    }
-  } catch {
-    body.innerHTML = `<div class="params-empty">Params only for<br>OpenSCAD backend</div>`;
-  }
-}
-
-window.applyParams = async function() {
-  if (!currentProject) return;
-  const inputs = document.querySelectorAll('#params-body input[data-param]');
-  const params = {};
-  inputs.forEach(inp => { params[inp.dataset.param] = parseFloat(inp.value); });
-  await fetch(`${API}/api/projects/${currentProject}/params`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ params }),
-  });
-  renderProject();
-};
-
-window.toggleParams = function() {
-  const panel = document.getElementById('params-panel');
-  panel.classList.toggle('open');
-  if (panel.classList.contains('open')) loadParams();
+window.copyCode = function() {
+  navigator.clipboard.writeText(aceEditor.getValue()).then(() => setStatus('Code copied ✓', 'ok'));
 };
 
 // ── Console ──
@@ -550,20 +931,6 @@ function logConsole(msg, type = '') {
   body.scrollTop = body.scrollHeight;
 }
 
-// ── Modal ──
-window.showNewModal = function() {
-  document.getElementById('modal-new').classList.add('open');
-  document.getElementById('inp-name').value = '';
-  document.getElementById('inp-name').focus();
-};
-window.hideNewModal = function() {
-  document.getElementById('modal-new').classList.remove('open');
-};
-document.getElementById('inp-name').addEventListener('keydown', e => {
-  if (e.key === 'Enter') createProject();
-  if (e.key === 'Escape') hideNewModal();
-});
-
 // ── Status ──
 function setStatus(msg, type = '') {
   document.getElementById('sb-status').textContent = msg;
@@ -576,7 +943,6 @@ function setStatus(msg, type = '') {
 const splitHandle = document.getElementById('split-handle');
 const editorPane = document.getElementById('editor-pane');
 let isDragging = false;
-
 splitHandle.addEventListener('mousedown', e => {
   isDragging = true;
   splitHandle.classList.add('dragging');
@@ -584,7 +950,6 @@ splitHandle.addEventListener('mousedown', e => {
   document.body.style.userSelect = 'none';
   e.preventDefault();
 });
-
 document.addEventListener('mousemove', e => {
   if (!isDragging) return;
   const workspace = document.querySelector('.workspace');
@@ -595,7 +960,6 @@ document.addEventListener('mousemove', e => {
   editorPane.style.width = Math.max(minW, Math.min(rect.width - minW - 5, newW)) + 'px';
   onResize();
 });
-
 document.addEventListener('mouseup', () => {
   if (!isDragging) return;
   isDragging = false;
@@ -605,10 +969,10 @@ document.addEventListener('mouseup', () => {
 });
 
 // ── Init ──
-initAce();
-initViewer();
+try { initAce(); initParamEditing(); } catch (e) { console.error('Ace init failed', e); }
+try { initViewer(); } catch (e) { console.error('Viewer init failed', e); }
 loadProjects();
-logConsole('CAD Studio ready');
+logConsole('CAD Studio code view ready');
 </script>
 </body>
 </html>

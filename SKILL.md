@@ -1,78 +1,54 @@
 # CAD Studio — nanobot Skill
 
 ## Descrizione
-Server API per modellazione CAD con due backend: OpenSCAD (CSG testuale) e CadQuery/PythonOCC (B-Rep solido). L'agente può creare progetti, scrivere codice, renderizzare e iterare.
+CAD parametrico **a nodi**. Si compone un grafo di nodi; il backend lo transpila
+in **build123d** (Python), lo esegue in un worker isolato e restituisce STL +
+mesh per il viewport. Unico motore geometrico: build123d (OpenCASCADE). Nessun
+OpenSCAD/CadQuery.
 
 ## Servizio
-- **Docker**: `cad-studio` container su porta **8090**
-- **API base**: `http://192.168.178.21:8090`
-- **WebUI**: `http://192.168.178.21:8090/ui`
+- **Docker**: container `cad-studio` su porta **8090**
+- **API base**: `http://localhost:8090`
+- **Editor a nodi**: `http://localhost:8090/nodes`
+- **Vista codice** (build123d generato dal grafo, sola lettura): `http://localhost:8090/ui`
 
-## Endpoints
+## Endpoints principali
 
 | Metodo | Path | Descrizione |
 |---|---|---|
-| GET | `/api/projects` | Lista progetti |
-| POST | `/api/projects/{name}` | Crea progetto (body: `{code, backend}`) |
-| GET | `/api/projects/{name}` | Leggi codice progetto |
-| PUT | `/api/projects/{name}` | Aggiorna codice |
-| DELETE | `/api/projects/{name}` | Elimina progetto |
-| POST | `/api/projects/{name}/render` | Renderizza → STL |
+| GET | `/api/nodes` | Catalogo nodi (tipi, socket, parametri) |
+| GET | `/api/projects` | Lista progetti (i grafi hanno `backend: "nodegraph"`) |
+| POST | `/api/graph/{name}` | Crea/sovrascrive un grafo (body: `{name, nodes, connections}`) |
+| GET | `/api/graph/{name}` | Leggi il grafo |
+| GET | `/api/graph/{name}/code` | Codice build123d transpilato dal grafo |
+| POST | `/api/graph/{name}/execute` | Esegui il grafo → view + STL + errori per-nodo |
+| POST | `/api/projects/{name}/render` | Esegui e produci `output.stl` |
 | GET | `/api/projects/{name}/download` | Download STL |
-| GET | `/api/projects/{name}/params` | Parametri (solo OpenSCAD) |
-| PATCH | `/api/projects/{name}/params` | Modifica parametri |
-| GET | `/api/backends` | Lista backend disponibili |
+| GET | `/api/graph/{name}/export/{fmt}` | Export (es. `step`) |
+| DELETE | `/api/projects/{name}` | Elimina progetto |
+| POST | `/api/copilot/chat` | Copilot NL → modifica il grafo |
+| GET | `/api/system/health` · `/api/system/logs` · POST `/api/system/restart` | Salute / log backend / riavvio |
 | GET | `/health` | Health check |
 
-## Backend: OpenSCAD
-- Codice `.scad` con annotazioni parametriche: `// Param: name = value`
-- Render via CLI `openscad -o output.stl main.scad`
-- Parametri estratti/iniettati automaticamente
+## Come un agente costruisce un modello
+Un grafo è `{nodes, connections}`. Ogni nodo ha `id`, `type` (dal catalogo
+`/api/nodes`), `params` e `position`; ogni connessione collega
+`from_node/from_socket` → `to_node/to_socket` (wire tipizzati).
 
-### Esempio codice OpenSCAD
-```openscad
-// Param: width = 20
-// Param: height = 30
-// Param: depth = 10
-
-difference() {
-    cube([width, height, depth]);
-    translate([5, 5, -1])
-        cylinder(h=depth+2, r=3, $fn=32);
-}
-```
-
-## Backend: CadQuery
-- Codice Python con `import cadquery as cq`
-- Per export STL usare la variabile `__output_stl__` pre-iniettata
-- Primitive: box, sphere, cylinder, cone
-- Booleane: union (+), cut (-), intersection (&)
-
-### Esempio codice CadQuery
-```python
-import cadquery as cq
-
-result = (
-    cq.Workplane("XY")
-    .box(20, 30, 10)
-    .faces(">Z")
-    .workplane()
-    .hole(6)
-)
-
-cq.exporters.export(result, __output_stl__)
-```
-
-## Workflow agente
-1. `POST /api/projects/{name}` — crea progetto con codice iniziale
-2. `POST /api/projects/{name}/render` — renderizza
-3. Se errori: leggi stderr, correggi codice, `PUT` + render di nuovo
-4. `GET /api/projects/{name}/download` — per ottenere il file STL
+Vie consigliate, in ordine:
+1. **MCP server** (`mcp_server.py` → `cad_nodes.api`): `add_node`, `connect`,
+   `set_param`, `delete_node`, `execute`, `transpile` — la sorgente di verità,
+   condivisa anche dal copilot.
+2. **Copilot**: `POST /api/copilot/chat` con linguaggio naturale.
+3. **HTTP diretto**: `POST /api/graph/{name}` con il JSON del grafo, poi
+   `POST /api/graph/{name}/execute`; in caso di errori leggi `node_errors`
+   (mappa `node_id → messaggio`) e correggi.
 
 ## Gestione servizio
 ```bash
 cd ~/projects/cad-studio
 docker compose up -d --build   # avvia
 docker compose logs -f          # log
+docker restart cad-studio       # dopo modifiche a server.py
 docker compose down             # ferma
 ```

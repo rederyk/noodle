@@ -1,12 +1,17 @@
 """
 CAD Studio — Unified API server for AI + webui CAD modeling.
-Backends: OpenSCAD (CSG text) + CadQuery/PythonOCC (B-Rep solid).
+Engine: node graphs transpiled to build123d and run in an isolated worker.
 """
 
+import collections
+import itertools
 import json
+import logging
+import os
 import shutil
-import subprocess
-import tempfile
+import signal
+import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -16,9 +21,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # Node-based CAD engine (pure imports; build123d only used in the subprocess)
-from cad_nodes import catalog
+from cad_nodes import api, catalog
 from cad_nodes.graph import Graph, ValidationError
-from cad_nodes.transpiler import transpile
+from cad_nodes.transpiler import transpile, transpile_with_map
 from cad_nodes.executor import execute_graph, export_graph, extract_subshapes_for_node
 from cad_nodes.store import GraphStore
 from cad_nodes.copilot import run_chat, copilot_status
@@ -36,20 +41,86 @@ app.mount("/static", StaticFiles(directory="/app/webui"), name="static")
 
 
 # ---------------------------------------------------------------------------
+# System: backend log capture (ring buffer) + health/uptime
+# ---------------------------------------------------------------------------
+# A small in-memory ring buffer that the UI polls via /api/system/logs so the
+# uvicorn + app logs are visible in-app (no terminal needed). Capped so it can't
+# grow unbounded; each entry carries a monotonic seq for incremental polling.
+_BOOT_TIME = time.time()
+_LOG_BUFFER: "collections.deque[dict]" = collections.deque(maxlen=2000)
+_LOG_SEQ = itertools.count(1)
+_LOG_LOCK = threading.Lock()
+
+logger = logging.getLogger("cad_studio")
+
+
+class _RingBufferHandler(logging.Handler):
+    """Logging handler that appends formatted records into _LOG_BUFFER."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            msg = str(record.msg)
+        # Don't let the UI's own health/log pollers spam the console buffer.
+        if record.name == "uvicorn.access" and ("/api/system/logs" in msg or "/api/system/health" in msg):
+            return
+        with _LOG_LOCK:
+            _LOG_BUFFER.append({
+                "seq": next(_LOG_SEQ),
+                "ts": record.created,
+                "level": record.levelname.lower(),
+                "source": "backend",
+                "logger": record.name,
+                "msg": msg,
+            })
+
+
+_RING_HANDLER = _RingBufferHandler()
+_RING_HANDLER.setLevel(logging.INFO)
+
+
+def _install_log_capture() -> None:
+    """Attach the ring-buffer handler to the root + uvicorn loggers.
+
+    Called at import AND on startup: uvicorn reconfigures logging when it boots,
+    so re-attaching after startup guarantees access/error logs are captured.
+    """
+    root = logging.getLogger()
+    if _RING_HANDLER not in root.handlers:
+        root.addHandler(_RING_HANDLER)
+    if root.level == logging.NOTSET or root.level > logging.INFO:
+        root.setLevel(logging.INFO)
+    # Capture only at the root and let uvicorn's loggers propagate up, so each
+    # record lands in the buffer exactly once (no double-capture).
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        lg = logging.getLogger(name)
+        lg.propagate = True
+        if _RING_HANDLER in lg.handlers:
+            lg.removeHandler(_RING_HANDLER)
+
+
+_install_log_capture()
+
+
+@app.on_event("startup")
+async def _on_startup() -> None:
+    _install_log_capture()
+    logger.info("CAD Studio backend ready (pid %s)", os.getpid())
+
+
+# ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
-class CodePayload(BaseModel):
-    code: str
-    backend: str = "openscad"  # "openscad" | "cadquery"
-
-
-class ParamsPayload(BaseModel):
-    params: dict
-
-
 class CopilotPayload(BaseModel):
     graph: str
     messages: list   # [{role: "user"|"assistant", content: str}, ...]
+
+
+class ParamPatch(BaseModel):
+    node_id: str
+    param: str       # built-in param name, or "_cb.<name>" for a CodeBlock override
+    value: object    # number / bool / str — coerced + clamped server-side
 
 
 # ---------------------------------------------------------------------------
@@ -66,50 +137,6 @@ def require_project(name: str) -> Path:
     return d
 
 
-def render_openscad(scad_path: Path, output_stl: Path) -> str:
-    """Render .scad → .stl via OpenSCAD CLI."""
-    result = subprocess.run(
-        ["openscad", "-o", str(output_stl), str(scad_path)],
-        capture_output=True, text=True, timeout=120,
-    )
-    if result.returncode != 0:
-        raise HTTPException(400, f"OpenSCAD error:\n{result.stderr}")
-    return result.stderr  # warnings
-
-
-def render_cadquery(script_path: Path, output_stl: Path) -> str:
-    """Run a CadQuery script that must call export_stl(path)."""
-    import importlib.util
-
-    output_stl.parent.mkdir(parents=True, exist_ok=True)
-
-    # Inject export helper
-    wrapper = f"""
-import cadquery as cq
-__output_stl__ = "{output_stl}"
-
-# --- user code ---
-exec(open("{script_path}").read())
-# --- end user code ---
-"""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-        f.write(wrapper)
-        wrapper_path = f.name
-
-    result = subprocess.run(
-        ["python3", wrapper_path],
-        capture_output=True, text=True, timeout=120,
-    )
-    Path(wrapper_path).unlink(missing_ok=True)
-
-    if result.returncode != 0:
-        raise HTTPException(400, f"CadQuery error:\n{result.stderr}")
-    if not output_stl.exists():
-        raise HTTPException(400, "CadQuery script did not produce output STL. "
-                                 "Make sure to call cq.exporters.export(shape, __output_stl__)")
-    return result.stderr
-
-
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
@@ -117,6 +144,53 @@ exec(open("{script_path}").read())
 @app.get("/")
 async def health():
     return {"status": "ok", "version": "0.1.0"}
+
+
+# ---------------------------------------------------------------------------
+# System controls (single-user/local app): health, logs, restart
+# ---------------------------------------------------------------------------
+@app.get("/api/system/health")
+async def system_health():
+    """Always-on backend health used by the top-bar status dot."""
+    return {
+        "status": "ok",
+        "version": "0.1.0",
+        "uptime_s": round(time.time() - _BOOT_TIME, 1),
+        "pid": os.getpid(),
+    }
+
+
+@app.get("/api/system/logs")
+async def system_logs(since: int = 0, limit: int = 500):
+    """Incremental backend log stream for the in-app console.
+
+    Pass the previously returned `last` as `since` to fetch only new lines.
+    """
+    with _LOG_LOCK:
+        items = [e for e in _LOG_BUFFER if e["seq"] > since]
+    if limit and len(items) > limit:
+        items = items[-limit:]
+    last = items[-1]["seq"] if items else since
+    return {"entries": items, "last": last}
+
+
+@app.post("/api/system/restart")
+async def system_restart():
+    """Restart the backend process.
+
+    Acceptable because the app is local/single-user. uvicorn runs as PID 1 under
+    `restart: unless-stopped`, so exiting hands control back to Docker, which
+    brings the process straight back up. The UI then polls /api/system/health
+    until it answers again.
+    """
+    logger.warning("restart requested via /api/system/restart — exiting for supervisor restart")
+
+    def _die() -> None:
+        time.sleep(0.4)  # let the HTTP response flush first
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=_die, daemon=True).start()
+    return {"status": "restarting"}
 
 
 # ---------------------------------------------------------------------------
@@ -152,53 +226,10 @@ async def list_projects():
                 meta = json.loads(meta_path.read_text())
             projects.append({
                 "name": d.name,
-                "backend": meta.get("backend", "openscad"),
+                "backend": meta.get("backend", "nodegraph"),
                 "description": meta.get("description", ""),
             })
     return projects
-
-
-@app.post("/api/projects/{name}")
-async def create_project(name: str, payload: CodePayload):
-    d = project_dir(name)
-    if d.exists():
-        raise HTTPException(409, f"Project '{name}' already exists")
-    d.mkdir(parents=True)
-    ext = "scad" if payload.backend == "openscad" else "py"
-    (d / f"main.{ext}").write_text(payload.code)
-    (d / "meta.json").write_text(json.dumps({
-        "backend": payload.backend,
-        "description": "",
-    }, indent=2))
-    return {"status": "created", "name": name}
-
-
-@app.get("/api/projects/{name}")
-async def read_project(name: str):
-    d = require_project(name)
-    meta = json.loads((d / "meta.json").read_text()) if (d / "meta.json").exists() else {}
-    ext = "scad" if meta.get("backend") == "openscad" else "py"
-    code_path = d / f"main.{ext}"
-    code = code_path.read_text() if code_path.exists() else ""
-    return {
-        "name": name,
-        "backend": meta.get("backend", "openscad"),
-        "description": meta.get("description", ""),
-        "code": code,
-    }
-
-
-@app.put("/api/projects/{name}")
-async def update_project(name: str, payload: CodePayload):
-    d = require_project(name)
-    ext = "scad" if payload.backend == "openscad" else "py"
-    (d / f"main.{ext}").write_text(payload.code)
-    meta = {}
-    if (d / "meta.json").exists():
-        meta = json.loads((d / "meta.json").read_text())
-    meta["backend"] = payload.backend
-    (d / "meta.json").write_text(json.dumps(meta, indent=2))
-    return {"status": "updated"}
 
 
 @app.delete("/api/projects/{name}")
@@ -213,38 +244,16 @@ async def delete_project(name: str):
 # ---------------------------------------------------------------------------
 @app.post("/api/projects/{name}/render")
 async def render_project(name: str):
+    """Transpile + execute a node graph to build123d, producing output.stl."""
     d = require_project(name)
-    meta = json.loads((d / "meta.json").read_text()) if (d / "meta.json").exists() else {}
-    backend = meta.get("backend", "openscad")
-
-    # Node graph: transpile + execute build123d, producing output.stl.
-    if backend == "nodegraph":
-        result = execute_graph(_load_graph(name), d)
-        if not result["success"]:
-            raise HTTPException(400, f"Graph execution failed:\n{result.get('errors')}")
-        return {
-            "status": "rendered",
-            "stl": f"/api/projects/{name}/download",
-            "warnings": None,
-            "view": result["view"],
-        }
-
-    ext = "scad" if backend == "openscad" else "py"
-    code_path = d / f"main.{ext}"
-    if not code_path.exists():
-        raise HTTPException(400, f"No main.{ext} found")
-
-    output_stl = d / "output.stl"
-
-    if backend == "openscad":
-        warnings = render_openscad(code_path, output_stl)
-    else:
-        warnings = render_cadquery(code_path, output_stl)
-
+    result = execute_graph(_load_graph(name), d)
+    if not result["success"]:
+        raise HTTPException(400, f"Graph execution failed:\n{result.get('errors')}")
     return {
         "status": "rendered",
         "stl": f"/api/projects/{name}/download",
-        "warnings": warnings or None,
+        "warnings": None,
+        "view": result["view"],
     }
 
 
@@ -255,55 +264,6 @@ async def download_stl(name: str):
     if not stl.exists():
         raise HTTPException(404, "No STL rendered yet. Call /render first.")
     return FileResponse(stl, media_type="model/stl", filename=f"{name}.stl")
-
-
-# ---------------------------------------------------------------------------
-# Params (OpenSCAD only — extracts // Param: name = value)
-# ---------------------------------------------------------------------------
-import re
-
-PARAM_RE = re.compile(r"^//\s*Param:\s*(\w+)\s*=\s*(.+)$", re.MULTILINE)
-
-
-@app.get("/api/projects/{name}/params")
-async def get_params(name: str):
-    d = require_project(name)
-    meta = json.loads((d / "meta.json").read_text()) if (d / "meta.json").exists() else {}
-    if meta.get("backend") != "openscad":
-        raise HTTPException(400, "Params only supported for OpenSCAD backend")
-    code = (d / "main.scad").read_text() if (d / "main.scad").exists() else ""
-    params = {}
-    for m in PARAM_RE.finditer(code):
-        key, val = m.group(1), m.group(2).strip()
-        # Try to parse as number
-        try:
-            val = float(val)
-            if val == int(val):
-                val = int(val)
-        except ValueError:
-            pass
-        params[key] = val
-    return params
-
-
-@app.patch("/api/projects/{name}/params")
-async def set_params(name: str, payload: ParamsPayload):
-    d = require_project(name)
-    meta = json.loads((d / "meta.json").read_text()) if (d / "meta.json").exists() else {}
-    if meta.get("backend") != "openscad":
-        raise HTTPException(400, "Params only supported for OpenSCAD backend")
-    code_path = d / "main.scad"
-    code = code_path.read_text() if code_path.exists() else ""
-    for key, val in payload.params.items():
-        # Replace // Param: key = old with new value
-        code = re.sub(
-            rf"(//\s*Param:\s*{key}\s*=\s*).+$",
-            rf"\g<1>{val}",
-            code,
-            flags=re.MULTILINE,
-        )
-    code_path.write_text(code)
-    return {"status": "updated", "params": payload.params}
 
 
 # ---------------------------------------------------------------------------
@@ -353,10 +313,42 @@ async def get_graph(name: str):
 
 
 @app.get("/api/graph/{name}/code")
-async def get_graph_code(name: str):
+async def get_graph_code(name: str, map: int = 0):
+    """Generated build123d source. With `?map=1`, also returns `params`: a
+    source map of editable parameter spans (row/col + type/min/max/options) so
+    the code view can highlight and inline-edit each value non-destructively."""
     try:
+        if map:
+            code, params = transpile_with_map(_load_graph(name))
+            return {"code": code, "params": params}
         return {"code": transpile(_load_graph(name))}
     except ValidationError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.patch("/api/graph/{name}/param")
+async def patch_graph_param(name: str, payload: ParamPatch):
+    """Edit one parameter value from the code view (built-in param, or a CodeBlock
+    `#@param` override when `param` is prefixed `_cb.`). Validates + clamps, then
+    re-transpiles — non-destructive, round-trips with the node editor."""
+    require_project(name)
+    store = GraphStore(PROJECTS_DIR)
+    try:
+        value = api.patch_param(store, name, payload.node_id, payload.param, payload.value)
+    except (ValueError, KeyError) as e:
+        raise HTTPException(400, str(e))
+    return {"status": "ok", "value": value}
+
+
+@app.post("/api/graph/{name}/codeblock/{node_id}/scan")
+async def scan_codeblock_params(name: str, node_id: str):
+    """The `#@param` schema a CodeBlock declares (with effective values), for the
+    node editor to render dynamic widgets/sockets."""
+    require_project(name)
+    store = GraphStore(PROJECTS_DIR)
+    try:
+        return {"params": api.scan_codeblock(store, name, node_id)}
+    except (ValueError, KeyError) as e:
         raise HTTPException(400, str(e))
 
 
@@ -364,17 +356,24 @@ async def get_graph_code(name: str):
 async def execute_graph_project(name: str):
     d = require_project(name)
     graph = _load_graph(name)
+    logger.info("execute graph '%s' (%d nodes)", name, len(graph.nodes))
     try:
         result = execute_graph(graph, d)
     except ValidationError as e:
+        logger.error("execute '%s' invalid graph: %s", name, e)
         raise HTTPException(400, str(e))
     if not result["success"]:
+        logger.error("execute '%s' failed: %s", name, result.get("errors") or result.get("error_detail"))
         raise HTTPException(400, {
             "message": "Graph execution failed",
             "errors": result.get("errors"),
             "error_detail": result.get("error_detail"),
             "code": result.get("code"),
         })
+    node_errors = result.get("node_errors", {})
+    if node_errors:
+        for nid, err in node_errors.items():
+            logger.error("execute '%s' node %s: %s", name, nid, err)
     return {
         "status": "executed",
         "view": result["view"],
@@ -460,6 +459,5 @@ async def export_graph_project(name: str, fmt: str):
 @app.get("/api/backends")
 async def list_backends():
     return [
-        {"id": "openscad", "name": "OpenSCAD", "type": "CSG text (.scad)"},
         {"id": "nodegraph", "name": "Node CAD (build123d)", "type": "Visual graph -> build123d"},
     ]

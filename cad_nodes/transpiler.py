@@ -23,6 +23,104 @@ from .toposort import toposort
 
 _PLACEHOLDER = re.compile(r"\{(\w+)(![rs])?\}")
 
+# Invisible sentinels used only by the instrumented transpile (run(emit_map=True)).
+# A parameter value that lands in the generated source is wrapped as
+#   <A><span-id><SEP><literal><B>
+# so that after the whole program is built we can scan the FINAL text, measure
+# each value's (row, col) — immune to indentation / group nesting / fan-out
+# wrapping — strip the sentinels, and emit a param<->code source map. These are
+# NUL-class control chars that never occur in real Python source.
+_SP_A = "\x00"
+_SP_SEP = "\x1f"
+_SP_B = "\x01"
+_SP_RE = re.compile(_SP_A + r"(\d+)" + _SP_SEP + r"([^" + _SP_B + r"]*)" + _SP_B)
+
+# A `#@param` annotation on a CodeBlock declaration line, e.g.
+#   teeth = 12   #@param int min=6 max=40
+#   mode  = "a"  #@param select=a,b,c
+_CB_PARAM = re.compile(r"#@param\b(.*)$")
+
+
+def _parse_annot(annot: str) -> dict:
+    """Parse the `#@param ...` tail into {type?, min?, max?, step?, options?}."""
+    spec: dict = {}
+    for tok in annot.strip().split():
+        if "=" in tok:
+            key, _, val = tok.partition("=")
+            key, val = key.strip(), val.strip()
+            if key in ("min", "max", "step"):
+                try:
+                    spec[key] = float(val)
+                except ValueError:
+                    pass
+            elif key in ("select", "options"):
+                opts = [o for o in val.split(",") if o]
+                if opts:
+                    spec["options"] = opts
+                    spec.setdefault("type", "select")
+        elif tok in ("int", "float", "bool", "str", "select"):
+            spec["type"] = tok
+    return spec
+
+
+def _parse_cb_line(line: str) -> dict | None:
+    """A single `name = <literal>  #@param ...` declaration -> a param schema,
+    or None. Uses `ast.literal_eval` on the RHS literal only — never `exec`."""
+    import ast
+    m = _CB_PARAM.search(line)
+    if not m:
+        return None
+    code_part = line[: m.start()]
+    if "=" not in code_part:
+        return None
+    name, _, rhs = code_part.partition("=")
+    name, rhs = name.strip(), rhs.strip()
+    if not name.isidentifier():
+        return None
+    try:
+        default = ast.literal_eval(rhs)
+    except Exception:
+        return None
+    spec = _parse_annot(m.group(1))
+    kind = spec.get("type")
+    if kind is None:
+        if isinstance(default, bool):
+            kind = "bool"
+        elif isinstance(default, int):
+            kind = "int"
+        elif isinstance(default, float):
+            kind = "float"
+        else:
+            kind = "str"
+    return {"name": name, "type": kind, "default": default,
+            "min": spec.get("min"), "max": spec.get("max"),
+            "step": spec.get("step"), "options": spec.get("options")}
+
+
+def parse_codeblock_params(code: str) -> list[dict]:
+    """Every `#@param` declaration in a CodeBlock's source, in order."""
+    out, seen = [], set()
+    for line in (code or "").splitlines():
+        decl = _parse_cb_line(line)
+        if decl and decl["name"] not in seen:
+            seen.add(decl["name"])
+            out.append(decl)
+    return out
+
+
+def _cb_literal(value, kind: str) -> str:
+    """Render a CodeBlock param override value as a Python source literal."""
+    try:
+        if kind == "bool":
+            return "True" if value else "False"
+        if kind == "int":
+            return str(int(value))
+        if kind == "float":
+            return repr(float(value))
+    except (TypeError, ValueError):
+        pass
+    return repr(value)
+
 
 def _annot(node) -> str:
     """Trailing marker so a runtime traceback line maps back to its node.
@@ -622,6 +720,9 @@ class Transpiler:
         self.graph = graph
         self.var_of: dict[str, str] = {}
         self._counter = 0
+        # Source-map instrumentation (off unless run(emit_map=True)).
+        self._emit_map = False
+        self._span_meta: dict[int, dict] = {}
         # node ids whose output is a list at runtime (static producers + any node
         # that gets fanned out). Filled as nodes are emitted in topological order.
         self._produces_list: set[str] = set()
@@ -679,8 +780,32 @@ class Transpiler:
     def _param_values(self, node, ndef: catalog.NodeDef) -> dict[str, str]:
         out: dict[str, str] = {}
         for p in ndef.params:
-            out[p.name] = format_param(p, node.params.get(p.name, p.default))
+            formatted = format_param(p, node.params.get(p.name, p.default))
+            out[p.name] = self._wrap_param(node, p, formatted)
         return out
+
+    def _register_span(self, meta: dict, literal: str) -> str:
+        """Wrap a literal in source-map sentinels and remember its metadata."""
+        sid = len(self._span_meta)
+        self._span_meta[sid] = meta
+        return f"{_SP_A}{sid}{_SP_SEP}{literal}{_SP_B}"
+
+    def _wrap_param(self, node, pdef: catalog.Param, formatted: str) -> str:
+        """Tag a built-in param's emitted literal so it becomes an editable span.
+        Skipped for raw/code params (whole-expression, not a single literal) and
+        when not building a map. A wired params-as-input overwrites this value
+        before substitution, so its sentinel never reaches the final text — which
+        is exactly why wired params get no editable span (the literal isn't there)."""
+        if not self._emit_map or pdef.raw or pdef.type not in (
+                "float", "int", "bool", "str", "select"):
+            return formatted
+        return self._register_span({
+            "node_id": node.id, "node_type": node.type, "param": pdef.name,
+            "kind": pdef.type, "label": pdef.label or pdef.name,
+            "value": node.params.get(pdef.name, pdef.default),
+            "min": pdef.min, "max": pdef.max, "step": pdef.step,
+            "options": list(pdef.options) if pdef.options else None,
+        }, formatted)
 
     def _guard(self, lines: list[str], body: list[str], node) -> None:
         """Wrap a node's statement(s) in try/except so one node's runtime error
@@ -734,17 +859,84 @@ class Transpiler:
         self._guard(lines, body, node)
 
     def _emit_codeblock(self, node, lines: list[str]) -> None:
+        """A CodeBlock transpiles like TWO connected nodes: a params node and a
+        code node. Declared `#@param`s become the function's named ARGUMENTS — so
+        the body stays pure user code (the `#@param` declaration lines are dropped
+        from it) and every param value appears exactly once, at the call site, as
+        an editable literal. The code body itself is exposed as an editable `code`
+        input (a span on the function name)."""
         ndef = catalog.get(node.type)
         var = self._new_var(node.id)
-        inputs = self._input_values(node.id, ndef)
+        feeds = self.graph.inputs_of(node.id)
+        inputs = self._input_values(node.id, ndef)        # the static in_0..in_5
         user_code = node.params.get("code", "result = None")
+        overrides = node.params.get("_cb") or {}
+        declared = parse_codeblock_params(user_code)
+        names = [d["name"] for d in declared]
         fn = f"__codeblock_{self._counter}"
-        args = ", ".join(f"{s.name}={inputs.get(s.name, 'None')}" for s in ndef.inputs)
-        lines.append(f"def {fn}({', '.join(s.name for s in ndef.inputs)}):")
+
+        # Resolve each param's call-site argument. A same-named wired socket drives
+        # it (params-as-inputs) and fans the whole block out if it carries a list
+        # (Range -> CodeBlock.teeth => one result per value); otherwise it is the
+        # effective value (override, else the in-code default) as an editable span.
+        fan: dict[str, str] = {}          # name -> list expr fed to _fanout
+        call_arg: dict[str, str] = {}     # name -> expr passed as <name>=... at the call
+        for d in declared:
+            name = d["name"]
+            srcs = feeds.get(name, [])
+            vars_ = [self.var_of.get(fid, "None") for (fid, _fs) in srcs]
+            if vars_:
+                maybe_list = len(vars_) >= 2 or any(
+                    fid in self._produces_list for (fid, _fs) in srcs)
+                if maybe_list:
+                    fan[name] = f"[{', '.join(vars_)}]" if len(vars_) >= 2 else vars_[0]
+                    call_arg[name] = name        # bound by the _fanout lambda
+                else:
+                    call_arg[name] = vars_[0]
+            else:
+                value = overrides.get(name, d["default"])
+                literal = _cb_literal(value, d["type"])
+                if self._emit_map:
+                    literal = self._register_span({
+                        "node_id": node.id, "node_type": node.type,
+                        "param": "_cb." + name, "kind": d["type"], "label": name,
+                        "value": value, "min": d["min"], "max": d["max"],
+                        "step": d["step"], "options": d["options"],
+                    }, literal)
+                call_arg[name] = literal
+
+        # def <fn>(in_0..in_5, <params...>):  — the function name doubles as the
+        # editable `code` span (click it in the code view to edit the whole body).
+        fn_tok = fn
+        if self._emit_map:
+            fn_tok = self._register_span({
+                "node_id": node.id, "node_type": node.type, "param": "code",
+                "kind": "code", "label": "code", "value": user_code,
+                "min": None, "max": None, "step": None, "options": None,
+            }, fn)
+        sig = [s.name for s in ndef.inputs] + names
+        lines.append(f"def {fn_tok}({', '.join(sig)}):")
+        emitted = False
         for raw in user_code.splitlines() or ["result = None"]:
+            if _parse_cb_line(raw) is not None:
+                continue                 # a #@param declaration -> now an argument
             lines.append("    " + raw)
+            emitted = True
+        if not emitted:
+            lines.append("    pass")
         lines.append("    return result")
-        body = [f"{var} = {fn}({args}){_annot(node)}"]
+
+        in_kw = ", ".join(f"{s.name}={inputs.get(s.name, 'None')}" for s in ndef.inputs)
+        param_kw = "".join(f", {n}={call_arg[n]}" for n in names)
+        if fan:
+            lam = f"lambda {', '.join(fan)}: {fn}({in_kw}{param_kw})"
+            kw = "{" + ", ".join(f"{n!r}: {v}" for n, v in fan.items()) + "}"
+            call = f"_fanout({lam}, {kw})"
+            self._produces_list.add(node.id)   # fanned -> output is a list
+        else:
+            call = f"{fn}({in_kw}{param_kw})"
+
+        body = [f"{var} = {call}{_annot(node)}"]
         if self._previewed(node, ndef):
             body.append(f"__previews__[{node.id!r}] = {var}")
         self._guard(lines, body, node)
@@ -859,7 +1051,40 @@ class Transpiler:
         # fallback: last variable produced at all
         return self.var_of[order[-1]] if order and order[-1] in self.var_of else None
 
-    def run(self) -> str:
+    def _extract_spans(self, text: str) -> tuple[str, list[dict]]:
+        """Strip the source-map sentinels from `text`, returning the clean source
+        and a list of param spans with their (row, col0, col1) in that clean text.
+        Rows/cols are 0-based to match Ace editor coordinates."""
+        clean: list[str] = []
+        spans: list[dict] = []
+        row = col = i = 0
+        n = len(text)
+        while i < n:
+            ch = text[i]
+            if ch == _SP_A:
+                m = _SP_RE.match(text, i)
+                if m:
+                    sid, literal = int(m.group(1)), m.group(2)
+                    clean.append(literal)
+                    meta = dict(self._span_meta.get(sid, {}))
+                    meta.update(row=row, col0=col, col1=col + len(literal))
+                    spans.append(meta)
+                    col += len(literal)
+                    i = m.end()
+                    continue
+            clean.append(ch)
+            if ch == "\n":
+                row += 1
+                col = 0
+            else:
+                col += 1
+            i += 1
+        return "".join(clean), spans
+
+    def run(self, emit_map: bool = False):
+        """Transpile the graph. With emit_map, return (source, param_spans) where
+        each span maps a code location back to a node param for inline editing."""
+        self._emit_map = emit_map
         warnings = self.graph.validate()
         order = toposort([n.id for n in self.graph.nodes], self.graph.edges())
 
@@ -890,9 +1115,17 @@ class Transpiler:
         out.append("")
         out.append("# --- result for preview ---")
         out.append(f"__result__ = {result_var}" if result_var else "__result__ = None")
-        return "\n".join(out) + "\n"
+        text = "\n".join(out) + "\n"
+        if emit_map:
+            return self._extract_spans(text)
+        return text
 
 
 def transpile(graph: Graph) -> str:
     """Convenience: transpile a Graph to build123d source."""
     return Transpiler(graph).run()
+
+
+def transpile_with_map(graph: Graph) -> tuple[str, list[dict]]:
+    """Transpile + a param<->code source map (see Transpiler._extract_spans)."""
+    return Transpiler(graph).run(emit_map=True)
