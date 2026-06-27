@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CAD Studio — Code View</title>
+<title>noodle — code</title>
+<link rel="icon" type="image/svg+xml" href="/static/icon.svg">
+<link rel="apple-touch-icon" href="/static/icon.svg">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.2/ace.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.2/mode-python.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.2/theme-one_dark.js"></script>
@@ -39,7 +41,10 @@ body { font-family:var(--font); background:var(--bg-0); color:var(--text); }
 
 /* ── Sidebar ── */
 .sidebar-header { padding:14px 16px 10px; display:flex; align-items:center; justify-content:space-between; }
-.sidebar-header h1 { font-size:14px; font-weight:700; letter-spacing:.5px; color:var(--accent); }
+.sidebar-header h1 { font-size:16px; font-weight:700; letter-spacing:-.5px; color:var(--text); font-family:var(--mono); }
+.sidebar-header .brand { display:flex; align-items:center; gap:8px; text-decoration:none; }
+.sidebar-header .brand:hover h1 { color:var(--accent); }
+.sidebar-header .brand img { width:26px; height:26px; }
 .sidebar-header span { font-size:10px; color:var(--text-dim); background:var(--bg-3); padding:2px 6px; border-radius:4px; }
 .sidebar-sub { padding:0 16px 8px; font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.5px; }
 .project-list { flex:1; overflow-y:auto; padding:4px 8px; }
@@ -218,7 +223,7 @@ body { font-family:var(--font); background:var(--bg-0); color:var(--text); }
   <!-- Sidebar -->
   <div class="sidebar">
     <div class="sidebar-header">
-      <h1>CAD Studio</h1>
+      <a class="brand" href="/nodes" title="Open the node editor"><img src="/static/icon.svg" alt="noodle"><h1>noodle</h1></a>
       <span>code</span>
     </div>
     <div class="sidebar-sub">Node graphs</div>
@@ -972,7 +977,7 @@ document.addEventListener('mouseup', () => {
 try { initAce(); initParamEditing(); } catch (e) { console.error('Ace init failed', e); }
 try { initViewer(); } catch (e) { console.error('Viewer init failed', e); }
 loadProjects();
-logConsole('CAD Studio code view ready');
+logConsole('noodle code view ready');
 </script>
 </body>
 </html>

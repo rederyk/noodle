@@ -1,8 +1,14 @@
-# cad-studio
+<p align="center">
+  <img src="webui/logo.svg" alt="noodle — nodes → solid" width="340">
+</p>
+
+<h1 align="center">noodle</h1>
+<p align="center"><em>nodes → solid</em></p>
 
 A **node-based parametric CAD** app, in the spirit of Grasshopper — for people who
 want visual, parametric 3D modelling without writing code, with an **AI copilot**
-built in from day one.
+built in from day one. (In node editors the wires between nodes are called
+*noodles* — so is this.)
 
 You wire nodes in a browser. The backend transpiles the graph to
 [build123d](https://build123d.readthedocs.io) Python, runs it in an isolated

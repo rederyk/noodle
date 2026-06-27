@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CAD Studio — Nodes</title>
+<title>noodle — nodes</title>
+<link rel="icon" type="image/svg+xml" href="/static/icon.svg">
+<link rel="apple-touch-icon" href="/static/icon.svg">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/css/litegraph.css">
 <script src="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/build/litegraph.min.js"></script>
 <style>
@@ -19,7 +21,10 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 .app{display:grid;grid-template-rows:48px 1fr 24px;height:100vh;}
 /* toolbar */
 .toolbar{background:var(--bg-1);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;padding:0 12px;}
-.toolbar h1{font-size:14px;font-weight:700;color:var(--accent);letter-spacing:.5px;margin-right:8px;}
+.toolbar h1{font-size:15px;font-weight:700;color:var(--text);letter-spacing:-.5px;margin-right:8px;font-family:var(--mono,monospace);}
+.brand{display:flex;align-items:center;gap:7px;text-decoration:none;margin-right:4px;}
+.brand img{width:22px;height:22px;}
+.brand:hover h1{color:var(--accent);}
 .toolbar input,.toolbar select{background:var(--bg-3);color:var(--text);border:1px solid var(--border);padding:5px 8px;border-radius:5px;font-size:12px;}
 .toolbar input:focus,.toolbar select:focus{outline:none;border-color:var(--accent);}
 .tb-btn{display:inline-flex;align-items:center;gap:5px;padding:5px 12px;border:1px solid var(--border);border-radius:5px;background:var(--bg-3);color:var(--text);font-size:12px;cursor:pointer;transition:all .15s;white-space:nowrap;}
@@ -243,7 +248,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
   <div class="toolbar">
     <!-- ZONA PROGETTO / SESSIONE -->
     <div class="tb-zone">
-      <h1>CAD Studio</h1>
+      <a class="brand" href="/ui" title="Open the code view"><img src="/static/icon.svg" alt="noodle"><h1>noodle</h1></a>
       <div class="menu-wrap" style="position:relative">
         <button class="tb-btn" id="btn-project" onclick="toggleProjectMenu(event)" title="Open / manage projects">
           <span id="project-name">— no graph —</span><span class="caret">▾</span>
