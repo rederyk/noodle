@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -515,6 +515,75 @@ async def scan_codeblock_params(name: str, node_id: str):
         return {"params": api.scan_codeblock(store, name, node_id)}
     except (ValueError, KeyError) as e:
         raise HTTPException(400, str(e))
+
+
+# Map an imported file's extension to the Import node that reads it.
+_IMPORT_NODE_BY_EXT = {
+    ".step": "ImportSTEP", ".stp": "ImportSTEP",
+    ".stl": "ImportSTL",
+    ".svg": "ImportSVG",
+    ".dxf": "ImportDXF",
+}
+
+
+async def _store_asset(d: Path, file: UploadFile) -> dict:
+    """Save an uploaded model file into the project's assets/ library and return
+    its metadata. The stored path is *project-relative* (e.g. "assets/part.step")
+    so it resolves at run time (the worker's cwd is the project dir) and reads
+    cleanly in the asset picker. Raises HTTPException(400) on an unsupported type."""
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in _IMPORT_NODE_BY_EXT:
+        raise HTTPException(
+            400, f"Unsupported file type '{ext or '?'}'. Supported: STEP, STL, SVG, DXF.")
+    assets = d / "assets"
+    assets.mkdir(parents=True, exist_ok=True)
+    stem = _slugify(Path(file.filename or "model").stem, "model")
+    dest = assets / f"{stem}{ext}"
+    n = 1
+    while dest.exists():            # never clobber an existing asset
+        dest = assets / f"{stem}-{n}{ext}"
+        n += 1
+    dest.write_bytes(await file.read())
+    rel = f"assets/{dest.name}"
+    return {"name": dest.name, "path": rel, "ext": ext,
+            "node_type": _IMPORT_NODE_BY_EXT[ext]}
+
+
+@app.get("/api/graph/{name}/assets")
+async def list_assets(name: str):
+    """List the model files already imported into this project's library."""
+    d = require_project(name)
+    assets = d / "assets"
+    out = []
+    if assets.is_dir():
+        for f in sorted(assets.iterdir()):
+            ext = f.suffix.lower()
+            if f.is_file() and ext in _IMPORT_NODE_BY_EXT:
+                out.append({"name": f.name, "path": f"assets/{f.name}", "ext": ext})
+    return {"assets": out}
+
+
+@app.post("/api/graph/{name}/asset")
+async def upload_asset(name: str, file: UploadFile = File(...)):
+    """Upload a file into the project library WITHOUT adding a node (the asset
+    picker on an Import node uses this, then points itself at the new file)."""
+    d = require_project(name)
+    meta = await _store_asset(d, file)
+    logger.info("asset stored for '%s': %s", name, meta["path"])
+    return {"status": "stored", **meta}
+
+
+@app.post("/api/graph/{name}/import")
+async def import_model(name: str, file: UploadFile = File(...)):
+    """Upload a STEP/STL/SVG/DXF file into the project AND add an Import node
+    wired to read it. The UI then reloads the graph to show the new node."""
+    d = require_project(name)
+    meta = await _store_asset(d, file)
+    store = GraphStore(PROJECTS_DIR)
+    node_id = api.add_node(store, name, meta["node_type"],
+                           params={"path": meta["path"]}, position=(80.0, 80.0))
+    logger.info("imported %s as %s node %s", meta["name"], meta["node_type"], node_id)
+    return {"status": "imported", "node_id": node_id, **meta, "file": meta["name"]}
 
 
 @app.post("/api/graph/{name}/execute")

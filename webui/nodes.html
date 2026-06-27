@@ -258,6 +258,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
           <div class="menu-list" id="project-list"></div>
           <div class="menu-sep"></div>
           <button class="menu-item" onclick="promptNewGraph()"><span class="ic">＋</span>New project…<span class="k">Ctrl+N</span></button>
+          <button class="menu-item" onclick="importModel()"><span class="ic">⬆</span>Import model…<span class="k">STEP/STL/SVG/DXF</span></button>
           <button class="menu-item danger" id="mi-delete" onclick="deleteCurrentGraph()"><span class="ic">🗑</span>Delete current…</button>
         </div>
       </div>
@@ -661,6 +662,19 @@ function addWidget(node, p){
   if (p.type === 'select'){
     node.properties[p.name] = p.default;
     const w = node.addWidget('combo', p.name, p.default, v=>{ node.properties[p.name] = v; onParamChange(node); }, {values:p.options||[]});
+    w.cadParam = p.name; return;
+  }
+  if (p.widget === 'asset'){           // pick a file from the project's imported library
+    node.properties[p.name] = p.default ?? '';
+    const exts = p.options || [];
+    const w = node.addWidget('combo', p.name, node.properties[p.name] || '(no file)', v=>{
+      if (v === ASSET_UPLOAD){ w.value = node.properties[p.name] || '(no file)'; uploadAssetForNode(node, w, exts); return; }
+      node.properties[p.name] = v; onParamChange(node);
+    }, { values: ()=>{
+      const files = assetCache.filter(a=>!exts.length || exts.includes(a.ext)).map(a=>a.path);
+      refreshAssets();                 // keep the list fresh for the next open
+      return files.length ? files.concat([ASSET_UPLOAD]) : [ASSET_UPLOAD];
+    }});
     w.cadParam = p.name; return;
   }
   if (p.type === 'str'){
@@ -1605,6 +1619,7 @@ window.openGraph = async function(name){
   localStorage.setItem('cadstudio:last', name);
   setStatus('opened '+name,'ok');
   maybeRestoreDraft(name);
+  refreshAssets();   // prime the Import-node asset picker for this project
 };
 
 window.showTab = function(t){
@@ -2367,6 +2382,69 @@ window.openShortcuts = function(){
 };
 
 /* ============================================================ *
+ *  Import an external model (STEP/STL/SVG/DXF)                  *
+ *  Files live in the project library (projects/<name>/assets/). *
+ *  Import nodes pick from that library via an 'asset' combo;    *
+ *  "Import model…" uploads + creates a node in one step.        *
+ * ============================================================ */
+let assetCache = [];                       // [{name, path, ext}] for the current project
+const ASSET_UPLOAD = '⬆ Upload new file…'; // sentinel option in the asset picker
+async function refreshAssets(){
+  if(!currentName){ assetCache = []; return assetCache; }
+  try{
+    const r = await fetch(`${API}/api/graph/${encodeURIComponent(currentName)}/assets`,{cache:'no-store'});
+    if(r.ok) assetCache = (await r.json()).assets || [];
+  }catch(_){}
+  if(lcanvas) lcanvas.setDirty(true,true);   // repaint combos once the list arrives
+  return assetCache;
+}
+// Upload a file straight into the library and point THIS node's picker at it.
+function uploadAssetForNode(node, widget, exts){
+  if(!currentName){ toast('Open or create a project first.','error'); return; }
+  const inp=document.createElement('input'); inp.type='file';
+  inp.accept=(exts&&exts.length)?exts.join(','):'.step,.stp,.stl,.svg,.dxf';
+  inp.style.display='none'; document.body.appendChild(inp);
+  inp.addEventListener('change', async ()=>{
+    const f=inp.files&&inp.files[0]; const done=()=>inp.remove(); if(!f){ done(); return; }
+    const fd=new FormData(); fd.append('file', f);
+    try{
+      const r=await fetch(`${API}/api/graph/${encodeURIComponent(currentName)}/asset`,{method:'POST',body:fd});
+      if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail||r.statusText);
+      const d=await r.json();
+      await refreshAssets();
+      node.properties[widget.cadParam]=d.path; widget.value=d.path; onParamChange(node);
+      toast(`Added <code>${d.name}</code> to the library.`,'success');
+    }catch(e){ toast('Upload failed: '+(e.message||e),'error'); }
+    finally{ done(); }
+  });
+  inp.click();
+}
+window.importModel = function(){
+  closeMenus();
+  if(!currentName){ toast('Open or create a project first, then import.','error'); return; }
+  let inp=document.getElementById('import-file');
+  if(!inp){
+    inp=document.createElement('input'); inp.type='file'; inp.id='import-file';
+    inp.accept='.step,.stp,.stl,.svg,.dxf'; inp.style.display='none';
+    document.body.appendChild(inp);
+    inp.addEventListener('change', async ()=>{
+      const f=inp.files&&inp.files[0]; inp.value=''; if(!f) return;
+      const fd=new FormData(); fd.append('file', f);
+      setStatus('importing…');
+      try{
+        const r=await fetch(`${API}/api/graph/${encodeURIComponent(currentName)}/import`,{method:'POST',body:fd});
+        if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail||r.statusText);
+        const d=await r.json();
+        await openGraph(currentName);     // reload so the new Import node shows on the canvas
+        toast(`Imported <code>${d.file}</code> as ${d.node_type}.`,'success');
+        runGraph();
+      }catch(e){ setStatus('import failed','err'); toast('Import failed: '+(e.message||e),'error'); }
+    });
+  }
+  inp.click();
+};
+
+/* ============================================================ *
  *  Settings + Feedback / report                                *
  *  Local, non-sensitive feedback channel. A coding agent picks *
  *  up feedback/<id>/ and fixes it — see docs/FEEDBACK_FIX_GUIDE.md
@@ -2522,6 +2600,7 @@ function paletteCommands(){
     {ic:'●', label:'Toggle Live', k:'', run:()=>toggleLive()},
     {ic:'💾',label:'Save', k:'Ctrl+S', run:()=>saveGraph()},
     {ic:'＋',label:'New project…', k:'Ctrl+N', run:()=>promptNewGraph()},
+    {ic:'⬆',label:'Import model (STEP/STL/SVG/DXF)…', k:'', run:()=>importModel()},
     {ic:'⛶', label:'Fit to view', k:'F', run:()=>frameView()},
     {ic:'▦', label:'Toggle grid', k:'', run:()=>toggleGrid()},
     {ic:'⬇', label:'Export STEP', k:'', run:()=>exportStep()},

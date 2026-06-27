@@ -934,6 +934,41 @@ register(NodeDef("StringInput", "input", "String",
     description="A string value."))
 
 # ===========================================================================
+# 12b. Import / IO
+# ===========================================================================
+# Load an external model file into geometry. `path` is an "asset" picker: it lists
+# the files already imported into the project's library (projects/<name>/assets/),
+# filtered by the extensions in `options`, and stores a project-relative path
+# (e.g. "assets/part.step") — which resolves because the worker runs with the
+# project dir as cwd. Files get there via the UI upload (POST .../asset|import).
+def _asset(name, exts):
+    return Param("path", "str", "file", "", widget="asset", options=exts)
+
+register(NodeDef("ImportSTEP", "import", "Import STEP",
+    params=[_asset("path", [".step", ".stp"])],
+    outputs=_geo(),
+    code_template={"algebra": "import_step({path})"},
+    description="Load a STEP file as solid geometry (Compound)."))
+
+register(NodeDef("ImportSTL", "import", "Import STL",
+    params=[_asset("path", [".stl"])],
+    outputs=_geo(),
+    code_template={"algebra": "import_stl({path})"},
+    description="Load an STL mesh as a Face (good for reference; limited for solid ops)."))
+
+register(NodeDef("ImportSVG", "import", "Import SVG",
+    params=[_asset("path", [".svg"])],
+    outputs=_cv(),
+    code_template={"algebra": "import_svg({path})"},
+    description="Load 2D profiles from an SVG file (wires/faces) to extrude or build on."))
+
+register(NodeDef("ImportDXF", "import", "Import DXF",
+    params=[_asset("path", [".dxf"])],
+    outputs=_cv(),
+    code_template={"algebra": "import_dxf({path})"},
+    description="Load 2D profiles from a DXF file (wires) to extrude or build on."))
+
+# ===========================================================================
 # 13. Export / IO
 # ===========================================================================
 register(NodeDef("ExportSTEP", "export", "Export STEP",
