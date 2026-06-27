@@ -92,6 +92,10 @@ class Param:
     # Render the value verbatim (no quoting) — for params that are code.
     raw: bool = False
     optional: bool = False
+    # Soft cap: the slider drags only up to soft_max (a sane default range), while
+    # a typed value can still reach the hard `max`. Guards against an accidental
+    # scrub blowing up fan-out (e.g. ListRange count) without limiting power use.
+    soft_max: Optional[float] = None
 
 
 @dataclass
@@ -198,12 +202,16 @@ def _pin(*names):
     return [Socket(n, WIRE_DATA, required=False) for n in names]
 
 
-def _f(name, default=0.0, lo=None, hi=None, step=0.5, label="", widget="slider"):
-    return Param(name, "float", label or name, default, lo, hi, step, widget)
+def _f(name, default=0.0, lo=None, hi=None, step=0.5, label="", widget="slider",
+       soft_max=None):
+    return Param(name, "float", label or name, default, lo, hi, step, widget,
+                 soft_max=soft_max)
 
 
-def _i(name, default=0, lo=None, hi=None, label="", widget="slider"):
-    return Param(name, "int", label or name, default, lo, hi, 1, widget)
+def _i(name, default=0, lo=None, hi=None, label="", widget="slider",
+       soft_max=None):
+    return Param(name, "int", label or name, default, lo, hi, 1, widget,
+                 soft_max=soft_max)
 
 
 # ===========================================================================
@@ -725,7 +733,8 @@ register(NodeDef("ListCreate", "data", "List",
     description="Collect inputs into a list."))
 
 register(NodeDef("ListRange", "data", "Range",
-    params=[_f("start", 0, widget="input"), _i("count", 5, 0, 100000),
+    params=[_f("start", 0, widget="input"),
+            _i("count", 5, 0, 100000, soft_max=200),
             _f("step", 1, widget="input")],
     outputs=_data(),
     code_template={"algebra": "[{start} + i*{step} for i in range({count})]"},

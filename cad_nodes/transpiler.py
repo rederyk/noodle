@@ -332,6 +332,10 @@ def _rotate(_obj, _axis, _angle):
     return Rot(d.X * _angle, d.Y * _angle, d.Z * _angle) * _obj
 
 
+_FANOUT_MAX = 2000  # guard: an absurd list (e.g. a runaway Range count) must
+                    # surface as a per-node error, not freeze/crash the worker.
+
+
 def _is_seq(_v):
     \"\"\"A value the engine should iterate over for fan-out. Lists/tuples and
     build123d ShapeLists count; a single Vector/Shape/Plane does NOT (a Vector
@@ -349,6 +353,10 @@ def _fanout(_fn, _kw):
     if not cols:
         return _fn(**_kw)
     n = max((len(v) for v in cols.values()), default=0)
+    if n > _FANOUT_MAX:
+        raise ValueError(
+            f"fan-out of {n} copies exceeds the {_FANOUT_MAX} limit "
+            f"(check the list feeding this node, e.g. a Range count)")
     out = []
     for i in range(n):
         call = {}

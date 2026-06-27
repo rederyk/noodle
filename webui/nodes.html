@@ -576,6 +576,7 @@ function registerNodes(defs){
       this.onConnectionsChange = function(type, index, connected, link_info){
         if (type !== LiteGraph.INPUT || loadingGraph) return;
         if (this.cadType === 'CodeBlock'){ const s = this; setTimeout(()=> updateCbWired(s), 0); }
+        updateGizmoLockedWidgets(this);
         const slot = this.inputs[index];
         const name = slot && (slot.cadName || slot.name);
         const info = name && this.cadInputs[name];
@@ -683,7 +684,11 @@ function addWidget(node, p){
     onParamChange(node);
   };
   if (hasRange){
-    slider = node.addWidget('slider', `${p.name} (${p.min}–${p.max})`, init, apply, {min:p.min, max:p.max});
+    // soft cap: the slider drags up to soft_max (a sane range), but the typed
+    // field below still reaches the hard max. The '+' hint flags that headroom.
+    const sMax = (p.soft_max != null) ? p.soft_max : p.max;
+    const lbl = (p.soft_max != null && p.soft_max < p.max) ? `${p.min}–${sMax}+` : `${p.min}–${p.max}`;
+    slider = node.addWidget('slider', `${p.name} (${lbl})`, Math.min(init, sMax), apply, {min:p.min, max:sMax});
     slider.cadParam = p.name;
   }
   field = node.addWidget('text', hasRange ? '✎' : p.name, init, apply);
@@ -840,6 +845,20 @@ function makeCbWidget(node, d, val){
   }
   w.cbParam = d.name; w.cbDefault = d.default; w.cbMeta = d;
   return w;
+}
+
+// Grey out a node's gizmo-bound widgets (e.g. Move's x/y/z) when a gizmo `lock`
+// input socket is wired — the wire (offset) drives the result, so editing those
+// widgets does nothing. Without this they stay live but inert ("Move doesn't
+// update"). Mirrors gizmoLocked(), which already blocks the on-canvas gizmo.
+function updateGizmoLockedWidgets(node){
+  const g = node && node._gizmo;
+  if (!g || !g.lock || !g.binds) return;
+  const locked = (node.inputs||[]).some(
+    s => s.link != null && g.lock.includes(s.cadName || s.name));
+  for (const w of (node.widgets||[]))
+    if (g.binds.includes(w.cadParam)) w.disabled = locked;
+  node.setDirtyCanvas && node.setDirtyCanvas(true, true);
 }
 
 // Grey out a param's widget while its socket is wired (the wire drives it).
@@ -1055,6 +1074,7 @@ function fromGraphJSON(data){
       const w = (node.widgets||[]).find(x => x.cadMultiFor===nm); if (w) w.value = true;
     }
     if (node.cadType === 'CodeBlock') updateCbWired(node);   // grey out wired params
+    updateGizmoLockedWidgets(node);                          // grey gizmo binds when locked
     node.size = node.computeSize(); node.size[0] = Math.max(node.size[0], 150);
   }
   nodeByGraphId = Object.assign({}, map);   // disk ids -> node (matches /ui until next save)
