@@ -34,6 +34,13 @@ from cad_nodes.copilot import run_chat, copilot_status
 PROJECTS_DIR = Path("/app/projects")
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
+# User feedback/report drops (see docs/FEEDBACK_FIX_GUIDE.md). A dedicated rw
+# volume kept out of projects/ so a coding agent can find them at the repo root.
+FEEDBACK_DIR = Path("/app/feedback")
+FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
+
+APP_VERSION = "0.1.0"
+
 app = FastAPI(title="CAD Studio", version="0.1.0")
 
 # Serve webui static files
@@ -123,6 +130,15 @@ class ParamPatch(BaseModel):
     value: object    # number / bool / str — coerced + clamped server-side
 
 
+class FeedbackPayload(BaseModel):
+    project: Optional[str] = None       # current project/graph name, if any
+    message: str                        # free-text feedback (required)
+    severity: str = "bug"               # "bug" | "idea" | "question"
+    context: dict = {}                   # client-collected, non-sensitive context
+    graph: Optional[dict] = None         # current graph snapshot (opt-in)
+    logs: list = []                      # recent backend log entries (opt-in)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -191,6 +207,147 @@ async def system_restart():
 
     threading.Thread(target=_die, daemon=True).start()
     return {"status": "restarting"}
+
+
+# ---------------------------------------------------------------------------
+# Feedback / report drops
+# ---------------------------------------------------------------------------
+# A local, non-sensitive feedback channel: the UI saves a report here so an
+# external coding agent (Claude Code via MCP, see AGENTS.md) can pick it up,
+# reproduce the issue, fix it safely, and open a PR. The end-to-end workflow —
+# git safety, repo rules, and the *mandatory AI-use disclosure* in the PR — lives
+# in .claude/skills/feedback-fix/SKILL.md → docs/FEEDBACK_FIX_GUIDE.md.
+
+def _slugify(text: str, default: str = "report") -> str:
+    keep = "".join(c if c.isalnum() else "-" for c in (text or "").lower())
+    slug = "-".join(p for p in keep.split("-") if p)[:40]
+    return slug or default
+
+
+def _git_commit() -> Optional[str]:
+    """Best-effort short commit hash; None if .git isn't available in the image."""
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd="/app", capture_output=True, text=True, timeout=3,
+        )
+        if out.returncode == 0:
+            return out.stdout.strip() or None
+    except Exception:
+        pass
+    return None
+
+
+def _render_report_md(fid: str, fb: "FeedbackPayload", stamp: dict) -> str:
+    ctx = fb.context or {}
+    errs = ctx.get("node_errors") or {}
+    err_lines = "\n".join(f"  - `{k}`: {v}" for k, v in errs.items()) or "  - (nessuno)"
+    lines = [
+        f"# Feedback report — {stamp['severity']}",
+        "",
+        f"- **id**: `{fid}`",
+        f"- **created (UTC)**: {stamp['created_utc']}",
+        f"- **project**: {fb.project or '(nessuno)'}",
+        f"- **app version**: {stamp['version']}"
+        + (f" · commit `{stamp['commit']}`" if stamp.get("commit") else ""),
+        f"- **client**: {ctx.get('user_agent', '?')}",
+        f"- **url**: {ctx.get('url', '?')}",
+        "",
+        "## Messaggio",
+        "",
+        fb.message.strip() or "(vuoto)",
+        "",
+        "## Contesto tecnico",
+        "",
+        f"- ultimi errori per-nodo:",
+        err_lines,
+        f"- snapshot grafo allegato: {'sì (`graph.snapshot.json`)' if fb.graph else 'no'}",
+        f"- log backend allegati: {'sì (`backend.log`)' if fb.logs else 'no'}",
+        "",
+        "## Come riprodurre",
+        "",
+        "1. Apri il progetto indicato (o carica `graph.snapshot.json`).",
+        "2. Esegui il grafo e osserva il comportamento descritto sopra.",
+        "",
+        "---",
+        "",
+        "## Per l'agente di coding",
+        "",
+        "Prima di modificare codice, leggi **`.claude/skills/feedback-fix/SKILL.md`**",
+        "e la guida **`docs/FEEDBACK_FIX_GUIDE.md`**: regole git per tornare a uno",
+        "stato sicuro, regole di reload della repo, e la **disclosure obbligatoria**",
+        "(agenti/modelli usati) da includere nella PR.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+@app.post("/api/feedback")
+async def save_feedback(fb: FeedbackPayload):
+    """Persist a user feedback/report drop under feedback/<ts>-<slug>/."""
+    if not (fb.message or "").strip():
+        raise HTTPException(400, "message is required")
+
+    now = time.gmtime()
+    ts = time.strftime("%Y%m%d-%H%M%S", now)
+    fid = f"{ts}-{_slugify(fb.project or fb.message)}"
+    stamp = {
+        "id": fid,
+        "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", now),
+        "severity": fb.severity,
+        "version": APP_VERSION,
+        "commit": _git_commit(),
+    }
+
+    d = FEEDBACK_DIR / fid
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "report.json").write_text(json.dumps({
+        **stamp,
+        "project": fb.project,
+        "message": fb.message,
+        "context": fb.context,
+        "has_graph": bool(fb.graph),
+        "has_logs": bool(fb.logs),
+    }, indent=2))
+    (d / "report.md").write_text(_render_report_md(fid, fb, stamp))
+    if fb.graph:
+        (d / "graph.snapshot.json").write_text(json.dumps(fb.graph, indent=2))
+    if fb.logs:
+        lines = []
+        for e in fb.logs:
+            if isinstance(e, dict):
+                lines.append(f"{e.get('ts','')} {e.get('level','')} {e.get('logger','')} {e.get('msg','')}")
+            else:
+                lines.append(str(e))
+        (d / "backend.log").write_text("\n".join(lines) + "\n")
+
+    logger.info("feedback saved: %s", fid)
+    return {"status": "saved", "id": fid, "dir": f"feedback/{fid}", "path": str(d)}
+
+
+@app.get("/api/feedback")
+async def list_feedback():
+    """List saved feedback reports (newest first) for tooling / triage."""
+    items = []
+    for d in sorted(FEEDBACK_DIR.iterdir(), reverse=True):
+        if not d.is_dir():
+            continue
+        rep = d / "report.json"
+        if not rep.exists():
+            continue
+        try:
+            data = json.loads(rep.read_text())
+        except Exception:
+            continue
+        msg = (data.get("message") or "").strip().splitlines()
+        items.append({
+            "id": data.get("id", d.name),
+            "created_utc": data.get("created_utc"),
+            "project": data.get("project"),
+            "severity": data.get("severity"),
+            "summary": msg[0] if msg else "",
+        })
+    return {"reports": items}
 
 
 # ---------------------------------------------------------------------------

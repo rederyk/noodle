@@ -276,6 +276,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
     <div class="tb-zone">
       <button class="tb-icon" onclick="openPalette()" title="Command palette (Ctrl+K)">⌘K</button>
       <button class="tb-btn" onclick="exportStep()" title="Export the model as STEP">⬇ STEP</button>
+      <button class="tb-icon" id="btn-feedback" style="display:none" onclick="openFeedback()" title="Send feedback / report">🐞</button>
       <div class="menu-wrap" style="position:relative">
         <button class="tb-icon sys" id="btn-system" onclick="toggleSystemMenu(event)" title="System">⚙</button>
         <div class="menu" id="system-menu" style="right:0">
@@ -283,6 +284,8 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
           <div class="menu-sep"></div>
           <button class="menu-item" onclick="openConsole()"><span class="ic">⛌</span>Open backend console</button>
           <button class="menu-item" onclick="confirmRestart()"><span class="ic">⟳</span>Restart backend…</button>
+          <div class="menu-sep"></div>
+          <button class="menu-item" onclick="openSettings()"><span class="ic">⚙</span>Settings…</button>
         </div>
       </div>
       <a class="tb-icon" href="/ui" title="Open the Code UI">⧉</a>
@@ -392,6 +395,7 @@ const LiteGraph = window.LiteGraph;
 let catalog = {};          // type -> NodeDef
 let lgraph, lcanvas;
 let currentName = null;
+let lastNodeErrors = {};   // last execution's node_id -> error, for feedback reports
 let nodeIndex = {};        // our graph node-id -> Litegraph node (set on serialize)
 let nodeByGraphId = {};    // on-disk graph id -> node, for cross-view linking (/ui)
 let highlighted = [];      // nodes currently flagged with an error
@@ -1536,6 +1540,7 @@ window.runGraph = async function(){
   renderPreviews(data.view);   // draw whatever succeeded
   // per-node errors: flag the culprits but keep the rest of the graph rendered
   const nerr = data.node_errors || {};
+  lastNodeErrors = nerr;   // remembered for the feedback report
   const nids = Object.keys(nerr);
   for (const id of nids){ highlightNode(id); log(`✖ ${id}: ${nerr[id].message}`, 'err'); }
   for (const w of (data.warnings || [])) log('⚠ '+w, 'warn');
@@ -2362,6 +2367,85 @@ window.openShortcuts = function(){
 };
 
 /* ============================================================ *
+ *  Settings + Feedback / report                                *
+ *  Local, non-sensitive feedback channel. A coding agent picks *
+ *  up feedback/<id>/ and fixes it — see docs/FEEDBACK_FIX_GUIDE.md
+ * ============================================================ */
+const FEEDBACK_FLAG = 'cadstudio:settings:feedbackEnabled';
+function feedbackEnabled(){ return localStorage.getItem(FEEDBACK_FLAG)==='1'; }
+function applyFeedbackSetting(){
+  const btn=document.getElementById('btn-feedback');
+  if(btn) btn.style.display = feedbackEnabled() ? '' : 'none';
+}
+window.openSettings = function(){
+  closeMenus();
+  const on=feedbackEnabled();
+  const m=buildModal(`<h3>Settings</h3>`+
+    `<label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer">`+
+      `<input type="checkbox" id="set-fb" ${on?'checked':''} style="margin-top:3px">`+
+      `<span><b>Show the Feedback / report button</b><br>`+
+      `<small style="color:var(--txt-dim)">Adds a 🐞 button to the top bar. It saves a local report `+
+      `(your text + technical context + optional graph snapshot &amp; recent logs) under `+
+      `<code>feedback/</code> so a coding agent can pick it up and fix it.</small></span></label>`+
+    `<div class="modal-actions"><button class="tb-btn primary" id="set-ok">Done</button></div>`);
+  const cb=m.ov.querySelector('#set-fb');
+  cb.addEventListener('change', ()=>{ localStorage.setItem(FEEDBACK_FLAG, cb.checked?'1':'0'); applyFeedbackSetting(); });
+  m.ov.querySelector('#set-ok').onclick=()=>m.close();
+};
+
+function feedbackContext(){
+  const errs={}; for(const [k,v] of Object.entries(lastNodeErrors||{})) errs[k]=(v&&v.message)||String(v);
+  return {
+    user_agent: navigator.userAgent,
+    url: location.href,
+    project: currentName||null,
+    node_errors: errs,
+  };
+}
+window.openFeedback = function(){
+  closeMenus();
+  const ctx=feedbackContext();
+  const errCount=Object.keys(ctx.node_errors).length;
+  const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  const m=buildModal(`<h3>Send feedback / report</h3>`+
+    `<p style="color:var(--txt-dim);margin:0 0 8px">Saved locally under <code>feedback/</code>. No copilot chat, keys, or session data are included.</p>`+
+    `<textarea id="fb-msg" rows="6" placeholder="What were you doing? What happened? What did you expect?" `+
+      `style="width:100%;box-sizing:border-box;resize:vertical"></textarea>`+
+    `<div style="display:flex;gap:10px;align-items:center;margin:8px 0">`+
+      `<label>Type <select id="fb-sev"><option value="bug">bug</option><option value="idea">idea</option><option value="question">question</option></select></label>`+
+    `</div>`+
+    `<label style="display:block;margin:2px 0"><input type="checkbox" id="fb-graph" checked> Attach current graph snapshot</label>`+
+    `<label style="display:block;margin:2px 0"><input type="checkbox" id="fb-logs" checked> Attach recent backend logs</label>`+
+    `<div style="margin:10px 0 0;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg-2)">`+
+      `<b style="font-size:12px">Included context (read-only)</b>`+
+      `<div style="font-size:12px;color:var(--txt-dim);margin-top:4px">`+
+        `• project: <code>${esc(ctx.project||'(none)')}</code><br>`+
+        `• app: <code>noodle</code> · client: <code>${esc(navigator.platform||'?')}</code><br>`+
+        `• last per-node errors: <code>${errCount}</code></div></div>`+
+    `<div class="modal-actions"><button class="tb-btn" id="fb-cancel">Cancel</button>`+
+    `<button class="tb-btn primary" id="fb-send">Save report</button></div>`);
+  const ta=m.ov.querySelector('#fb-msg'); setTimeout(()=>ta.focus(),0);
+  m.ov.querySelector('#fb-cancel').onclick=()=>m.close();
+  m.ov.querySelector('#fb-send').onclick=async()=>{
+    const message=ta.value.trim();
+    if(!message){ ta.focus(); return; }
+    let graph=null, logs=[];
+    if(m.ov.querySelector('#fb-graph').checked){ try{ graph=toGraphJSON(currentName||'_'); }catch(_){} }
+    if(m.ov.querySelector('#fb-logs').checked){
+      try{ const r=await fetch(`${API}/api/system/logs?limit=200`,{cache:'no-store'}); if(r.ok) logs=(await r.json()).entries||[]; }catch(_){}
+    }
+    const payload={project:currentName||null, message, severity:m.ov.querySelector('#fb-sev').value, context:ctx, graph, logs};
+    m.ov.querySelector('#fb-send').disabled=true;
+    try{
+      const r=await fetch(`${API}/api/feedback`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail||r.statusText);
+      const d=await r.json(); m.close();
+      toast(`Report saved to <code>${d.dir}/</code> — your coding agent can pick it up.`,'success');
+    }catch(e){ m.ov.querySelector('#fb-send').disabled=false; toast('Feedback failed: '+(e.message||e),'error'); }
+  };
+};
+
+/* ============================================================ *
  *  System controls: health, backend logs, restart              *
  * ============================================================ */
 let backendOnline = null, logSince = 0, restarting = false;
@@ -2443,6 +2527,8 @@ function paletteCommands(){
     {ic:'⬇', label:'Export STEP', k:'', run:()=>exportStep()},
     {ic:'⛌', label:'Open backend console', k:'', run:()=>openConsole()},
     {ic:'⟳', label:'Restart backend…', k:'', run:()=>confirmRestart()},
+    {ic:'🐞',label:'Send feedback / report…', k:'', run:()=>openFeedback()},
+    {ic:'⚙', label:'Settings…', k:'', run:()=>openSettings()},
     {ic:'?', label:'Keyboard shortcuts', k:'', run:()=>openShortcuts()},
   ];
 }
@@ -2499,6 +2585,7 @@ document.addEventListener('keydown', e=>{
   // Never let a viewport failure (e.g. WebGL unavailable) block node registration
   // or graph editing — the editor must stay usable even without the 3D preview.
   try { initViewer(); } catch(e){ log('3D viewer disabled: '+(e.message||e), 'err'); }
+  applyFeedbackSetting();
   setHealth('busy'); setDocState('none');
   try{
     const defs = await (await fetch(`${API}/api/nodes`)).json();

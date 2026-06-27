@@ -6,3 +6,5 @@ __pycache__/
 *.step
 projects/*
 !projects/.gitkeep
+feedback/*
+!feedback/.gitkeep
