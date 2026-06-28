@@ -210,7 +210,8 @@ class Graph:
                 raise ValidationError(
                     f"Connection {c.id}: node {c.to_node} ({dst_def.type}) "
                     f"has no input {c.to_socket!r}")
-            if not wires_compatible(out.wire_type, inp.wire_type):
+            if (not wires_compatible(out.wire_type, inp.wire_type)
+                    and out.wire_type not in (inp.accepts or [])):
                 raise ValidationError(
                     f"Connection {c.id}: incompatible wire types "
                     f"{out.wire_type} -> {inp.wire_type}")

@@ -74,6 +74,11 @@ class Socket:
     # once per item -> a list output. list_access inputs consume the whole list
     # as one value (List/Sort/Item… and every `multiple` collector).
     list_access: bool = False
+    # Per-socket widening: extra OUTPUT wire types this input accepts, BEYOND what
+    # the global WIRE_COMPATIBLE table allows. Lets one polymorphic input (e.g. a
+    # transform / Select that works on any shape at runtime) take a curve without
+    # globally permitting curve -> every geometry input. See PLAN_DATA_PROTOCOL.md.
+    accepts: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -587,21 +592,21 @@ register(NodeDef("Chamfer", "modifiers", "Chamfer",
 # sigs}; the transpiler special-cases it (see _emit_select) and resolves the
 # set at run time by nearest-anchor matching, so it survives param tweaks.
 register(NodeDef("SelectEdge", "select", "Select Edge",
-    inputs=[Socket("geometry", WIRE_GEOMETRY)],
+    inputs=[Socket("geometry", WIRE_GEOMETRY, accepts=[WIRE_CURVE])],
     outputs=[Socket("selection", WIRE_SELECTION)],
     code_template={"algebra": ""},  # handled by the transpiler, not a template
     description="Pick specific edges of a shape in the 3D picker; outputs the "
                 "selected edges for a targeted operation."))
 
 register(NodeDef("SelectFace", "select", "Select Face",
-    inputs=[Socket("geometry", WIRE_GEOMETRY)],
+    inputs=[Socket("geometry", WIRE_GEOMETRY, accepts=[WIRE_CURVE])],
     outputs=[Socket("selection", WIRE_SELECTION)],
     code_template={"algebra": ""},  # handled by the transpiler, not a template
     description="Pick specific faces of a shape in the 3D picker; outputs the "
                 "selected faces for a targeted operation."))
 
 register(NodeDef("SelectVertex", "select", "Select Vertex",
-    inputs=[Socket("geometry", WIRE_GEOMETRY)],
+    inputs=[Socket("geometry", WIRE_GEOMETRY, accepts=[WIRE_CURVE])],
     outputs=[Socket("selection", WIRE_SELECTION)],
     code_template={"algebra": ""},  # handled by the transpiler, not a template
     description="Pick specific vertices of a shape in the 3D picker; outputs the "
@@ -663,7 +668,7 @@ register(NodeDef("Section", "modifiers", "Section",
 # 6. Transforms
 # ===========================================================================
 register(NodeDef("Move", "transform", "Move",
-    inputs=[Socket("shape", WIRE_GEOMETRY),
+    inputs=[Socket("shape", WIRE_GEOMETRY, accepts=[WIRE_CURVE]),
             Socket("offset", WIRE_VECTOR, required=False)],
     params=[_f("x", 0, -500, 500), _f("y", 0, -500, 500), _f("z", 0, -500, 500)],
     outputs=_geo(),
@@ -675,7 +680,7 @@ register(NodeDef("Move", "transform", "Move",
                 "to each position (one moved copy per vector)."))
 
 register(NodeDef("Rotate", "transform", "Rotate",
-    inputs=[Socket("shape", WIRE_GEOMETRY)] + _pin("angle"),
+    inputs=[Socket("shape", WIRE_GEOMETRY, accepts=[WIRE_CURVE])] + _pin("angle"),
     params=[_f("angle", 90, -360, 360),
             Param("axis", "select", "axis", "Z", widget="select",
                   options=["X", "Y", "Z"],
@@ -687,7 +692,7 @@ register(NodeDef("Rotate", "transform", "Rotate",
     description="Rotate a shape (or a plane) around a global axis."))
 
 register(NodeDef("Scale", "transform", "Scale",
-    inputs=[Socket("shape", WIRE_GEOMETRY)] + _pin("factor"),
+    inputs=[Socket("shape", WIRE_GEOMETRY, accepts=[WIRE_CURVE])] + _pin("factor"),
     params=[_f("factor", 2, 0.01, 100),
             _f("x", 1, 0.01, 100, label="x"), _f("y", 1, 0.01, 100, label="y"),
             _f("z", 1, 0.01, 100, label="z")],
@@ -707,7 +712,7 @@ register(NodeDef("ToPlane", "transform", "To Plane",
                 "perpendicular to the curve, ready to Loft."))
 
 register(NodeDef("Mirror", "transform", "Mirror",
-    inputs=[Socket("shape", WIRE_GEOMETRY)],
+    inputs=[Socket("shape", WIRE_GEOMETRY, accepts=[WIRE_CURVE])],
     params=[Param("plane", "select", "plane", "XZ", widget="select",
                   options=["XY", "XZ", "YZ"],
                   code_map={"XY": "Plane.XY", "XZ": "Plane.XZ", "YZ": "Plane.YZ"}),
@@ -718,7 +723,7 @@ register(NodeDef("Mirror", "transform", "Mirror",
                 "result is symmetric (original + reflection)."))
 
 register(NodeDef("ArrayLinear", "transform", "Linear Array",
-    inputs=[Socket("shape", WIRE_GEOMETRY)],
+    inputs=[Socket("shape", WIRE_GEOMETRY, accepts=[WIRE_CURVE])],
     params=[_i("count", 3, 1, 200), _f("dx", 20, -500, 500),
             _f("dy", 0, -500, 500), _f("dz", 0, -500, 500)],
     outputs=[Socket("result", WIRE_GEOMETRY)],

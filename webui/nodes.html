@@ -522,7 +522,7 @@ function registerNodes(defs){
       this.cadInputs = {};
       this.multiInputs = new Set();   // input names whose "+" toggle is on
       for (const s of (def.inputs||[])){
-        const accepts = (INPUT_ACCEPTS[s.wire_type]||[s.wire_type]).join(',');
+        const accepts = (INPUT_ACCEPTS[s.wire_type]||[s.wire_type]).concat(s.accepts||[]).join(',');
         const grow = !!(s.multiple) || !s.list_access;
         this.cadInputs[s.name] = {accepts, grow};
         this.addInput(s.name, accepts);
