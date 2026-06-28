@@ -91,8 +91,10 @@ def test_validate_incompatible_wire():
 def test_transpile_flange_golden():
     code = transpile(_flange())
     assert "from build123d import *" in code
-    assert "__out_1 = Circle(20.0)" in code
-    assert "extrude(__out_1, amount=10.0, taper=0.0, both=False)" in code
+    # 2D primitives now emit a closed curve (outline); Extrude fills it back to a
+    # face via _face() so a curve profile still extrudes to a solid.
+    assert "__out_1 = _outline(Circle(20.0))" in code
+    assert "extrude(_face(__out_1), amount=10.0, taper=0.0, both=False)" in code
     assert "(__out_2 - __out_4)" in code
     assert "export_step(__out_5, 'flange.step')" in code
     assert "__result__ = __out_5" in code

@@ -438,6 +438,41 @@ def _curve_points(_items):
     return _origin_points(_flatten(_items))
 
 
+def _outline(_s):
+    \"\"\"The boundary of a 2D primitive as a closed curve (Wire). A filled
+    sketch/face is reduced to its outer wire(s) so primitives read as curves;
+    feed a Surface (Make Face) node to fill it back into a face. Anything that is
+    not face-like (already a curve) passes straight through.\"\"\"
+    if _s is None:
+        return None
+    try:
+        ws = list(_s.wires()) if hasattr(_s, "wires") else []
+    except Exception:
+        ws = []
+    if len(ws) == 1:
+        return ws[0]
+    if ws:
+        return ShapeList(ws)
+    return _s
+
+
+def _face(_s):
+    \"\"\"Coerce a shape to a face/sketch. A closed curve (Wire/Edge) is filled with
+    make_face; anything already face-like passes through. Used where an op needs a
+    face but may receive a curve primitive.\"\"\"
+    if _s is None:
+        return None
+    try:
+        if hasattr(_s, "faces") and len(_s.faces()) > 0:
+            return _s
+    except Exception:
+        pass
+    try:
+        return make_face(_s)
+    except Exception:
+        return _s
+
+
 def _as_curve(_c):
     \"\"\"Coerce an input to a 1D curve (Edge/Wire) exposing location_at. Passes a
     curve through; otherwise takes the first edge of a shape.\"\"\"
@@ -540,8 +575,11 @@ def _remap(_v, _src, _tgt, _smin, _smax, _tmin, _tmax):
 
 def _loft(_sections, _ruled=False):
     \"\"\"Loft a solid through an ordered list of sections. Accepts several wired
-    sketches AND/OR a single list of sketches (e.g. ToPlane over Divide Curve).\"\"\"
-    secs = [s for s in _flatten(_sections) if s is not None]
+    sketches AND/OR a single list of sketches (e.g. ToPlane over Divide Curve).
+    Closed-curve sections (Circle/Rectangle/… primitives) are auto-filled into
+    faces so a loft of curve profiles builds a solid.\"\"\"
+    secs = [_face(s) for s in _flatten(_sections) if s is not None]
+    secs = [s for s in secs if s is not None]
     if len(secs) < 2:
         return None
     return loft(secs, ruled=bool(_ruled))

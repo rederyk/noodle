@@ -428,7 +428,7 @@ const WIRE_COLORS = {
 // into geometry/vector/plane inputs. Mismatches surface as guarded node errors.
 const INPUT_ACCEPTS = {
   geometry:['geometry','sketch','plane','data'],   // transforms treat a plane like geometry
-  sketch:['sketch','data'],
+  sketch:['sketch','curve','data'],   // a closed curve (Circle/Rectangle…) fills a sketch input
   curve:['curve','data'],
   data:['geometry','sketch','curve','data','tree','plane','vector','selection'],
   tree:['tree','data'],

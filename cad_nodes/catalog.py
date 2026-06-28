@@ -271,37 +271,42 @@ register(NodeDef("ConstructPoint", "vector", "Construct Point",
 register(NodeDef("Rectangle", "primitives_2d", "Rectangle",
     inputs=_origin_in() + _pin("width", "height"),
     params=[_f("width", 30, 0.1, 500), _f("height", 20, 0.1, 500)],
-    outputs=_sk(),
-    code_template={"algebra": "Rectangle({width}, {height})"},
-    description="2D rectangle sketch."))
+    outputs=_cv(),
+    code_template={"algebra": "_outline(Rectangle({width}, {height}))"},
+    description="2D rectangle as a closed curve. Feed a Surface (Make Face) node "
+                "to fill it into a face."))
 
 register(NodeDef("RoundedRectangle", "primitives_2d", "Rounded Rectangle",
     inputs=_origin_in() + _pin("width", "height", "radius"),
     params=[_f("width", 30, 0.1, 500), _f("height", 20, 0.1, 500), _f("radius", 3, 0, 250)],
-    outputs=_sk(),
-    code_template={"algebra": "RectangleRounded({width}, {height}, {radius})"},
-    description="Rectangle with filleted corners."))
+    outputs=_cv(),
+    code_template={"algebra": "_outline(RectangleRounded({width}, {height}, {radius}))"},
+    description="Rectangle with filleted corners, as a closed curve. Feed a Surface "
+                "(Make Face) node to fill it into a face."))
 
 register(NodeDef("Circle", "primitives_2d", "Circle",
     inputs=_origin_in() + _pin("radius"),
     params=[_f("radius", 10, 0.1, 500)],
-    outputs=_sk(),
-    code_template={"algebra": "Circle({radius})"},
-    description="2D circle sketch."))
+    outputs=_cv(),
+    code_template={"algebra": "_outline(Circle({radius}))"},
+    description="2D circle as a closed curve. Feed a Surface (Make Face) node to "
+                "fill it into a face."))
 
 register(NodeDef("Ellipse", "primitives_2d", "Ellipse",
     inputs=_origin_in() + _pin("x_radius", "y_radius"),
     params=[_f("x_radius", 8, 0.1, 500), _f("y_radius", 5, 0.1, 500)],
-    outputs=_sk(),
-    code_template={"algebra": "Ellipse({x_radius}, {y_radius})"},
-    description="2D ellipse sketch."))
+    outputs=_cv(),
+    code_template={"algebra": "_outline(Ellipse({x_radius}, {y_radius}))"},
+    description="2D ellipse as a closed curve. Feed a Surface (Make Face) node to "
+                "fill it into a face."))
 
 register(NodeDef("Polygon", "primitives_2d", "Regular Polygon",
     inputs=_origin_in() + _pin("radius", "sides"),
     params=[_f("radius", 10, 0.1, 500), _i("sides", 6, 3, 64)],
-    outputs=_sk(),
-    code_template={"algebra": "RegularPolygon({radius}, {sides})"},
-    description="Regular N-sided polygon."))
+    outputs=_cv(),
+    code_template={"algebra": "_outline(RegularPolygon({radius}, {sides}))"},
+    description="Regular N-sided polygon, as a closed curve. Feed a Surface (Make "
+                "Face) node to fill it into a face."))
 
 register(NodeDef("Text", "primitives_2d", "Text",
     inputs=_origin_in(),
@@ -396,7 +401,7 @@ register(NodeDef("Extrude", "operations", "Extrude",
     params=[_f("amount", 10, 0.1, 500), _f("taper", 0, -45, 45),
             Param("both", "bool", "both", False, widget="checkbox")],
     outputs=_geo(),
-    code_template={"algebra": "extrude({sketch}, amount={amount}, taper={taper}, both={both})",
+    code_template={"algebra": "extrude(_face({sketch}), amount={amount}, taper={taper}, both={both})",
                    "builder": "extrude(amount={amount}, taper={taper}, both={both})"},
     description="Extrude a 2D sketch into a 3D solid (along its normal). `both` "
                 "extrudes symmetrically in both directions."))
@@ -408,7 +413,7 @@ register(NodeDef("Revolve", "operations", "Revolve",
                   options=["X", "Y", "Z"],
                   code_map={"X": "Axis.X", "Y": "Axis.Y", "Z": "Axis.Z"})],
     outputs=_geo(),
-    code_template={"algebra": "revolve({sketch}, axis={axis}, revolution_arc={angle})",
+    code_template={"algebra": "revolve(_face({sketch}), axis={axis}, revolution_arc={angle})",
                    "builder": "revolve(axis={axis}, revolution_arc={angle})"},
     description="Revolve a sketch around an in-plane axis (X or Y). The profile "
                 "must sit off the axis (use a Move node), like a lathe — a "
@@ -429,7 +434,7 @@ register(NodeDef("Sweep", "operations", "Sweep",
     inputs=[Socket("section", WIRE_SKETCH), Socket("path", WIRE_CURVE)],
     params=[Param("is_frenet", "bool", "is_frenet", False, widget="checkbox")],
     outputs=_geo(),
-    code_template={"algebra": "_sweep({section}, {path}, {is_frenet})"},
+    code_template={"algebra": "_sweep(_face({section}), {path}, {is_frenet})"},
     description="Sweep a profile (section) along a path curve into a solid. The "
                 "profile is auto-seated perpendicular to the path start. `is_frenet` "
                 "uses the curve's natural frame (for twisting paths)."))
@@ -438,14 +443,16 @@ register(NodeDef("Thicken", "operations", "Thicken",
     inputs=[Socket("sketch", WIRE_SKETCH)],
     params=[_f("thickness", 2.5, 0.1, 100)],
     outputs=_geo(),
-    code_template={"algebra": "thicken({sketch}, {thickness})"},
+    code_template={"algebra": "thicken(_face({sketch}), {thickness})"},
     description="Give a surface/sketch a thickness."))
 
-register(NodeDef("MakeFace", "operations", "Make Face",
+register(NodeDef("MakeFace", "operations", "Surface (Make Face)",
     inputs=[Socket("edges", WIRE_CURVE)],
     outputs=_sk(),
     code_template={"algebra": "make_face({edges})", "builder": "make_face()"},
-    description="Build a face from a closed wire."))
+    description="Patch / boundary surface: fill a closed curve (Circle, Rectangle, "
+                "Polyline, …) into a 2D face, ready for Extrude / Revolve / Loft. "
+                "Fans out over a list of curves (one face each)."))
 
 register(NodeDef("PopulateGeometry", "operations", "Populate Geometry",
     inputs=[Socket("region", WIRE_SKETCH, required=False)],
