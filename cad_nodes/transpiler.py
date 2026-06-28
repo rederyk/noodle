@@ -1125,6 +1125,17 @@ class Transpiler:
             body.append(f"__previews__[{node.id!r}] = {var}")
         self._guard(lines, body, node)
 
+    def _cast(self, src, sock, var: str) -> str:
+        """Auto-apply a boundary cast when the effective upstream type needs one to
+        match this input's type (e.g. a curve into a sketch input -> _face(var)).
+        Skipped for `raw` sockets (the node coerces by itself) and identity edges.
+        The registry of casts lives in cad_nodes/casts.py."""
+        if getattr(sock, "raw", False):
+            return var
+        eff = self.graph.effective_output_type(src[0], src[1])
+        helper = catalog.cast_helper(eff, sock.wire_type)
+        return f"{helper}({var})" if helper else var
+
     def _emit_simple(self, node, lines: list[str]) -> None:
         ndef = catalog.get(node.type)
         feeds = self.graph.inputs_of(node.id)
@@ -1154,7 +1165,7 @@ class Transpiler:
                     fan[sock.name] = f"[{', '.join(vars_)}]" if len(vars_) >= 2 else vars_[0]
                     subs[sock.name] = sock.name     # bound by the lambda
                 else:
-                    subs[sock.name] = vars_[0]
+                    subs[sock.name] = self._cast(srcs[0], sock, vars_[0])
 
         template = ndef.code_template.get("algebra")
         if template is None:

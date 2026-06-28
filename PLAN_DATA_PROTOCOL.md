@@ -225,10 +225,15 @@ these only widen type gates / add casts / unify.
   **`curve`** (via `Socket.accepts=[curve]`); `sketch`/`plane` already accepted
   via compat. Runtime helpers already polymorphic (a moved/rotated curve stays a
   `Wire`).
-  - **Known limitation (next phase):** the output socket is statically typed
-    `geometry`, so a transformed curve can't yet flow back into a `curve`/`surface`
-    input (this is pre-existing — also true for transformed sketches). The fix is
-    type-preserving output via the cast registry (§4b) / polymorphic output type.
+  - **Type-preserving output — ✅ DONE.** `Move/Rotate/Scale` now carry
+    `NodeDef.output_follows="shape"`: their first output mirrors the effective
+    wire type flowing into `shape`, so a transformed curve stays a `curve` and can
+    feed `curve`/`surface` inputs (e.g. Circle→Move→MakeFace / →DivideCurve).
+    `Graph.effective_output_type()` resolves it up the chain (cycle-guarded) and is
+    used in `validate()`; the editor mirrors it live (`refreshPolyType()` retypes
+    the output socket on connect + propagates downstream). Verified precise:
+    Box→Move→DivideCurve is still rejected (geometry ≠ curve). Mirror/ArrayLinear
+    stay `geometry` (they aggregate into a compound/list).
   - Implementation of the gate: new **`Socket.accepts`** (extra OUTPUT types an
     input takes beyond `WIRE_COMPATIBLE`); checked in `Graph.validate()` and
     merged into the frontend's accepts string. Surgical — does **not** let a curve
@@ -251,10 +256,12 @@ these only widen type gates / add casts / unify.
 - Drop `WIRE_TREE` from the tables until a tree feature lands (or wire it into
   `list`).
 
-### Centralise coercions (I8/I9)
-- New `casts.py` (registry); `WIRE_COMPATIBLE` derived from it; `_face/_outline/
-  _at/_plane_origin/anchor` registered as the cast fns. Frontend `INPUT_ACCEPTS`
-  generated from the same source (kill the manual mirror).
+### Centralise coercions (I8/I9) — ✅ DONE
+- `casts.py` (registry); `WIRE_COMPATIBLE` + frontend `INPUT_ACCEPTS` derived from
+  it (manual mirror killed). The transpiler now **auto-applies** a boundary cast
+  via `cast_helper` (`curve→sketch ⇒ _face`) on non-`raw` inputs; nodes that pick
+  coercion by a flag (Extrude/Revolve/Sweep/Loft/Thicken/ToPlane) mark their
+  profile socket `raw=True` so the transpiler leaves the value untouched.
 
 ---
 

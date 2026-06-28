@@ -145,6 +145,33 @@ class Graph:
     def children_of(self, group_id: str) -> list[Node]:
         return [n for n in self.nodes if n.parent == group_id]
 
+    def effective_output_type(self, node_id: str, socket_name: str | None = None,
+                              _seen: set | None = None) -> str:
+        """The runtime wire type of a node's output, resolving type-preserving
+        nodes (`NodeDef.output_follows`) up the chain — e.g. a curve moved/rotated
+        stays a curve, so Move's first output mirrors its `shape` input. Non-first
+        outputs and non-following nodes return their static socket type."""
+        try:
+            node = self.node(node_id)
+            ndef = catalog.get(node.type)
+        except (KeyError, Exception):
+            return catalog.WIRE_DATA
+        out = ndef.output(socket_name) if socket_name else (
+            ndef.outputs[0] if ndef.outputs else None)
+        static = out.wire_type if out else catalog.WIRE_DATA
+        follows = getattr(ndef, "output_follows", None)
+        first = ndef.outputs[0].name if ndef.outputs else None
+        if follows and out is not None and (socket_name is None or socket_name == first):
+            _seen = _seen or set()
+            if node_id in _seen:        # cycle guard (graph should be a DAG anyway)
+                return static
+            _seen.add(node_id)
+            for c in self.connections:  # the source feeding the followed input
+                if c.to_node == node_id and c.to_socket == follows:
+                    return self.effective_output_type(c.from_node, c.from_socket, _seen)
+            return static               # followed input unconnected -> static
+        return static
+
     # -- serialisation -----------------------------------------------------
     def to_dict(self) -> dict:
         return {
@@ -210,11 +237,12 @@ class Graph:
                 raise ValidationError(
                     f"Connection {c.id}: node {c.to_node} ({dst_def.type}) "
                     f"has no input {c.to_socket!r}")
-            if (not wires_compatible(out.wire_type, inp.wire_type)
-                    and out.wire_type not in (inp.accepts or [])):
+            src_type = self.effective_output_type(c.from_node, c.from_socket)
+            if (not wires_compatible(src_type, inp.wire_type)
+                    and src_type not in (inp.accepts or [])):
                 raise ValidationError(
                     f"Connection {c.id}: incompatible wire types "
-                    f"{out.wire_type} -> {inp.wire_type}")
+                    f"{src_type} -> {inp.wire_type}")
 
         # Soft: required inputs that are unconnected.
         for n in self.nodes:

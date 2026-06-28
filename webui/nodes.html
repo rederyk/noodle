@@ -541,6 +541,10 @@ function registerNodes(defs){
       for (const s of (def.outputs||[])){
         this.addOutput(s.name, s.wire_type);
       }
+      // type-preserving nodes (transforms): the first output mirrors the wire type
+      // of the named input, resolved live in the editor by refreshPolyType().
+      this.cadOutputFollows = def.output_follows || null;
+      this.cadStaticOut = (def.outputs && def.outputs[0]) ? def.outputs[0].wire_type : null;
       for (const p of (def.params||[])) addWidget(this, p);
       // Panel: a multi-line text editor (text ↔ data, 3 syntaxes) instead of the
       // single-line prompt; the `text`/`mode` widgets still round-trip the value.
@@ -581,6 +585,7 @@ function registerNodes(defs){
       // "stops at 2" bug).
       this.onConnectionsChange = function(type, index, connected, link_info){
         if (type !== LiteGraph.INPUT || loadingGraph) return;
+        if (this.cadOutputFollows) refreshPolyType(this);   // retype output to match input
         if (this.cadType === 'CodeBlock'){ const s = this; setTimeout(()=> updateCbWired(s), 0); }
         updateGizmoLockedWidgets(this);
         const slot = this.inputs[index];
@@ -1097,8 +1102,39 @@ function fromGraphJSON(data){
     node.size = node.computeSize(); node.size[0] = Math.max(node.size[0], 150);
   }
   nodeByGraphId = Object.assign({}, map);   // disk ids -> node (matches /ui until next save)
+  refreshAllPolyTypes();
   lgraph.setDirtyCanvas(true,true);
   loadingGraph = false;
+}
+
+// Type-preserving nodes (Move/Rotate/Scale): retype the first output to match the
+// wire type flowing into the followed input, so a transformed curve stays a curve
+// in the editor (and can feed curve/surface inputs). Mirrors the backend
+// Graph.effective_output_type / NodeDef.output_follows. Propagates downstream.
+function refreshPolyType(node, _seen){
+  if (!node || !node.cadOutputFollows || !node.outputs || !node.outputs[0]) return;
+  _seen = _seen || new Set();
+  if (_seen.has(node.id)) return; _seen.add(node.id);   // cycle guard
+  const inIdx = (node.inputs||[]).findIndex(s => (s.cadName||s.name) === node.cadOutputFollows);
+  let t = node.cadStaticOut;
+  if (inIdx >= 0 && node.inputs[inIdx].link != null){
+    const l = lgraph.links[node.inputs[inIdx].link];
+    const src = l && lgraph.getNodeById(l.origin_id);
+    if (src && src.outputs[l.origin_slot]) t = src.outputs[l.origin_slot].type;
+  }
+  if (node.outputs[0].type === t) return;               // no change
+  node.outputs[0].type = t;
+  for (const lid of (node.outputs[0].links || []).slice()){
+    const l = lgraph.links[lid];
+    if (!l) continue;
+    l.type = t;                                          // recolour the wire
+    const dn = lgraph.getNodeById(l.target_id);
+    if (dn) refreshPolyType(dn, _seen);                  // propagate down the chain
+  }
+}
+
+function refreshAllPolyTypes(){
+  for (const n of (lgraph._nodes || [])) refreshPolyType(n);
 }
 
 // ── API actions ──

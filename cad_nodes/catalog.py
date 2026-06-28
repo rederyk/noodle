@@ -54,6 +54,10 @@ class Socket:
     # transform / Select that works on any shape at runtime) take a curve without
     # globally permitting curve -> every geometry input. See PLAN_DATA_PROTOCOL.md.
     accepts: list[str] = field(default_factory=list)
+    # raw=True: the NODE handles any type coercion itself (e.g. Extrude/Loft pick
+    # face vs outline by their `solid` flag), so the transpiler must NOT auto-apply
+    # a boundary cast to this input — it would strip the info the node needs.
+    raw: bool = False
 
 
 @dataclass
@@ -105,6 +109,12 @@ class NodeDef:
     # lock   = input sockets that, when wired, make the value upstream-computed →
     #          the gizmo is read-only (you edit the producer node instead).
     gizmo: Optional[dict] = None
+    # output_follows: name of the INPUT socket whose effective wire type this
+    # node's FIRST output mirrors (type-preserving / polymorphic nodes — e.g. a
+    # transform: move a curve -> get a curve back, not a generic geometry). The
+    # graph validator and the editor resolve it up the chain; the runtime already
+    # preserves the kind. See PLAN_DATA_PROTOCOL.md.
+    output_follows: Optional[str] = None
 
     def param(self, name: str) -> Optional[Param]:
         for p in self.params:
@@ -399,7 +409,7 @@ register(NodeDef("CurveLength", "curves", "Curve Length",
 # 3. Operations 2D -> 3D
 # ===========================================================================
 register(NodeDef("Extrude", "operations", "Extrude",
-    inputs=[Socket("sketch", WIRE_SKETCH)] + _pin("amount", "taper"),
+    inputs=[Socket("sketch", WIRE_SKETCH, raw=True)] + _pin("amount", "taper"),
     params=[_f("amount", 10, 0.1, 500), _f("taper", 0, -45, 45),
             Param("both", "bool", "both", False, widget="checkbox"),
             Param("solid", "bool", "solid", True, widget="checkbox")],
@@ -412,7 +422,7 @@ register(NodeDef("Extrude", "operations", "Extrude",
                 "(wall / ribbon)."))
 
 register(NodeDef("Revolve", "operations", "Revolve",
-    inputs=[Socket("sketch", WIRE_SKETCH)] + _pin("angle"),
+    inputs=[Socket("sketch", WIRE_SKETCH, raw=True)] + _pin("angle"),
     params=[_f("angle", 360, 1, 360),
             Param("axis", "select", "axis", "Y", widget="select",
                   options=["X", "Y", "Z"],
@@ -428,7 +438,7 @@ register(NodeDef("Revolve", "operations", "Revolve",
                 "revolve just the outline into an open surface."))
 
 register(NodeDef("Loft", "operations", "Loft",
-    inputs=[Socket("sections", WIRE_SKETCH, multiple=True)],
+    inputs=[Socket("sections", WIRE_SKETCH, multiple=True, raw=True)],
     params=[Param("ruled", "bool", "ruled", False, widget="checkbox"),
             Param("solid", "bool", "solid", True, widget="checkbox")],
     outputs=_geo(),
@@ -441,7 +451,7 @@ register(NodeDef("Loft", "operations", "Loft",
                 "to skin the section outlines into an open surface (no caps)."))
 
 register(NodeDef("Sweep", "operations", "Sweep",
-    inputs=[Socket("section", WIRE_SKETCH), Socket("path", WIRE_CURVE)],
+    inputs=[Socket("section", WIRE_SKETCH, raw=True), Socket("path", WIRE_CURVE)],
     params=[Param("is_frenet", "bool", "is_frenet", False, widget="checkbox"),
             Param("solid", "bool", "solid", True, widget="checkbox")],
     outputs=_geo(),
@@ -453,7 +463,7 @@ register(NodeDef("Sweep", "operations", "Sweep",
                 "outline into an open surface (a tube wall)."))
 
 register(NodeDef("Thicken", "operations", "Thicken",
-    inputs=[Socket("sketch", WIRE_SKETCH)],
+    inputs=[Socket("sketch", WIRE_SKETCH, raw=True)],
     params=[_f("thickness", 2.5, 0.1, 100)],
     outputs=_geo(),
     code_template={"algebra": "thicken(_face({sketch}), {thickness})"},
@@ -650,6 +660,7 @@ register(NodeDef("Move", "transform", "Move",
     gizmo={"kind": "translate", "binds": ["x", "y", "z"],
            "anchor": "preview", "lock": ["offset"]},
     code_template={"algebra": "_move({shape}, {offset}, {x}, {y}, {z})"},
+    output_follows="shape",
     description="Translate a shape (or a plane). Wire a vector into `offset` to "
                 "drive the position; feed a LIST of vectors to scatter the shape "
                 "to each position (one moved copy per vector)."))
@@ -664,6 +675,7 @@ register(NodeDef("Rotate", "transform", "Rotate",
     gizmo={"kind": "rotate", "binds": ["angle"], "axisParam": "axis",
            "anchor": "origin", "lock": ["angle"]},
     code_template={"algebra": "_rotate({shape}, {axis}, {angle})"},
+    output_follows="shape",
     description="Rotate a shape (or a plane) around a global axis."))
 
 register(NodeDef("Scale", "transform", "Scale",
@@ -674,11 +686,12 @@ register(NodeDef("Scale", "transform", "Scale",
     outputs=_geo(),
     gizmo={"kind": "scale", "binds": ["factor"], "anchor": "preview", "lock": ["factor"]},
     code_template={"algebra": "_scale({shape}, {factor}, {x}, {y}, {z})"},
+    output_follows="shape",
     description="Scale a shape. `factor` is the uniform multiplier; set `x`/`y`/`z` "
                 "(default 1) for a non-uniform scale on top of it."))
 
 register(NodeDef("ToPlane", "transform", "To Plane",
-    inputs=[Socket("shape", WIRE_SKETCH), Socket("plane", WIRE_PLANE)],
+    inputs=[Socket("shape", WIRE_SKETCH, raw=True), Socket("plane", WIRE_PLANE)],
     outputs=_sk(),
     code_template={"algebra": "_to_plane({shape}, {plane})"},
     description="Re-seat a 2D profile onto a plane/frame (its local XY comes to lie "
