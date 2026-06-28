@@ -955,6 +955,28 @@ register(NodeDef("BoundingBox", "panel", "Bounding Box",
     description="Bounding box of a shape."))
 
 # ===========================================================================
+# 11b. Containers / legend — one typed pass-through per wire type. They colour
+# the wire, label the graph (a legend) and inspect the value (Panels tab) without
+# changing it. A cast/convert mode is planned (PLAN_DATA_PROTOCOL.md).
+# ===========================================================================
+def _container(type_: str, label: str, wire: str) -> NodeDef:
+    return register(NodeDef(type_, "container", label,
+        inputs=[Socket("value", wire, required=False, list_access=True)],
+        outputs=[Socket("value", wire)],
+        code_template={"algebra": "_probe({node_id!r}, {value})"},
+        description=f"{label} container / legend: a typed pass-through. Wire a "
+                    f"{label.lower()} through it to colour the wire, label the "
+                    f"graph and inspect the value in the Panels tab — the data is "
+                    f"unchanged. (A convert/cast mode is planned.)"))
+
+_container("Geometry", "Geometry", WIRE_GEOMETRY)
+_container("Surface", "Surface", WIRE_SKETCH)
+_container("Curve", "Curve", WIRE_CURVE)
+_container("Point", "Point", WIRE_VECTOR)
+_container("Plane", "Plane", WIRE_PLANE)
+_container("Selection", "Selection", WIRE_SELECTION)
+
+# ===========================================================================
 # 12. Inputs / parameters
 # ===========================================================================
 register(NodeDef("NumberSlider", "input", "Number Slider",

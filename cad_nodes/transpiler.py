@@ -151,6 +151,15 @@ def _panel(_id, _value, _text="", _mode="friendly"):
     return _parsed
 
 
+def _probe(_id, _value):
+    \"\"\"Typed container / legend: record the value for the inspector (Panels tab)
+    and pass it through UNCHANGED. One per wire type — colours the wire and lets
+    you label/inspect what flows, without altering the data. (Cast/transform role
+    comes later — see PLAN_DATA_PROTOCOL.md.)\"\"\"
+    __panels__[_id] = _value
+    return _value
+
+
 def _panel_one(_line, _mode):
     \"\"\"Parse a single line into a value per the chosen syntax.\"\"\"
     import json as _json

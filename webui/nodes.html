@@ -545,6 +545,11 @@ function registerNodes(defs){
       // of the named input, resolved live in the editor by refreshPolyType().
       this.cadOutputFollows = def.output_follows || null;
       this.cadStaticOut = (def.outputs && def.outputs[0]) ? def.outputs[0].wire_type : null;
+      // container/legend nodes: tint the title bar with the wire colour of their
+      // type so they read as a colour-coded legend chip.
+      if (def.category === 'container' && WIRE_COLORS[this.cadStaticOut]){
+        this.color = WIRE_COLORS[this.cadStaticOut];
+      }
       for (const p of (def.params||[])) addWidget(this, p);
       // Panel: a multi-line text editor (text ↔ data, 3 syntaxes) instead of the
       // single-line prompt; the `text`/`mode` widgets still round-trip the value.

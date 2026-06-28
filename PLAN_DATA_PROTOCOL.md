@@ -187,6 +187,16 @@ A **Container** node per type that is, today, a **typed pass-through + legend**
 - Later (transformer phase): a target-type dropdown turns it into a **cast** node
   (`curve→surface`, `surface→curve`, `*→point`, …) driven by the cast registry.
 
+**✅ DONE (geometric containers, legend + inspect role).** Added a `container`
+category with one typed pass-through per geometric wire type — `Geometry`,
+`Surface`, `Curve`, `Point`, `Plane`, `Selection`. Each: a single `list_access`
+input + same-typed output, emitting `_probe(id, value)` which records the value
+for the **Panels tab** (typed readout: e.g. a Curve shows `Wire {1e, 1v}`) and
+passes it through unchanged. The editor tints the node title with the type's wire
+colour (a legend chip). Type-gated (a curve into the `Geometry` container is
+rejected). The **convert/cast mode** (target-type dropdown) is the deferred
+transformer phase. Scalar containers below already exist as input nodes.
+
 Proposed set (reuse what exists, fill the gaps):
 
 | Container | Type | Status |
