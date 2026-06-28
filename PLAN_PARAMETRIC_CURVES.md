@@ -214,6 +214,12 @@ This file is the running checklist; tick phases off as they land.
 - [ ] P7 — data trees (optional)
 
 ### Notes / discoveries
+- **2D primitives are now curves.** `Circle/Rectangle/RoundedRectangle/Ellipse/
+  Polygon` emit a closed `WIRE_CURVE` (via `_outline()`), not a filled sketch —
+  they read as curves (Grasshopper-style) and feed DivideCurve/Sweep/MakeFace.
+  A **Surface (Make Face)** node patches a closed curve into a face. Face-consuming
+  ops (Extrude/Revolve/Sweep/Thicken/`_loft`) auto-fill a curve via `_face()` so
+  pre-existing graphs keep producing solids. (feedback/20260628-121305-voronoi-vase)
 - The transpiler is **one variable per node**, so multi-output nodes aren't
   supported. Resolved cleanly by making the `Plane` the carrier of both position
   and orientation (DivideCurve → frames), with `DeconstructPlane` as the
