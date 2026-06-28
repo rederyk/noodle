@@ -239,12 +239,19 @@ these only widen type gates / add casts / unify.
     merged into the frontend's accepts string. Surgical — does **not** let a curve
     into booleans/fillet (verified: `curve→Union` still rejected).
 
-### Unify point extraction (I3/I4)
-- Add/rationalise a **Deconstruct** that takes `solid|surface|curve|selection`
-  and yields `points` (+ `curves`/`faces`). 
-- `DivideCurve`: keep `frames`; document/relabel that points come from
-  Deconstruct(frames) or add a `points` route. `CurveEndpoints` becomes a thin
-  alias of Deconstruct(curve).
+### Unify point extraction (I3/I4) — ✅ DONE (points)
+- New **Deconstruct (points)** node: one coherent point extractor. Input
+  `list_access` accepting `geometry|surface|curve|selection|plane|vector`; output
+  `points` (a list → fans out). Runtime `_deconstruct` handles every case: a
+  solid/surface/curve → ALL its vertices; a plane/frame → its origin; a
+  selection/list → each item's points; a vertex/point → itself.
+- This closes the original report: **DivideCurve → Deconstruct → Box** scatters at
+  the frame points (the "divide only gives frames" gap), and **Polygon/any-shape →
+  Deconstruct** pulls vertices without interactive picking.
+- Kept alongside the specific tools: `DivideCurve` (frames), `CurveEndpoints`
+  (just the 2 ends), `SelectVertex` (interactive pick), `DeconstructPlane`
+  (plane→origin alias). Edge/face explode (a `kind` param or Explode node) is a
+  later add — blocked only by the one-output-per-node rule + per-kind output type.
 
 ### Type the scalar bus (I5) — see §4d
 - `Panel`: read the `subtype` tag for a typed, coloured readout.

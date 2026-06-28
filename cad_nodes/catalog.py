@@ -749,6 +749,17 @@ register(NodeDef("DeconstructPlane", "plane", "Plane Origin",
     description="The origin point of a plane/frame. Wire a list of frames (e.g. "
                 "from Divide Curve) to get the points along the curve (fans out)."))
 
+register(NodeDef("Deconstruct", "vector", "Deconstruct (points)",
+    inputs=[Socket("shape", WIRE_GEOMETRY, list_access=True,
+                   accepts=[WIRE_CURVE, WIRE_SELECTION, WIRE_VECTOR, WIRE_PLANE])],
+    outputs=[Socket("points", WIRE_VECTOR)],
+    code_template={"algebra": "_deconstruct({shape})"},
+    description="Explode anything into its points — the one coherent point "
+                "extractor: a solid/surface/curve gives ALL its vertices; a "
+                "plane/frame its origin; a selection the picked points; a point "
+                "itself. Outputs a list (fans out). Pairs with Divide Curve "
+                "(frames) and Select Vertex (interactive pick)."))
+
 # ===========================================================================
 # 8. Vectors & points
 # ===========================================================================

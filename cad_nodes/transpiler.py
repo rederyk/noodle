@@ -267,6 +267,42 @@ def _origin_points(_o):
     return out
 
 
+def _deconstruct(_s):
+    \"\"\"Explode anything into a flat list of points (Vectors) — the one coherent
+    point extractor: a solid/surface/curve -> ALL its vertices; a plane/frame ->
+    its origin; a selection / list -> each item's points; a vertex/point/tuple ->
+    itself. Output is a list, so downstream fans out.\"\"\"
+    if _s is None:
+        return []
+    out = []
+    for it in (_s if _is_seq(_s) else [_s]):
+        if it is None:
+            continue
+        if hasattr(it, "X") and hasattr(it, "Y") and hasattr(it, "Z"):
+            out.append(Vector(it.X, it.Y, it.Z))           # already a point / vertex
+            continue
+        if isinstance(it, (list, tuple)) and len(it) >= 3 and not hasattr(it, "vertices"):
+            out.append(Vector(it[0], it[1], it[2]))        # a raw (x, y, z)
+            continue
+        if hasattr(it, "origin") and not hasattr(it, "vertices"):
+            o = it.origin                                  # a plane / frame -> origin
+            out.append(Vector(o.X, o.Y, o.Z))
+            continue
+        verts = None
+        try:
+            verts = list(it.vertices())                    # a shape -> its vertices
+        except Exception:
+            verts = None
+        if verts:
+            for v in verts:
+                c = v.center() if hasattr(v, "center") else v
+                out.append(Vector(c.X, c.Y, c.Z))
+        elif hasattr(it, "center"):
+            c = it.center()
+            out.append(Vector(c.X, c.Y, c.Z))
+    return out
+
+
 def _at(_shape, _origin):
     \"\"\"Place _shape at _origin. One point -> a moved copy; many points -> a
     Compound with a copy at each (so a Select Vertex can seed N primitives).\"\"\"
@@ -864,7 +900,7 @@ _LIST_PRODUCERS = {
     "ArrayLinear", "ListCreate", "ListRange", "ListSeries", "ListRepeat",
     "ListSlice", "ListReverse", "ListSort", "ListFlatten", "Concat",
     "Voronoi2D", "DivideSurface", "PopulateGeometry", "MapToSurface",
-    "DivideCurve", "CurveEndpoints",
+    "DivideCurve", "CurveEndpoints", "Deconstruct",
     "Series", "DivideDomain",
     "Panel",   # source-mode multi-line text -> a list (and pass-through preserves list-ness)
 }
