@@ -399,45 +399,56 @@ register(NodeDef("CurveLength", "curves", "Curve Length",
 register(NodeDef("Extrude", "operations", "Extrude",
     inputs=[Socket("sketch", WIRE_SKETCH)] + _pin("amount", "taper"),
     params=[_f("amount", 10, 0.1, 500), _f("taper", 0, -45, 45),
-            Param("both", "bool", "both", False, widget="checkbox")],
+            Param("both", "bool", "both", False, widget="checkbox"),
+            Param("solid", "bool", "solid", True, widget="checkbox")],
     outputs=_geo(),
-    code_template={"algebra": "extrude(_face({sketch}), amount={amount}, taper={taper}, both={both})",
+    code_template={"algebra": "_extrude({sketch}, {amount}, {taper}, {both}, {solid})",
                    "builder": "extrude(amount={amount}, taper={taper}, both={both})"},
-    description="Extrude a 2D sketch into a 3D solid (along its normal). `both` "
-                "extrudes symmetrically in both directions."))
+    description="Extrude a 2D profile along its normal. `both` extrudes "
+                "symmetrically. `solid` (default) fills the profile for a solid; "
+                "turn it off to extrude just the outline into an open surface "
+                "(wall / ribbon)."))
 
 register(NodeDef("Revolve", "operations", "Revolve",
     inputs=[Socket("sketch", WIRE_SKETCH)] + _pin("angle"),
     params=[_f("angle", 360, 1, 360),
             Param("axis", "select", "axis", "Y", widget="select",
                   options=["X", "Y", "Z"],
-                  code_map={"X": "Axis.X", "Y": "Axis.Y", "Z": "Axis.Z"})],
+                  code_map={"X": "Axis.X", "Y": "Axis.Y", "Z": "Axis.Z"}),
+            Param("solid", "bool", "solid", True, widget="checkbox")],
     outputs=_geo(),
-    code_template={"algebra": "revolve(_face({sketch}), axis={axis}, revolution_arc={angle})",
+    code_template={"algebra": "_revolve({sketch}, {axis}, {angle}, {solid})",
                    "builder": "revolve(axis={axis}, revolution_arc={angle})"},
-    description="Revolve a sketch around an in-plane axis (X or Y). The profile "
+    description="Revolve a profile around an in-plane axis (X or Y). The profile "
                 "must sit off the axis (use a Move node), like a lathe — a "
-                "profile crossing the axis is invalid geometry."))
+                "profile crossing the axis is invalid geometry. `solid` (default) "
+                "fills the profile for a solid of revolution; turn it off to "
+                "revolve just the outline into an open surface."))
 
 register(NodeDef("Loft", "operations", "Loft",
     inputs=[Socket("sections", WIRE_SKETCH, multiple=True)],
-    params=[Param("ruled", "bool", "ruled", False, widget="checkbox")],
+    params=[Param("ruled", "bool", "ruled", False, widget="checkbox"),
+            Param("solid", "bool", "solid", True, widget="checkbox")],
     outputs=_geo(),
-    code_template={"algebra": "_loft([{sections}], {ruled})",
+    code_template={"algebra": "_loft([{sections}], {ruled}, {solid})",
                    "builder": "loft(ruled={ruled})"},
-    description="Loft a solid through an ordered list of sections. Wire several "
-                "sketches OR a single list (e.g. ToPlane over Divide Curve frames) "
-                "for a variable-section solid. `ruled` = straight skin between "
-                "sections instead of a smooth one."))
+    description="Loft through an ordered list of sections. Wire several sketches "
+                "OR a single list (e.g. ToPlane over Divide Curve frames) for a "
+                "variable-section result. `ruled` = straight skin instead of "
+                "smooth. `solid` (default) caps the ends for a solid; turn it off "
+                "to skin the section outlines into an open surface (no caps)."))
 
 register(NodeDef("Sweep", "operations", "Sweep",
     inputs=[Socket("section", WIRE_SKETCH), Socket("path", WIRE_CURVE)],
-    params=[Param("is_frenet", "bool", "is_frenet", False, widget="checkbox")],
+    params=[Param("is_frenet", "bool", "is_frenet", False, widget="checkbox"),
+            Param("solid", "bool", "solid", True, widget="checkbox")],
     outputs=_geo(),
-    code_template={"algebra": "_sweep(_face({section}), {path}, {is_frenet})"},
-    description="Sweep a profile (section) along a path curve into a solid. The "
-                "profile is auto-seated perpendicular to the path start. `is_frenet` "
-                "uses the curve's natural frame (for twisting paths)."))
+    code_template={"algebra": "_sweep({section}, {path}, {is_frenet}, {solid})"},
+    description="Sweep a profile (section) along a path curve. The profile is "
+                "auto-seated perpendicular to the path start. `is_frenet` uses the "
+                "curve's natural frame (for twisting paths). `solid` (default) "
+                "fills the profile for a solid; turn it off to sweep just the "
+                "outline into an open surface (a tube wall)."))
 
 register(NodeDef("Thicken", "operations", "Thicken",
     inputs=[Socket("sketch", WIRE_SKETCH)],

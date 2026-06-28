@@ -573,26 +573,134 @@ def _remap(_v, _src, _tgt, _smin, _smax, _tmin, _tmax):
     return c + (float(_v) - a) / (b - a) * (d - c)
 
 
-def _loft(_sections, _ruled=False):
-    \"\"\"Loft a solid through an ordered list of sections. Accepts several wired
-    sketches AND/OR a single list of sketches (e.g. ToPlane over Divide Curve).
-    Closed-curve sections (Circle/Rectangle/… primitives) are auto-filled into
-    faces so a loft of curve profiles builds a solid.\"\"\"
-    secs = [_face(s) for s in _flatten(_sections) if s is not None]
-    secs = [s for s in secs if s is not None]
+def _section_wire(_s):
+    \"\"\"The outline Wire of a loft/extrude section (a face/sketch -> its outer wire;
+    a curve passes through). Used for open-surface (un-capped) lofts.\"\"\"
+    if _s is None:
+        return None
+    if isinstance(_s, Wire):
+        return _s
+    try:
+        ws = list(_s.wires())
+        if ws:
+            return ws[0]
+    except Exception:
+        pass
+    try:
+        es = list(_s.edges())
+        if es:
+            return Wire(es)
+    except Exception:
+        pass
+    return None
+
+
+def _wrap_shape(_s):
+    \"\"\"Wrap a raw OCP TopoDS_Shape into the matching build123d class.\"\"\"
+    if _s is None:
+        return None
+    from OCP.TopAbs import TopAbs_ShapeEnum as _T
+    cls = {_T.TopAbs_SOLID: Solid, _T.TopAbs_SHELL: Shell, _T.TopAbs_FACE: Face,
+           _T.TopAbs_COMPOUND: Compound, _T.TopAbs_COMPSOLID: Compound,
+           _T.TopAbs_WIRE: Wire, _T.TopAbs_EDGE: Edge}.get(_s.ShapeType())
+    return cls(_s) if cls else None
+
+
+def _wire_normal(_w):
+    \"\"\"Unit normal of a planar wire (via its filled face); falls back to +Z.\"\"\"
+    try:
+        n = make_face(_w).faces()[0].normal_at()
+        return Vector(n.X, n.Y, n.Z)
+    except Exception:
+        return Vector(0, 0, 1)
+
+
+def _loft(_sections, _ruled=False, _solid=True):
+    \"\"\"Loft through an ordered list of sections. Accepts several wired sketches
+    AND/OR a single list (e.g. ToPlane over Divide Curve). With `solid` (default)
+    each section is filled into a face and the loft is a capped solid; with
+    `solid` off the section outlines are skinned into an open surface (no end
+    caps), so a loft of curve profiles stays a shell. `ruled` = straight skin.\"\"\"
+    secs = [s for s in _flatten(_sections) if s is not None]
     if len(secs) < 2:
         return None
-    return loft(secs, ruled=bool(_ruled))
+    if _solid:
+        faces = [f for f in (_face(s) for s in secs) if f is not None]
+        if len(faces) < 2:
+            return None
+        return loft(faces, ruled=bool(_ruled))
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+    builder = BRepOffsetAPI_ThruSections(False, bool(_ruled), 1e-6)
+    n = 0
+    for s in secs:
+        w = _section_wire(s)
+        if w is not None:
+            builder.AddWire(w.wrapped)
+            n += 1
+    if n < 2:
+        return None
+    builder.Build()
+    return _wrap_shape(builder.Shape())
 
 
-def _sweep(_section, _path, _frenet=False):
+def _extrude(_profile, _amount, _taper=0.0, _both=False, _solid=True):
+    \"\"\"Extrude a 2D profile along its normal. With `solid` (default) the profile is
+    filled into a face and the result is a solid; with `solid` off the profile's
+    outline is extruded into an open surface (a wall / ribbon; `taper` ignored).\"\"\"
+    if _profile is None:
+        return None
+    if _solid:
+        prof = _face(_profile)
+        return extrude(prof, amount=_amount, taper=_taper, both=_both) if prof is not None else None
+    w = _section_wire(_profile)
+    if w is None:
+        return None
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Vec
+    nrm = _wire_normal(w)
+    a = float(_amount)
+    src = w
+    if _both:
+        src = w.moved(Pos(-nrm.X * a, -nrm.Y * a, -nrm.Z * a))
+        a *= 2.0
+    return _wrap_shape(BRepPrimAPI_MakePrism(src.wrapped, gp_Vec(nrm.X * a, nrm.Y * a, nrm.Z * a)).Shape())
+
+
+def _revolve(_profile, _axis, _angle=360, _solid=True):
+    \"\"\"Revolve a 2D profile around an in-plane axis. With `solid` (default) the
+    profile is filled into a face for a solid of revolution; with `solid` off the
+    outline is revolved into an open surface.\"\"\"
+    if _profile is None:
+        return None
+    if _solid:
+        prof = _face(_profile)
+        return revolve(prof, axis=_axis, revolution_arc=_angle) if prof is not None else None
+    w = _section_wire(_profile)
+    if w is None:
+        return None
+    import math
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeRevol
+    ax = _axis.wrapped if hasattr(_axis, "wrapped") else _axis
+    return _wrap_shape(BRepPrimAPI_MakeRevol(w.wrapped, ax, math.radians(float(_angle))).Shape())
+
+
+def _sweep(_section, _path, _frenet=False, _solid=True):
     \"\"\"Sweep a profile along a path curve. The profile is seated on the path's
-    start frame (perpendicular to the curve) so a flat XY sketch sweeps cleanly.\"\"\"
+    start frame (perpendicular to the curve) so a flat XY sketch sweeps cleanly.
+    With `solid` (default) the profile is a face and the sweep is a solid; with
+    `solid` off the outline is swept into an open surface (a tube wall).\"\"\"
     if _section is None or _path is None:
         return None
     p = _as_curve(_path)
-    sec = _to_plane(_section, _eval_frame(p, 0.0))
-    return sweep(sec, path=p, is_frenet=bool(_frenet))
+    if _solid:
+        sec = _to_plane(_face(_section), _eval_frame(p, 0.0))
+        return sweep(sec, path=p, is_frenet=bool(_frenet))
+    sec = _to_plane(_section_wire(_section), _eval_frame(p, 0.0))
+    if sec is None:
+        return None
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipe
+    spine = p if isinstance(p, Wire) else Wire([p])
+    return _wrap_shape(BRepOffsetAPI_MakePipe(spine.wrapped, sec.wrapped).Shape())
 
 
 def _to_plane(_shape, _plane):
