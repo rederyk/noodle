@@ -110,7 +110,7 @@ def test_transpile_select_param_maps_to_code():
                          "to_node": "m", "to_socket": "shape"}],
     })
     code = transpile(g)
-    assert "mirror(__out_1, Plane.YZ)" in code
+    assert "_mirror(__out_1, Plane.YZ, False)" in code
 
 
 def test_transpile_boolean_operators():
@@ -220,7 +220,7 @@ def test_transpile_origin_input_positions_primitive():
     })
     code = transpile(g)
     assert "Vector(10.0, 0.0, 5.0)" in code
-    assert "_at(Sphere(3.0), __out_1)" in code
+    assert "_at(Sphere(3.0, arc_size3=360.0), __out_1)" in code
     # an unconnected origin must NOT wrap the primitive
     g2 = Graph.from_dict({"nodes": [{"id": "b", "type": "Box"}], "connections": []})
     body = transpile(g2).split("# --- nodes ---")[1]
@@ -270,11 +270,15 @@ def test_source_map_spans_match_slices():
     assert _SP_A not in code and _SP_B not in code   # sentinels stripped
     lines = code.splitlines()
     by_param = {s["param"]: s for s in spans}
-    assert set(by_param) == {"width", "height", "depth"}
+    # the dimensional params are always editable floats; the Box also exposes a
+    # `centered` bool span, which is fine — assert the floats are present & exact.
+    assert {"width", "height", "depth"} <= set(by_param)
     for s in spans:
         # the recorded (row, col0, col1) must slice exactly the literal in text
         assert lines[s["row"]][s["col0"]:s["col1"]] == "20.0" if s["param"] == "width" else True
-        assert s["node_id"] == "box_1" and s["kind"] == "float"
+        assert s["node_id"] == "box_1"
+        if s["param"] in {"width", "height", "depth"}:
+            assert s["kind"] == "float"
     w = by_param["width"]
     assert lines[w["row"]][w["col0"]:w["col1"]] == "20.0"
     assert w["min"] == 0.1 and w["max"] == 500

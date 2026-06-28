@@ -81,7 +81,7 @@ def test_get_code_roundtrip(store):
     api.create_graph(store, "g")
     api.add_node(store, "g", "Box", {"width": 1, "height": 2, "depth": 3})
     code = api.get_code(store, "g")
-    assert "Box(1.0, 2.0, 3.0)" in code
+    assert "Box(1.0, 2.0, 3.0, align=_al(True))" in code
     assert "__result__" in code
 
 

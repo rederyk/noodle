@@ -332,6 +332,36 @@ def _rotate(_obj, _axis, _angle):
     return Rot(d.X * _angle, d.Y * _angle, d.Z * _angle) * _obj
 
 
+def _scale(_shape, _factor=1.0, _x=1.0, _y=1.0, _z=1.0):
+    \"\"\"Scale a shape. `factor` is the uniform multiplier; `x/y/z` add per-axis
+    factors on top (all 1.0 -> uniform). by=(factor*x, factor*y, factor*z).\"\"\"
+    if _shape is None:
+        return None
+    f = float(_factor)
+    return scale(_shape, by=(f * float(_x), f * float(_y), f * float(_z)))
+
+
+def _mirror(_shape, _plane, _copy=False):
+    \"\"\"Mirror a shape across a plane. With `copy`, keep the original too so the
+    result is symmetric (original + reflection).\"\"\"
+    if _shape is None:
+        return None
+    m = mirror(_shape, about=_plane)
+    if not _copy:
+        return m
+    try:
+        return _shape + m
+    except Exception:
+        return Compound(children=[_shape, m])
+
+
+def _al(_centered, _n=3):
+    \"\"\"An align tuple for a primitive: CENTER on every axis when centred, else MIN
+    (corner / base at the origin).\"\"\"
+    a = Align.CENTER if _centered else Align.MIN
+    return tuple([a] * int(_n))
+
+
 _FANOUT_MAX = 2000  # guard: an absurd list (e.g. a runaway Range count) must
                     # surface as a per-node error, not freeze/crash the worker.
 

@@ -219,24 +219,30 @@ def _i(name, default=0, lo=None, hi=None, label="", widget="slider",
 # ===========================================================================
 register(NodeDef("Box", "primitives_3d", "Box",
     inputs=_origin_in() + _pin("width", "height", "depth"),
-    params=[_f("width", 10, 0.1, 500), _f("height", 10, 0.1, 500), _f("depth", 10, 0.1, 500)],
+    params=[_f("width", 10, 0.1, 500), _f("height", 10, 0.1, 500), _f("depth", 10, 0.1, 500),
+            Param("centered", "bool", "centered", True, widget="checkbox")],
     outputs=_geo(),
-    code_template={"algebra": "Box({width}, {height}, {depth})"},
-    description="Solid box of given width, height, depth."))
+    code_template={"algebra": "Box({width}, {height}, {depth}, align=_al({centered}))"},
+    description="Solid box of given width, height, depth. `centered` aligns it on "
+                "its centre; turn it off to seat its corner at the origin."))
 
 register(NodeDef("Cylinder", "primitives_3d", "Cylinder",
     inputs=_origin_in() + _pin("radius", "height"),
-    params=[_f("radius", 5, 0.1, 500), _f("height", 20, 0.1, 500)],
+    params=[_f("radius", 5, 0.1, 500), _f("height", 20, 0.1, 500),
+            _f("arc", 360, 1, 360, label="arc"),
+            Param("centered", "bool", "centered", True, widget="checkbox")],
     outputs=_geo(),
-    code_template={"algebra": "Cylinder({radius}, {height})"},
-    description="Solid cylinder."))
+    code_template={"algebra": "Cylinder({radius}, {height}, arc_size={arc}, align=_al({centered}))"},
+    description="Solid cylinder. `arc` < 360 makes a wedge / pie slice. `centered` "
+                "aligns it on its centre; off seats its base at the origin."))
 
 register(NodeDef("Sphere", "primitives_3d", "Sphere",
     inputs=_origin_in() + _pin("radius"),
-    params=[_f("radius", 10, 0.1, 500)],
+    params=[_f("radius", 10, 0.1, 500), _f("arc", 360, 1, 360, label="arc")],
     outputs=_geo(),
-    code_template={"algebra": "Sphere({radius})"},
-    description="Solid sphere."))
+    code_template={"algebra": "Sphere({radius}, arc_size3={arc})"},
+    description="Solid sphere. `arc` < 360 sweeps only part of the way around "
+                "(a wedge)."))
 
 register(NodeDef("Cone", "primitives_3d", "Cone",
     inputs=_origin_in() + _pin("bottom_radius", "top_radius", "height"),
@@ -247,10 +253,11 @@ register(NodeDef("Cone", "primitives_3d", "Cone",
 
 register(NodeDef("Torus", "primitives_3d", "Torus",
     inputs=_origin_in() + _pin("major_radius", "minor_radius"),
-    params=[_f("major_radius", 15, 0.1, 500), _f("minor_radius", 3, 0.1, 500)],
+    params=[_f("major_radius", 15, 0.1, 500), _f("minor_radius", 3, 0.1, 500),
+            _f("arc", 360, 1, 360, label="arc")],
     outputs=_geo(),
-    code_template={"algebra": "Torus({major_radius}, {minor_radius})"},
-    description="Torus / ring."))
+    code_template={"algebra": "Torus({major_radius}, {minor_radius}, major_angle={arc})"},
+    description="Torus / ring. `arc` < 360 makes a partial ring (a C-shape)."))
 
 register(NodeDef("ConstructPoint", "vector", "Construct Point",
     inputs=[Socket("x", WIRE_DATA, required=False),
@@ -302,19 +309,34 @@ register(NodeDef("Ellipse", "primitives_2d", "Ellipse",
 
 register(NodeDef("Polygon", "primitives_2d", "Regular Polygon",
     inputs=_origin_in() + _pin("radius", "sides"),
-    params=[_f("radius", 10, 0.1, 500), _i("sides", 6, 3, 64)],
+    params=[_f("radius", 10, 0.1, 500), _i("sides", 6, 3, 64),
+            _f("rotation", 0, -360, 360, label="rotation"),
+            Param("major", "bool", "to vertices", True, widget="checkbox")],
     outputs=_cv(),
-    code_template={"algebra": "_outline(RegularPolygon({radius}, {sides}))"},
-    description="Regular N-sided polygon, as a closed curve. Feed a Surface (Make "
-                "Face) node to fill it into a face."))
+    code_template={"algebra": "_outline(RegularPolygon({radius}, {sides}, major_radius={major}, rotation={rotation}))"},
+    description="Regular N-sided polygon, as a closed curve. `to vertices` (default) "
+                "measures `radius` to the corners (circumscribed); turn it off to "
+                "measure to the edge midpoints (inscribed). `rotation` spins it. "
+                "Feed a Surface (Make Face) node to fill it into a face."))
 
 register(NodeDef("Text", "primitives_2d", "Text",
     inputs=_origin_in(),
     params=[Param("text", "str", "text", "Hello", widget="input"),
-            _f("font_size", 10, 0.1, 500)],
+            _f("font_size", 10, 0.1, 500),
+            Param("font", "str", "font", "Arial", widget="input"),
+            Param("style", "select", "style", "regular", widget="select",
+                  options=["regular", "bold", "italic", "bolditalic"],
+                  code_map={"regular": "FontStyle.REGULAR", "bold": "FontStyle.BOLD",
+                            "italic": "FontStyle.ITALIC", "bolditalic": "FontStyle.BOLDITALIC"}),
+            Param("align", "select", "align", "center", widget="select",
+                  options=["left", "center", "right"],
+                  code_map={"left": "(TextAlign.LEFT, TextAlign.CENTER)",
+                            "center": "(TextAlign.CENTER, TextAlign.CENTER)",
+                            "right": "(TextAlign.RIGHT, TextAlign.CENTER)"})],
     outputs=_sk(),
-    code_template={"algebra": "Text({text}, font_size={font_size})"},
-    description="Text as a 2D sketch."))
+    code_template={"algebra": "Text({text}, font_size={font_size}, font={font}, font_style={style}, text_align={align})"},
+    description="Text as a 2D sketch. Choose the `font`, `style` (bold / italic) "
+                "and horizontal `align`."))
 
 # ===========================================================================
 # 2b. Curves (WIRE_CURVE producers) — lines, arcs, splines along which profiles
@@ -617,10 +639,15 @@ register(NodeDef("Shell", "modifiers", "Shell",
 
 register(NodeDef("Offset", "modifiers", "Offset",
     inputs=[Socket("shape", WIRE_GEOMETRY)] + _pin("amount"),
-    params=[_f("amount", 2, -100, 100)],
+    params=[_f("amount", 2, -100, 100),
+            Param("kind", "select", "corners", "arc", widget="select",
+                  options=["arc", "intersection", "tangent"],
+                  code_map={"arc": "Kind.ARC", "intersection": "Kind.INTERSECTION",
+                            "tangent": "Kind.TANGENT"})],
     outputs=_geo(),
-    code_template={"algebra": "offset({shape}, amount={amount})"},
-    description="Offset a shape outward/inward."))
+    code_template={"algebra": "offset({shape}, amount={amount}, kind={kind})"},
+    description="Offset a shape outward/inward. `corners` sets how convex corners "
+                "are filled: arc (rounded), intersection (sharp), or tangent."))
 
 register(NodeDef("Section", "modifiers", "Section",
     inputs=[Socket("shape", WIRE_GEOMETRY),
@@ -661,11 +688,14 @@ register(NodeDef("Rotate", "transform", "Rotate",
 
 register(NodeDef("Scale", "transform", "Scale",
     inputs=[Socket("shape", WIRE_GEOMETRY)] + _pin("factor"),
-    params=[_f("factor", 2, 0.01, 100)],
+    params=[_f("factor", 2, 0.01, 100),
+            _f("x", 1, 0.01, 100, label="x"), _f("y", 1, 0.01, 100, label="y"),
+            _f("z", 1, 0.01, 100, label="z")],
     outputs=_geo(),
     gizmo={"kind": "scale", "binds": ["factor"], "anchor": "preview", "lock": ["factor"]},
-    code_template={"algebra": "scale({shape}, {factor})"},
-    description="Uniform scale (about the shape's own centre)."))
+    code_template={"algebra": "_scale({shape}, {factor}, {x}, {y}, {z})"},
+    description="Scale a shape. `factor` is the uniform multiplier; set `x`/`y`/`z` "
+                "(default 1) for a non-uniform scale on top of it."))
 
 register(NodeDef("ToPlane", "transform", "To Plane",
     inputs=[Socket("shape", WIRE_SKETCH), Socket("plane", WIRE_PLANE)],
@@ -680,10 +710,12 @@ register(NodeDef("Mirror", "transform", "Mirror",
     inputs=[Socket("shape", WIRE_GEOMETRY)],
     params=[Param("plane", "select", "plane", "XZ", widget="select",
                   options=["XY", "XZ", "YZ"],
-                  code_map={"XY": "Plane.XY", "XZ": "Plane.XZ", "YZ": "Plane.YZ"})],
+                  code_map={"XY": "Plane.XY", "XZ": "Plane.XZ", "YZ": "Plane.YZ"}),
+            Param("copy", "bool", "copy", False, widget="checkbox")],
     outputs=_geo(),
-    code_template={"algebra": "mirror({shape}, {plane})"},
-    description="Mirror across a plane."))
+    code_template={"algebra": "_mirror({shape}, {plane}, {copy})"},
+    description="Mirror across a plane. `copy` keeps the original too, so the "
+                "result is symmetric (original + reflection)."))
 
 register(NodeDef("ArrayLinear", "transform", "Linear Array",
     inputs=[Socket("shape", WIRE_GEOMETRY)],
