@@ -58,6 +58,11 @@ class Socket:
     # face vs outline by their `solid` flag), so the transpiler must NOT auto-apply
     # a boundary cast to this input — it would strip the info the node needs.
     raw: bool = False
+    # Advisory sub-type within a wire type, for legend/disambiguation only (NOT
+    # validation — connections still gate on wire_type). Splits the opaque `data`
+    # bus (number/integer/boolean/text/list/domain) and the `curve` family
+    # (line/polyline/spline/arc). See PLAN_DATA_PROTOCOL.md §4d (tag, don't split).
+    subtype: str = ""
 
 
 @dataclass
@@ -1093,3 +1098,31 @@ register(NodeDef("CodeBlock", "code", "Code Block",
                 "node, an editable span in the code view, and a same-named input "
                 "socket that fans out (Range -> CodeBlock.teeth = one result each). "
                 "Overrides live in the `_cb` param namespace; the source is never rewritten."))
+
+
+# ===========================================================================
+# Output sub-types (advisory tags) — split the opaque `data` bus and the `curve`
+# family for legend/disambiguation in the editor. Applied to the first output of
+# each producer. Compatibility is unaffected (gates on wire_type only).
+# See PLAN_DATA_PROTOCOL.md §4d.
+# ===========================================================================
+_OUTPUT_SUBTYPES = {
+    # data -> number / integer / boolean / text
+    "NumberSlider": "number", "NumberInput": "number", "IntegerSlider": "integer",
+    "BooleanToggle": "boolean", "StringInput": "text",
+    "Add": "number", "SubtractNum": "number", "Multiply": "number",
+    "Divide": "number", "Power": "number", "Clamp": "number", "Expression": "number",
+    "Remap": "number", "CurveLength": "number", "ListLength": "integer",
+    # data -> list / domain
+    "ListCreate": "list", "ListRange": "list", "ListReverse": "list",
+    "ListSort": "list", "ListSlice": "list", "ListFlatten": "list",
+    "Concat": "list", "Series": "list", "DivideDomain": "list",
+    "ConstructDomain": "domain", "Bounds": "domain",
+    # curve -> line / polyline / spline / arc
+    "Line": "line", "Polyline": "polyline", "Spline": "spline",
+    "Arc3pt": "arc", "ArcCenter": "arc",
+}
+for _t, _st in _OUTPUT_SUBTYPES.items():
+    _d = REGISTRY.get(_t)
+    if _d and _d.outputs:
+        _d.outputs[0].subtype = _st

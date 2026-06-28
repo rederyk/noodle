@@ -540,6 +540,9 @@ function registerNodes(defs){
       }
       for (const s of (def.outputs||[])){
         this.addOutput(s.name, s.wire_type);
+        // advisory sub-type (number/list/spline…): show it on the slot so an
+        // opaque `data`/`curve` wire reads as its real kind. Legend only.
+        if (s.subtype) this.outputs[this.outputs.length-1].label = s.subtype;
       }
       // type-preserving nodes (transforms): the first output mirrors the wire type
       // of the named input, resolved live in the editor by refreshPolyType().

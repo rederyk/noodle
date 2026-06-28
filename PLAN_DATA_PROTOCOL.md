@@ -158,7 +158,17 @@ One consistent way to get sub-elements, regardless of source:
 
 ### 4d. Migration-safe sub-typing for `data` (fixes I5)
 
-Two options, pick later:
+**✅ DONE — (A) Tag, don't split.** `Socket.subtype` (advisory; gates stay on
+`wire_type`). Producer outputs are tagged via `_OUTPUT_SUBTYPES` in catalog.py:
+`data` → `number|integer|boolean|text|list|domain`, and `curve` →
+`line|polyline|spline|arc`. The editor shows the subtype on the output slot, so an
+opaque `data`/`curve` wire reads as its real kind (IntegerSlider→`integer`,
+Spline→`spline`, ListRange→`list`). Closed-outline primitives (Circle/Rectangle…)
+stay untagged generic curves. Serialized via /api/nodes. The real wire **split
+(B)** stays deferred to the transformer phase. Not yet propagated through
+pass-through nodes (source-side only) — a later enhancement if needed.
+
+Two options for the eventual real split, pick later:
 - **(A) Tag, don't split**: keep wire id `data`, attach `subtype` metadata
   (`number|integer|boolean|text|list|domain`) used for colour/legend/validation
   only. Non-breaking; Panel and containers read the tag.
