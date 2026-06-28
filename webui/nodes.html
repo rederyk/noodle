@@ -422,11 +422,12 @@ const WIRE_COLORS = {
   data:'#8a93a3', tree:'#a855f7', plane:'#fb923c', vector:'#ef4444',
   selection:'#e879f9',
 };
-// for an input of type T, which output types may feed it
-// `data` is the universal wire (mirrors catalog.WIRE_COMPATIBLE): it both
-// accepts anything and can feed anything, so List/Sort/Item outputs flow back
-// into geometry/vector/plane inputs. Mismatches surface as guarded node errors.
-const INPUT_ACCEPTS = {
+// for an input of type T, which output types may feed it.
+// This is the SINGLE-SOURCE-OF-TRUTH derived from the backend cast registry
+// (cad_nodes/casts.py) and loaded at boot from /api/wiretypes — the literal
+// below is only a fallback if that fetch fails. Do not edit it by hand to add
+// compatibility; edit casts.py. (PLAN_DATA_PROTOCOL.md)
+let INPUT_ACCEPTS = {
   geometry:['geometry','sketch','plane','data'],   // transforms treat a plane like geometry
   sketch:['sketch','curve','data'],   // a closed curve (Circle/Rectangle…) fills a sketch input
   curve:['curve','data'],
@@ -2667,6 +2668,12 @@ document.addEventListener('keydown', e=>{
   applyFeedbackSetting();
   setHealth('busy'); setDocState('none');
   try{
+    // wire-type compatibility from the backend cast registry (single source of
+    // truth); falls back to the literal INPUT_ACCEPTS if the endpoint is absent.
+    try{
+      const wt = await (await fetch(`${API}/api/wiretypes`)).json();
+      if (wt && wt.input_accepts) INPUT_ACCEPTS = wt.input_accepts;
+    }catch(e){ log('wiretypes: using built-in fallback','err'); }
     const defs = await (await fetch(`${API}/api/nodes`)).json();
     registerNodes(defs);
     log(`registered ${defs.length} node types`);

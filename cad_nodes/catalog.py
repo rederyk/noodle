@@ -22,42 +22,17 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
 # ---------------------------------------------------------------------------
-# Wire types — mirror the colour coding in PLAN_NODE_CAD.md
+# Wire types + compatibility — the single source of truth is cads_nodes/casts.py.
+# Re-exported here so existing `catalog.WIRE_*` / `wires_compatible` keep working;
+# WIRE_COMPATIBLE is now DERIVED from the cast registry (no hand-maintained copy).
 # ---------------------------------------------------------------------------
-WIRE_GEOMETRY = "geometry"  # Shape / Part / Solid
-WIRE_SKETCH = "sketch"      # 2D Sketch
-WIRE_CURVE = "curve"        # Curve / Wire
-WIRE_DATA = "data"          # list, float, int, str
-WIRE_TREE = "tree"          # data tree
-WIRE_PLANE = "plane"        # Plane / Location
-WIRE_VECTOR = "vector"      # Vector / Point
-WIRE_SELECTION = "selection"  # a set of sub-shapes (edges/faces/vertices) picked off a parent
+from .casts import (  # noqa: E402,F401
+    WIRE_GEOMETRY, WIRE_SKETCH, WIRE_CURVE, WIRE_DATA, WIRE_TREE,
+    WIRE_PLANE, WIRE_VECTOR, WIRE_SELECTION, WIRE_TYPES,
+    wires_compatible, cast_helper, build_compatible, build_input_accepts,
+)
 
-# Which wire types may legally connect to which (output -> accepted inputs).
-# Geometry-ish types are kept distinct but `data` is the permissive fallback.
-WIRE_COMPATIBLE: dict[str, set[str]] = {
-    # geometry <-> plane are interchangeable so the transform nodes (Move /
-    # Rotate / Scale) treat a Plane like any other geometry: a Plane can be
-    # transformed, and a transformed result can flow back into a plane input.
-    WIRE_GEOMETRY: {WIRE_GEOMETRY, WIRE_DATA, WIRE_PLANE},
-    WIRE_SKETCH: {WIRE_SKETCH, WIRE_GEOMETRY, WIRE_DATA},
-    WIRE_CURVE: {WIRE_CURVE, WIRE_SKETCH, WIRE_DATA},
-    # `data` is the universal wire: it already accepts anything as a sink, and
-    # is also accepted everywhere as a source — so a list manipulated by the
-    # List/Sort/Item nodes can flow back into a geometry/vector/plane input.
-    # Mismatches (a number into a solid op) surface as a guarded per-node error.
-    WIRE_DATA: {WIRE_DATA, WIRE_GEOMETRY, WIRE_SKETCH, WIRE_CURVE, WIRE_VECTOR, WIRE_PLANE},
-    WIRE_TREE: {WIRE_TREE, WIRE_DATA},
-    WIRE_PLANE: {WIRE_PLANE, WIRE_DATA, WIRE_GEOMETRY},
-    WIRE_VECTOR: {WIRE_VECTOR, WIRE_DATA},
-    # a selection (sub-shapes) is also usable as raw data, and as point origins
-    WIRE_SELECTION: {WIRE_SELECTION, WIRE_DATA, WIRE_VECTOR},
-}
-
-
-def wires_compatible(src_type: str, dst_type: str) -> bool:
-    """True if an output of `src_type` may feed an input of `dst_type`."""
-    return dst_type in WIRE_COMPATIBLE.get(src_type, {src_type})
+WIRE_COMPATIBLE: dict[str, set[str]] = build_compatible()
 
 
 # ---------------------------------------------------------------------------

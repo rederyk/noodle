@@ -451,6 +451,15 @@ async def node_catalog(category: str = ""):
     return nodes
 
 
+@app.get("/api/wiretypes")
+async def wire_types():
+    """Wire-type compatibility, derived from the cast registry (cad_nodes/casts.py)
+    — the single source of truth. The node editor fetches `input_accepts` instead
+    of hard-coding it, so the two tables can't drift. See PLAN_DATA_PROTOCOL.md."""
+    return {"types": catalog.WIRE_TYPES,
+            "input_accepts": catalog.build_input_accepts()}
+
+
 @app.post("/api/graph/{name}")
 async def save_graph(name: str, graph: dict):
     """Create/overwrite a node graph project."""

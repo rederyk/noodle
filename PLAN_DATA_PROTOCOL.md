@@ -264,7 +264,17 @@ these only widen type gates / add casts / unify.
 3. **Gate widening** (Select* + transforms) — pure compatibility, geometry
    unchanged. Quick win, fixes the user's two concrete bugs. ✅ (`Socket.accepts`)
 2. **Cast registry** (`casts.py`) + derive `WIRE_COMPATIBLE` and emit
-   `INPUT_ACCEPTS` from it (kills table drift). No node changes yet. ← next
+   `INPUT_ACCEPTS` from it (kills table drift). No node changes yet. ✅
+   - `cad_nodes/casts.py` owns the wire ids + `CASTS` registry + `wires_compatible`
+     / `build_compatible()` / `build_input_accepts()` / `cast_helper()`.
+   - `catalog.py` re-exports them; `WIRE_COMPATIBLE = build_compatible()` (derived,
+     verified identical to the old hand-written table → zero behaviour change).
+   - `GET /api/wiretypes` serves the derived `input_accepts`; `nodes.html` loads it
+     at boot and drops the hand-maintained mirror to a fallback (fixed a real
+     drift: `tree` input wrongly accepted `data`).
+   - `CASTS` records the coercion helper per edge (`curve→sketch = _face`, …) for
+     the **next** phase: apply casts automatically at the wire boundary + give
+     transforms type-preserving output.
 4. **Deconstruct/explode unification** (I3/I4).
 5. **`data` sub-typing tag** (4d-A) + Panel/inputs read it; legend colours.
 6. **Container nodes** per type (§5), reusing existing source nodes.
