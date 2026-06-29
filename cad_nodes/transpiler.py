@@ -356,6 +356,25 @@ def _pushpull(_part, _faces, _amount):
     return (_part + prism) if _amount > 0 else (_part - prism)
 
 
+def _shell(_part, _thickness):
+    \"\"\"Give a part a wall of thickness _thickness.
+    - Solid / Compound-of-solids: hollow it out, leaving the top (+Z) face open.
+    - Shell / Face (an open surface, e.g. a non-solid Loft): thicken the surface
+      into a solid wall — there is no enclosed volume to hollow, so 'openings'
+      does not apply (offset() rejects a bare Shell, which used to raise
+      'Unsupported type ... Shell').\"\"\"
+    if _part is None or not _thickness:
+        return _part
+    solids = list(_part.solids()) if isinstance(_part, Compound) else \\
+             ([_part] if isinstance(_part, Solid) else [])
+    if solids:
+        top = _part.faces().sort_by(Axis.Z)[-1]
+        return offset(_part, amount=-_thickness, openings=top)
+    # open surface: thicken it into a solid wall
+    surf = _part if isinstance(_part, (Shell, Face)) else _face(_part)
+    return Solid.thicken(surf, _thickness)
+
+
 def _bbox_plane(_shape, _plane, _t=0.5):
     \"\"\"A reusable Plane, parallel to the chosen base plane (XY/XZ/YZ), centred
     on _shape's bounding box and slid along its own normal to the _t position
