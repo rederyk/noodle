@@ -449,17 +449,30 @@ register(NodeDef("Revolve", "operations", "Revolve",
                 "revolve just the outline into an open surface."))
 
 register(NodeDef("Loft", "operations", "Loft",
-    inputs=[Socket("sections", WIRE_SURFACE, multiple=True, raw=True)],
+    inputs=[Socket("sections", WIRE_SURFACE, multiple=True, raw=True),
+            Socket("start_point", WIRE_VECTOR, required=False),
+            Socket("end_point", WIRE_VECTOR, required=False)],
     params=[Param("ruled", "bool", "ruled", False, widget="checkbox"),
-            Param("solid", "bool", "solid", True, widget="checkbox")],
+            Param("solid", "bool", "solid", True, widget="checkbox"),
+            Param("smoothing", "bool", "smoothing", False, widget="checkbox"),
+            Param("continuity", "select", "continuity", "C2", widget="select",
+                  options=["C0", "C1", "C2", "G1", "G2"]),
+            Param("parametrization", "select", "parametrization", "chord",
+                  widget="select", options=["uniform", "chord", "centripetal"]),
+            Param("max_degree", "int", "max degree", 8, 1, 25, widget="slider")],
     outputs=_geo(),
-    code_template={"algebra": "_loft([{sections}], {ruled}, {solid})",
+    code_template={"algebra": "_loft([{sections}], {ruled}, {solid}, {smoothing}, "
+                              "{continuity}, {parametrization}, {max_degree}, "
+                              "{start_point}, {end_point})",
                    "builder": "loft(ruled={ruled})"},
-    description="Loft through an ordered list of sections. Wire several sketches "
-                "OR a single list (e.g. ToPlane over Divide Curve frames) for a "
-                "variable-section result. `ruled` = straight skin instead of "
-                "smooth. `solid` (default) caps the ends for a solid; turn it off "
-                "to skin the section outlines into an open surface (no caps)."))
+    description="Loft / skin through an ordered list of sections. Wire several "
+                "sketches OR a single list (e.g. ToPlane over Divide Curve frames). "
+                "`ruled` = straight skin vs a smooth surface; `solid` caps the ends "
+                "(off = open shell of the outlines). Smooth controls: `smoothing` "
+                "uses the approximating algorithm, `continuity` (C0–G2) and "
+                "`max_degree` shape its quality, `parametrization` "
+                "(uniform/chord/centripetal) changes the bulge between sections. "
+                "Optional `start_point`/`end_point` loft to a tip (a cone cap)."))
 
 register(NodeDef("Sweep", "operations", "Sweep",
     inputs=[Socket("section", WIRE_SURFACE, raw=True), Socket("path", WIRE_CURVE)],
