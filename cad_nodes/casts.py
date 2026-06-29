@@ -20,16 +20,17 @@ names are recorded here so a later phase can apply them automatically at the wir
 boundary (and give transforms type-preserving output). `None` = the value is
 already acceptable as-is (a pure type widening, no runtime change).
 
-See PLAN_DATA_PROTOCOL.md. Renames (geometry -> umbrella, sketch -> surface, …)
-and sub-types (data -> number/int/…, curve -> line/polyline/spline) come later;
-ids are intentionally unchanged for now.
+See PLAN_DATA_PROTOCOL.md. The wire ids `geometry`->`solid` and `sketch`->`surface`
+were renamed (Python constants WIRE_SOLID / WIRE_SURFACE); the remaining sub-types
+(data -> number/int/…, curve -> line/polyline/spline) are advisory tags
+(Socket.subtype), not yet split into real wire ids.
 """
 
 from __future__ import annotations
 
 # --- wire type ids (mirror the colour coding in PLAN_NODE_CAD.md) ----------
-WIRE_GEOMETRY = "geometry"      # Shape / Part / Solid (the "brep"/solid umbrella)
-WIRE_SKETCH = "sketch"          # 2D Sketch / Face (a surface)
+WIRE_SOLID = "solid"            # Shape / Part / Solid / Compound (the "brep" umbrella)
+WIRE_SURFACE = "surface"        # 2D Sketch / Face (a surface)
 WIRE_CURVE = "curve"            # Curve / Wire (line | polyline | spline | arc)
 WIRE_DATA = "data"              # universal bus: int | float | bool | str | list | domain
 WIRE_TREE = "tree"              # data tree (declared; unused for now)
@@ -38,7 +39,7 @@ WIRE_VECTOR = "vector"          # Vector / Point
 WIRE_SELECTION = "selection"    # picked sub-shapes (edges/faces/vertices)
 
 WIRE_TYPES: list[str] = [
-    WIRE_GEOMETRY, WIRE_SKETCH, WIRE_CURVE, WIRE_PLANE,
+    WIRE_SOLID, WIRE_SURFACE, WIRE_CURVE, WIRE_PLANE,
     WIRE_VECTOR, WIRE_SELECTION, WIRE_DATA, WIRE_TREE,
 ]
 
@@ -46,17 +47,17 @@ WIRE_TYPES: list[str] = [
 # Non-identity, non-`data` casts only. Reproduces the previous WIRE_COMPATIBLE
 # exactly (verified), now with the coercion each edge implies made explicit.
 CASTS: dict[tuple[str, str], str | None] = {
-    (WIRE_SKETCH, WIRE_GEOMETRY): None,          # a face IS geometry
-    (WIRE_CURVE, WIRE_SKETCH): "_face",          # closed curve -> filled face
-    (WIRE_GEOMETRY, WIRE_PLANE): None,           # transforms treat a plane as geometry…
-    (WIRE_PLANE, WIRE_GEOMETRY): None,           # …and a transformed plane flows back
+    (WIRE_SURFACE, WIRE_SOLID): None,          # a face IS a (degenerate) solid/brep
+    (WIRE_CURVE, WIRE_SURFACE): "_face",          # closed curve -> filled face
+    (WIRE_SOLID, WIRE_PLANE): None,           # transforms treat a plane as geometry…
+    (WIRE_PLANE, WIRE_SOLID): None,           # …and a transformed plane flows back
     (WIRE_SELECTION, WIRE_VECTOR): None,         # picked sub-shapes as point origins
 }
 
 # A `data` OUTPUT may feed these input types (a list from List/Sort/Item flowing
 # back into geometry/vector/plane…). It may NOT synthesise a selection or a tree.
 _DATA_FEEDS: set[str] = {
-    WIRE_GEOMETRY, WIRE_SKETCH, WIRE_CURVE, WIRE_VECTOR, WIRE_PLANE, WIRE_DATA,
+    WIRE_SOLID, WIRE_SURFACE, WIRE_CURVE, WIRE_VECTOR, WIRE_PLANE, WIRE_DATA,
 }
 
 

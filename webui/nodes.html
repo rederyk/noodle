@@ -418,7 +418,7 @@ let gizmoSpace = 'world';      // gizmo axis orientation: 'world' | 'local'
 
 // ── wire-type colors + input accept-lists (mirrors catalog.WIRE_COMPATIBLE) ──
 const WIRE_COLORS = {
-  geometry:'#2dd4a0', sketch:'#3b82f6', curve:'#f59e0b',
+  solid:'#2dd4a0', surface:'#3b82f6', curve:'#f59e0b',
   data:'#8a93a3', tree:'#a855f7', plane:'#fb923c', vector:'#ef4444',
   selection:'#e879f9',
 };
@@ -428,12 +428,12 @@ const WIRE_COLORS = {
 // below is only a fallback if that fetch fails. Do not edit it by hand to add
 // compatibility; edit casts.py. (PLAN_DATA_PROTOCOL.md)
 let INPUT_ACCEPTS = {
-  geometry:['geometry','sketch','plane','data'],   // transforms treat a plane like geometry
-  sketch:['sketch','curve','data'],   // a closed curve (Circle/Rectangle…) fills a sketch input
+  solid:['solid','surface','plane','data'],   // transforms treat a plane like a solid
+  surface:['surface','curve','data'],   // a closed curve (Circle/Rectangle…) fills a surface input
   curve:['curve','data'],
-  data:['geometry','sketch','curve','data','tree','plane','vector','selection'],
+  data:['solid','surface','curve','data','tree','plane','vector','selection'],
   tree:['tree','data'],
-  plane:['plane','geometry','data'],               // a transformed plane flows back into a plane input
+  plane:['plane','solid','data'],               // a transformed plane flows back into a plane input
   vector:['vector','selection','data'],
   selection:['selection'],
 };
@@ -578,7 +578,7 @@ function registerNodes(defs){
       }
       // Eye on every geometry node (auto/on/off). Data/math/panel nodes can't draw.
       const ow = (def.outputs||[])[0];
-      if ((ow && ['geometry','sketch','curve'].includes(ow.wire_type)) || def.type === 'CodeBlock')
+      if ((ow && ['solid','surface','curve'].includes(ow.wire_type)) || def.type === 'CodeBlock')
         addEyeWidget(this);
       // sub-shape selector: button opens the 3D picker
       const SEL_KIND = {SelectEdge:'edge', SelectFace:'face', SelectVertex:'vertex'}[def.type];
