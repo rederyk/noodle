@@ -120,6 +120,12 @@ class NodeDef:
     # graph validator and the editor resolve it up the chain; the runtime already
     # preserves the kind. See PLAN_DATA_PROTOCOL.md.
     output_follows: Optional[str] = None
+    # subtype_follows: name of the INPUT socket whose effective *subtype* this
+    # node's FIRST output inherits when its own subtype is unset — i.e. a
+    # pass-through that preserves the advisory tag (a Curve/Panel container, a
+    # transform). Defaults to `output_follows` when None. Advisory only (legend);
+    # never gates a connection. See PLAN_DATA_PROTOCOL.md §4d.
+    subtype_follows: Optional[str] = None
 
     def param(self, name: str) -> Optional[Param]:
         for p in self.params:
@@ -965,6 +971,7 @@ register(NodeDef("Panel", "panel", "Panel",
             Param("mode", "select", "mode", "friendly", widget="select",
                   options=["friendly", "json", "build123d"])],
     outputs=_data("value"),
+    subtype_follows="value",   # inspector pass-through: keep the upstream tag
     code_template={"algebra": "_panel({node_id!r}, {value}, {text}, {mode})"},
     description="Dual-mode Panel. Wire a value to INSPECT it (multi-line, "
                 "list-aware, passes through). Leave it unwired and type into "
@@ -987,6 +994,7 @@ def _container(type_: str, label: str, wire: str) -> NodeDef:
     return register(NodeDef(type_, "container", label,
         inputs=[Socket("value", wire, required=False, list_access=True)],
         outputs=[Socket("value", wire)],
+        subtype_follows="value",   # legend pass-through: keep the upstream tag
         code_template={"algebra": "_probe({node_id!r}, {value})"},
         description=f"{label} container / legend: a typed pass-through. Wire a "
                     f"{label.lower()} through it to colour the wire, label the "

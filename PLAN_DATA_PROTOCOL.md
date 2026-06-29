@@ -165,8 +165,17 @@ One consistent way to get sub-elements, regardless of source:
 opaque `data`/`curve` wire reads as its real kind (IntegerSlider→`integer`,
 Spline→`spline`, ListRange→`list`). Closed-outline primitives (Circle/Rectangle…)
 stay untagged generic curves. Serialized via /api/nodes. The real wire **split
-(B)** stays deferred to the transformer phase. Not yet propagated through
-pass-through nodes (source-side only) — a later enhancement if needed.
+(B)** stays deferred to the transformer phase.
+
+**✅ Propagation DONE.** The tag now flows down pass-throughs/transforms via
+`NodeDef.subtype_follows` (the input whose subtype the first output inherits when
+its own is unset; defaults to `output_follows`). `Graph.effective_output_subtype()`
+resolves it up the chain (cycle-guarded), mirroring `effective_output_type`. Set
+on the containers and Panel (`subtype_follows="value"`); transforms inherit via
+`output_follows="shape"`. The editor mirrors it live (`refreshSubtype()` re-tags
+the output slot on connect + propagates downstream, reverting to the slot name
+when untagged). Verified: Spline→Curve→Move→Panel reads `spline` end-to-end;
+IntegerSlider→Panel reads `integer`; an unwired container reads ''.
 
 Two options for the eventual real split, pick later:
 - **(A) Tag, don't split**: keep wire id `data`, attach `subtype` metadata
