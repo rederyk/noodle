@@ -215,8 +215,8 @@ passes it through unchanged. The editor tints the node title with the type's wir
 colour (a legend chip). Type-gated (a curve into the `Geometry` container is
 rejected). Scalar containers below already exist as input nodes.
 
-**✅ Filter / transformer mode DONE (Surface, Curve, Point).** Each gated container
-targets **its OWN type** and a `mode` select decides how it treats the incoming
+**✅ Filter / transformer mode DONE (all six geometric containers).** Each gated
+container targets **its OWN type** and a `mode` select decides how it treats the incoming
 value (it does NOT convert *to other* types — that was a wrong first cut):
 
 - **`filter`** (default): pass only values already of that type; drop the rest.
@@ -227,22 +227,30 @@ value (it does NOT convert *to other* types — that was a wrong first cut):
     (wireframe); **≥2 points → one joined polyline**.
   - **Point**: **explode any shape into its points** (vertices, a plane's origin,
     a selection's picks) — the gate reuses `_deconstruct`.
+  - **Geometry**: filter keeps a solid/compound whole; transform **explodes a
+    compound into its individual solids**.
+  - **Plane**: filter keeps planes/frames; transform **reads the `Plane` of each
+    planar face** of a surface or solid.
+  - **Selection**: filter keeps loose sub-shapes; transform also pulls a solid's
+    **faces+edges+vertices** in. Returns ONE `ShapeList` consumed whole
+    (Fillet/Chamfer/…), so — unlike the others — it does **not** fan out.
 
 The input is a `multiple` collector widened via `Socket.accepts` to take the
 coercible sources (Surface ← geometry/curve; Curve ← geometry/surface/point;
-Point ← geometry/surface/curve/selection/plane). The
-output wire type is **fixed** (the container's type) and is **always a list** (it
-may explode a shape, so downstream fans out — added to `_LIST_PRODUCERS`). One
-runtime helper `_gate(id, value, kind, mode)` (+ `_classify`/`_is_planar`/
-`_polyline_through`) is the single source of truth. The advisory subtype is kept
-in `filter` (pass-through) and dropped in `transform` (freshly-extracted shapes),
-reflected live by `refreshSubtype()` on the `mode` change. Verified headless:
-Box→Surface[transform]→Extrude fans out over the 6 faces; Cylinder→2 planar;
-Box→Curve[transform]→12 edges; Face→1 outline; 3 points→1 polyline; filter drops
-non-matching kinds.
+Point ← geometry/surface/curve/selection/plane; Plane ← surface/geometry;
+Selection ← curve/surface/geometry/point). The output wire type is **fixed** (the
+container's type); for all but Selection it is **always a list** (it may explode a
+shape, so downstream fans out — added to `_LIST_PRODUCERS`). One runtime helper
+`_gate(id, value, kind, mode)` (+ `_classify`/`_is_planar`/`_polyline_through`)
+is the single source of truth. The advisory subtype is kept in `filter`
+(pass-through) and dropped in `transform` (freshly-extracted shapes), reflected
+live by `refreshSubtype()` on the `mode` change. Verified headless end-to-end:
+Box→Surface[transform]→Extrude (6 faces); Cylinder→2 planar; Box→Curve→12 edges;
+Face→1 outline; 3 points→1 polyline; Box→Point→8 verts; Union→Geometry[transform]
+→2 solids; Box→Plane[transform]→6 planes→Section; Box→DeconstructEdges→Selection
+[transform]→FilletSelectedEdges; filter drops non-matching kinds.
 
-Geometry/Plane/Selection stay plain pass-through legends. The real `data` split
-(4d-B) stays deferred.
+The real `data` split (4d-B) stays deferred.
 
 Proposed set (reuse what exists, fill the gaps):
 
@@ -356,9 +364,9 @@ these only widen type gates / add casts / unify.
 4. **Deconstruct/explode unification** (I3/I4).
 5. **`data` sub-typing tag** (4d-A) + Panel/inputs read it; legend colours.
 6. **Container nodes** per type (§5), reusing existing source nodes.
-7. **Transformer phase** — ✅ gated containers gain a `filter`/`transform` mode on
-   their OWN type (Surface, Curve, Point; see §5). Remaining: extend gating to the
-   other containers if useful, and optionally the real `data` split (4d-B).
+7. **Transformer phase** — ✅ all six geometric containers gain a
+   `filter`/`transform` mode on their OWN type (see §5). Remaining: optionally the
+   real `data` split (4d-B).
 
 > Working discipline stays as in PLAN_PARAMETRIC_CURVES.md: smallest piece first,
 > verify headless, keep both wire tables in sync (or better: generate one from the

@@ -993,9 +993,12 @@ register(NodeDef("BoundingBox", "panel", "Bounding Box",
 # What a gated container (filter/transform) extracts in transform mode, for the
 # node description. The runtime rules live in transpiler `_gate`.
 _GATE_DESC = {
-    "surface": "fills closed curves and pulls the PLANAR faces out of solids",
-    "curve":   "outlines surfaces, pulls the edges out of solids and joins points",
-    "point":   "explodes any shape into its points (vertices, a plane's origin, …)",
+    "surface":   "fills closed curves and pulls the PLANAR faces out of solids",
+    "curve":     "outlines surfaces, pulls the edges out of solids and joins points",
+    "point":     "explodes any shape into its points (vertices, a plane's origin, …)",
+    "geometry":  "explodes a compound into its individual solids",
+    "plane":     "reads the Plane of each planar face of a surface or solid",
+    "selection": "also pulls a solid's faces/edges/vertices into the selection",
 }
 
 
@@ -1030,15 +1033,17 @@ def _container(type_: str, label: str, wire: str,
                     f"{label.lower()} through it to colour the wire, label the "
                     f"graph and inspect the value in the Panels tab — unchanged."))
 
-_container("Geometry", "Geometry", WIRE_GEOMETRY)
+_container("Geometry", "Geometry", WIRE_GEOMETRY, gate="geometry")
 _container("Surface", "Surface", WIRE_SKETCH, gate="surface",
            accepts=[WIRE_GEOMETRY, WIRE_CURVE])
 _container("Curve", "Curve", WIRE_CURVE, gate="curve",
            accepts=[WIRE_GEOMETRY, WIRE_SKETCH, WIRE_VECTOR])
 _container("Point", "Point", WIRE_VECTOR, gate="point",
            accepts=[WIRE_GEOMETRY, WIRE_SKETCH, WIRE_CURVE, WIRE_SELECTION, WIRE_PLANE])
-_container("Plane", "Plane", WIRE_PLANE)
-_container("Selection", "Selection", WIRE_SELECTION)
+_container("Plane", "Plane", WIRE_PLANE, gate="plane",
+           accepts=[WIRE_SKETCH, WIRE_GEOMETRY])
+_container("Selection", "Selection", WIRE_SELECTION, gate="selection",
+           accepts=[WIRE_CURVE, WIRE_SKETCH, WIRE_GEOMETRY, WIRE_VECTOR])
 
 # ===========================================================================
 # 12. Inputs / parameters
