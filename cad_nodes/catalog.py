@@ -27,7 +27,7 @@ from typing import Any, Optional
 # WIRE_COMPATIBLE is now DERIVED from the cast registry (no hand-maintained copy).
 # ---------------------------------------------------------------------------
 from .casts import (  # noqa: E402,F401
-    WIRE_GEOMETRY, WIRE_SKETCH, WIRE_CURVE, WIRE_DATA, WIRE_TREE,
+    WIRE_SOLID, WIRE_SURFACE, WIRE_CURVE, WIRE_DATA, WIRE_TREE,
     WIRE_PLANE, WIRE_VECTOR, WIRE_SELECTION, WIRE_TYPES,
     wires_compatible, cast_helper, build_compatible, build_input_accepts,
 )
@@ -175,11 +175,11 @@ def as_json() -> list[dict]:
 
 # Convenience shorthands for terse definitions below ------------------------
 def _geo(name="result"):
-    return [Socket(name, WIRE_GEOMETRY)]
+    return [Socket(name, WIRE_SOLID)]
 
 
 def _sk(name="result"):
-    return [Socket(name, WIRE_SKETCH)]
+    return [Socket(name, WIRE_SURFACE)]
 
 
 def _data(name="result"):
@@ -420,7 +420,7 @@ register(NodeDef("CurveLength", "curves", "Curve Length",
 # 3. Operations 2D -> 3D
 # ===========================================================================
 register(NodeDef("Extrude", "operations", "Extrude",
-    inputs=[Socket("sketch", WIRE_SKETCH, raw=True)] + _pin("amount", "taper"),
+    inputs=[Socket("sketch", WIRE_SURFACE, raw=True)] + _pin("amount", "taper"),
     params=[_f("amount", 10, 0.1, 500), _f("taper", 0, -45, 45),
             Param("both", "bool", "both", False, widget="checkbox"),
             Param("solid", "bool", "solid", True, widget="checkbox")],
@@ -433,7 +433,7 @@ register(NodeDef("Extrude", "operations", "Extrude",
                 "(wall / ribbon)."))
 
 register(NodeDef("Revolve", "operations", "Revolve",
-    inputs=[Socket("sketch", WIRE_SKETCH, raw=True)] + _pin("angle"),
+    inputs=[Socket("sketch", WIRE_SURFACE, raw=True)] + _pin("angle"),
     params=[_f("angle", 360, 1, 360),
             Param("axis", "select", "axis", "Y", widget="select",
                   options=["X", "Y", "Z"],
@@ -449,7 +449,7 @@ register(NodeDef("Revolve", "operations", "Revolve",
                 "revolve just the outline into an open surface."))
 
 register(NodeDef("Loft", "operations", "Loft",
-    inputs=[Socket("sections", WIRE_SKETCH, multiple=True, raw=True)],
+    inputs=[Socket("sections", WIRE_SURFACE, multiple=True, raw=True)],
     params=[Param("ruled", "bool", "ruled", False, widget="checkbox"),
             Param("solid", "bool", "solid", True, widget="checkbox")],
     outputs=_geo(),
@@ -462,7 +462,7 @@ register(NodeDef("Loft", "operations", "Loft",
                 "to skin the section outlines into an open surface (no caps)."))
 
 register(NodeDef("Sweep", "operations", "Sweep",
-    inputs=[Socket("section", WIRE_SKETCH, raw=True), Socket("path", WIRE_CURVE)],
+    inputs=[Socket("section", WIRE_SURFACE, raw=True), Socket("path", WIRE_CURVE)],
     params=[Param("is_frenet", "bool", "is_frenet", False, widget="checkbox"),
             Param("solid", "bool", "solid", True, widget="checkbox")],
     outputs=_geo(),
@@ -474,7 +474,7 @@ register(NodeDef("Sweep", "operations", "Sweep",
                 "outline into an open surface (a tube wall)."))
 
 register(NodeDef("Thicken", "operations", "Thicken",
-    inputs=[Socket("sketch", WIRE_SKETCH, raw=True)],
+    inputs=[Socket("sketch", WIRE_SURFACE, raw=True)],
     params=[_f("thickness", 2.5, 0.1, 100)],
     outputs=_geo(),
     code_template={"algebra": "thicken(_face({sketch}), {thickness})"},
@@ -489,7 +489,7 @@ register(NodeDef("MakeFace", "operations", "Surface (Make Face)",
                 "Fans out over a list of curves (one face each)."))
 
 register(NodeDef("PopulateGeometry", "operations", "Populate Geometry",
-    inputs=[Socket("region", WIRE_SKETCH, required=False)],
+    inputs=[Socket("region", WIRE_SURFACE, required=False)],
     params=[_i("count", 40, 1, 5000, label="count"),
             _i("seed", 1, 0, 100000, label="seed", widget="input"),
             _f("width", 100, 1, 5000, label="width", widget="input"),
@@ -502,9 +502,9 @@ register(NodeDef("PopulateGeometry", "operations", "Populate Geometry",
 
 register(NodeDef("Voronoi2D", "operations", "Voronoi 2D",
     inputs=[Socket("points", WIRE_VECTOR, list_access=True),
-            Socket("boundary", WIRE_SKETCH, required=False)],
+            Socket("boundary", WIRE_SURFACE, required=False)],
     params=[_f("scale", 0.9, 0.05, 1.0, 0.05, label="scale")],
-    outputs=[Socket("cells", WIRE_SKETCH)],
+    outputs=[Socket("cells", WIRE_SURFACE)],
     code_template={"algebra": "_voronoi2d({points}, {boundary}, {scale})"},
     description="Polygonal Voronoi cells from a set of `points`, clipped to the "
                 "`boundary` rectangle (a Rectangle sketch). `scale` shrinks each "
@@ -512,7 +512,7 @@ register(NodeDef("Voronoi2D", "operations", "Voronoi 2D",
                 "edges). Fan out downstream (Extrude / MapToSurface) per cell."))
 
 register(NodeDef("DivideSurface", "operations", "Divide Surface",
-    inputs=[Socket("surface", WIRE_GEOMETRY)],
+    inputs=[Socket("surface", WIRE_SOLID)],
     params=[_i("u_count", 6, 1, 500, label="u"), _i("v_count", 6, 1, 500, label="v")],
     outputs=[Socket("points", WIRE_VECTOR)],
     code_template={"algebra": "_divide_surface({surface}, {u_count}, {v_count})"},
@@ -521,12 +521,12 @@ register(NodeDef("DivideSurface", "operations", "Divide Surface",
                 "scatter geometry across the surface."))
 
 register(NodeDef("MapToSurface", "operations", "Map To Surface",
-    inputs=[Socket("shapes", WIRE_SKETCH, list_access=True),
-            Socket("surface", WIRE_GEOMETRY),
-            Socket("boundary", WIRE_SKETCH, required=False)],
+    inputs=[Socket("shapes", WIRE_SURFACE, list_access=True),
+            Socket("surface", WIRE_SOLID),
+            Socket("boundary", WIRE_SURFACE, required=False)],
     params=[_f("width", 100, 1, 5000, label="width", widget="input"),
             _f("height", 100, 1, 5000, label="height", widget="input")],
-    outputs=[Socket("mapped", WIRE_SKETCH)],
+    outputs=[Socket("mapped", WIRE_SURFACE)],
     code_template={"algebra": "_map_to_surface({shapes}, {surface}, {boundary}, {width}, {height})"},
     description="Wrap flat 2D shapes onto a surface: each shape's centroid maps "
                 "from the 2D domain (the `boundary` rectangle, else width x "
@@ -538,7 +538,7 @@ register(NodeDef("MapToSurface", "operations", "Map To Surface",
 # 4. Booleans (CSG)
 # ===========================================================================
 register(NodeDef("Union", "boolean", "Union",
-    inputs=[Socket("a", WIRE_GEOMETRY), Socket("b", WIRE_GEOMETRY)],
+    inputs=[Socket("a", WIRE_SOLID), Socket("b", WIRE_SOLID)],
     outputs=_geo(),
     code_template={"algebra": "({a} + {b})"},
     description="Boolean union A + B."))
@@ -546,20 +546,20 @@ register(NodeDef("Union", "boolean", "Union",
 register(NodeDef("Subtract", "boolean", "Subtract",
     # `b` is list-access: a LIST of tools (e.g. a fanned set of cutters) is
     # subtracted wholesale (A - [b0, b1, …]), not fanned. `a` still fans.
-    inputs=[Socket("a", WIRE_GEOMETRY), Socket("b", WIRE_GEOMETRY, list_access=True)],
+    inputs=[Socket("a", WIRE_SOLID), Socket("b", WIRE_SOLID, list_access=True)],
     outputs=_geo(),
     code_template={"algebra": "({a} - {b})"},
     description="Boolean difference A - B. B may be a single shape or a whole "
                 "list of tools (all subtracted)."))
 
 register(NodeDef("Intersect", "boolean", "Intersect",
-    inputs=[Socket("a", WIRE_GEOMETRY), Socket("b", WIRE_GEOMETRY)],
+    inputs=[Socket("a", WIRE_SOLID), Socket("b", WIRE_SOLID)],
     outputs=_geo(),
     code_template={"algebra": "({a} & {b})"},
     description="Boolean intersection A & B."))
 
 register(NodeDef("BooleanMulti", "boolean", "Union (N)",
-    inputs=[Socket("shapes", WIRE_GEOMETRY, multiple=True)],
+    inputs=[Socket("shapes", WIRE_SOLID, multiple=True)],
     outputs=_geo(),
     code_template={"algebra": "Part() + [{shapes}]"},
     description="Fuse an arbitrary number of shapes."))
@@ -568,14 +568,14 @@ register(NodeDef("BooleanMulti", "boolean", "Union (N)",
 # 5. Modifiers
 # ===========================================================================
 register(NodeDef("Fillet", "modifiers", "Fillet",
-    inputs=[Socket("part", WIRE_GEOMETRY)] + _pin("radius"),
+    inputs=[Socket("part", WIRE_SOLID)] + _pin("radius"),
     params=[_f("radius", 2, 0.05, 100)],
     outputs=_geo(),
     code_template={"algebra": "fillet({part}.edges(), radius={radius})"},
     description="Round all edges of a part."))
 
 register(NodeDef("Chamfer", "modifiers", "Chamfer",
-    inputs=[Socket("part", WIRE_GEOMETRY)] + _pin("length"),
+    inputs=[Socket("part", WIRE_SOLID)] + _pin("length"),
     params=[_f("length", 1.5, 0.05, 100)],
     outputs=_geo(),
     code_template={"algebra": "chamfer({part}.edges(), length={length})"},
@@ -588,42 +588,42 @@ register(NodeDef("Chamfer", "modifiers", "Chamfer",
 # sigs}; the transpiler special-cases it (see _emit_select) and resolves the
 # set at run time by nearest-anchor matching, so it survives param tweaks.
 register(NodeDef("SelectEdge", "select", "Select Edge",
-    inputs=[Socket("geometry", WIRE_GEOMETRY, accepts=[WIRE_CURVE])],
+    inputs=[Socket("geometry", WIRE_SOLID, accepts=[WIRE_CURVE])],
     outputs=[Socket("selection", WIRE_SELECTION)],
     code_template={"algebra": ""},  # handled by the transpiler, not a template
     description="Pick specific edges of a shape in the 3D picker; outputs the "
                 "selected edges for a targeted operation."))
 
 register(NodeDef("SelectFace", "select", "Select Face",
-    inputs=[Socket("geometry", WIRE_GEOMETRY, accepts=[WIRE_CURVE])],
+    inputs=[Socket("geometry", WIRE_SOLID, accepts=[WIRE_CURVE])],
     outputs=[Socket("selection", WIRE_SELECTION)],
     code_template={"algebra": ""},  # handled by the transpiler, not a template
     description="Pick specific faces of a shape in the 3D picker; outputs the "
                 "selected faces for a targeted operation."))
 
 register(NodeDef("SelectVertex", "select", "Select Vertex",
-    inputs=[Socket("geometry", WIRE_GEOMETRY, accepts=[WIRE_CURVE])],
+    inputs=[Socket("geometry", WIRE_SOLID, accepts=[WIRE_CURVE])],
     outputs=[Socket("selection", WIRE_SELECTION)],
     code_template={"algebra": ""},  # handled by the transpiler, not a template
     description="Pick specific vertices of a shape in the 3D picker; outputs the "
                 "selected vertices."))
 
 register(NodeDef("FilletSelectedEdges", "modifiers", "Fillet Selected Edges",
-    inputs=[Socket("part", WIRE_GEOMETRY), Socket("edges", WIRE_SELECTION)],
+    inputs=[Socket("part", WIRE_SOLID), Socket("edges", WIRE_SELECTION)],
     params=[_f("radius", 2, 0.05, 100)],
     outputs=_geo(),
     code_template={"algebra": "fillet({edges}, radius={radius})"},
     description="Round only the edges chosen by a Select Edge node."))
 
 register(NodeDef("ChamferSelectedEdges", "modifiers", "Chamfer Selected Edges",
-    inputs=[Socket("part", WIRE_GEOMETRY), Socket("edges", WIRE_SELECTION)],
+    inputs=[Socket("part", WIRE_SOLID), Socket("edges", WIRE_SELECTION)],
     params=[_f("length", 1.5, 0.05, 100)],
     outputs=_geo(),
     code_template={"algebra": "chamfer({edges}, length={length})"},
     description="Bevel only the edges chosen by a Select Edge node."))
 
 register(NodeDef("ExtrudeSelectedFace", "modifiers", "Push / Pull Face",
-    inputs=[Socket("part", WIRE_GEOMETRY), Socket("faces", WIRE_SELECTION)],
+    inputs=[Socket("part", WIRE_SOLID), Socket("faces", WIRE_SELECTION)],
     params=[_f("amount", 5, -200, 200)],
     outputs=_geo(),
     code_template={"algebra": "_pushpull({part}, {faces}, {amount})"},
@@ -631,7 +631,7 @@ register(NodeDef("ExtrudeSelectedFace", "modifiers", "Push / Pull Face",
                 "normal: positive grows a boss, negative carves a pocket."))
 
 register(NodeDef("Shell", "modifiers", "Shell",
-    inputs=[Socket("part", WIRE_GEOMETRY),
+    inputs=[Socket("part", WIRE_SOLID),
             Socket("thickness", WIRE_DATA, required=False)],
     params=[_f("thickness", 1, 0.05, 100)],
     outputs=_geo(),
@@ -639,7 +639,7 @@ register(NodeDef("Shell", "modifiers", "Shell",
     description="Hollow out a part with the given wall thickness, leaving the top (+Z) face open."))
 
 register(NodeDef("Offset", "modifiers", "Offset",
-    inputs=[Socket("shape", WIRE_GEOMETRY)] + _pin("amount"),
+    inputs=[Socket("shape", WIRE_SOLID)] + _pin("amount"),
     params=[_f("amount", 2, -100, 100),
             Param("kind", "select", "corners", "arc", widget="select",
                   options=["arc", "intersection", "tangent"],
@@ -651,7 +651,7 @@ register(NodeDef("Offset", "modifiers", "Offset",
                 "are filled: arc (rounded), intersection (sharp), or tangent."))
 
 register(NodeDef("Section", "modifiers", "Section",
-    inputs=[Socket("shape", WIRE_GEOMETRY),
+    inputs=[Socket("shape", WIRE_SOLID),
             Socket("plane", WIRE_PLANE, required=False)],
     outputs=_sk(),
     code_template={"algebra": "_section({shape}, {plane})"},
@@ -664,7 +664,7 @@ register(NodeDef("Section", "modifiers", "Section",
 # 6. Transforms
 # ===========================================================================
 register(NodeDef("Move", "transform", "Move",
-    inputs=[Socket("shape", WIRE_GEOMETRY, accepts=[WIRE_CURVE]),
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE]),
             Socket("offset", WIRE_VECTOR, required=False)],
     params=[_f("x", 0, -500, 500), _f("y", 0, -500, 500), _f("z", 0, -500, 500)],
     outputs=_geo(),
@@ -677,7 +677,7 @@ register(NodeDef("Move", "transform", "Move",
                 "to each position (one moved copy per vector)."))
 
 register(NodeDef("Rotate", "transform", "Rotate",
-    inputs=[Socket("shape", WIRE_GEOMETRY, accepts=[WIRE_CURVE])] + _pin("angle"),
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE])] + _pin("angle"),
     params=[_f("angle", 90, -360, 360),
             Param("axis", "select", "axis", "Z", widget="select",
                   options=["X", "Y", "Z"],
@@ -690,7 +690,7 @@ register(NodeDef("Rotate", "transform", "Rotate",
     description="Rotate a shape (or a plane) around a global axis."))
 
 register(NodeDef("Scale", "transform", "Scale",
-    inputs=[Socket("shape", WIRE_GEOMETRY, accepts=[WIRE_CURVE])] + _pin("factor"),
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE])] + _pin("factor"),
     params=[_f("factor", 2, 0.01, 100),
             _f("x", 1, 0.01, 100, label="x"), _f("y", 1, 0.01, 100, label="y"),
             _f("z", 1, 0.01, 100, label="z")],
@@ -702,7 +702,7 @@ register(NodeDef("Scale", "transform", "Scale",
                 "(default 1) for a non-uniform scale on top of it."))
 
 register(NodeDef("ToPlane", "transform", "To Plane",
-    inputs=[Socket("shape", WIRE_SKETCH, raw=True), Socket("plane", WIRE_PLANE)],
+    inputs=[Socket("shape", WIRE_SURFACE, raw=True), Socket("plane", WIRE_PLANE)],
     outputs=_sk(),
     code_template={"algebra": "_to_plane({shape}, {plane})"},
     description="Re-seat a 2D profile onto a plane/frame (its local XY comes to lie "
@@ -711,7 +711,7 @@ register(NodeDef("ToPlane", "transform", "To Plane",
                 "perpendicular to the curve, ready to Loft."))
 
 register(NodeDef("Mirror", "transform", "Mirror",
-    inputs=[Socket("shape", WIRE_GEOMETRY, accepts=[WIRE_CURVE])],
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE])],
     params=[Param("plane", "select", "plane", "XZ", widget="select",
                   options=["XY", "XZ", "YZ"],
                   code_map={"XY": "Plane.XY", "XZ": "Plane.XZ", "YZ": "Plane.YZ"}),
@@ -722,10 +722,10 @@ register(NodeDef("Mirror", "transform", "Mirror",
                 "result is symmetric (original + reflection)."))
 
 register(NodeDef("ArrayLinear", "transform", "Linear Array",
-    inputs=[Socket("shape", WIRE_GEOMETRY, accepts=[WIRE_CURVE])],
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE])],
     params=[_i("count", 3, 1, 200), _f("dx", 20, -500, 500),
             _f("dy", 0, -500, 500), _f("dz", 0, -500, 500)],
-    outputs=[Socket("result", WIRE_GEOMETRY)],
+    outputs=[Socket("result", WIRE_SOLID)],
     code_template={"algebra": "[Pos({dx}*i, {dy}*i, {dz}*i) * {shape} for i in range({count})]"},
     description="Repeat a shape along a vector -> list."))
 
@@ -741,7 +741,7 @@ register(NodeDef("PlaneOrigin", "plane", "Plane (origin)",
     description="A base plane."))
 
 register(NodeDef("BoundingPlane", "plane", "Bounding Plane",
-    inputs=[Socket("shape", WIRE_GEOMETRY)],
+    inputs=[Socket("shape", WIRE_SOLID)],
     params=[Param("orientation", "select", "orientation", "XY", widget="select",
                   options=["XY", "XZ", "YZ"],
                   code_map={"XY": "Plane.XY", "XZ": "Plane.XZ", "YZ": "Plane.YZ"}),
@@ -761,7 +761,7 @@ register(NodeDef("DeconstructPlane", "plane", "Plane Origin",
                 "from Divide Curve) to get the points along the curve (fans out)."))
 
 register(NodeDef("Deconstruct", "vector", "Deconstruct (points)",
-    inputs=[Socket("shape", WIRE_GEOMETRY, list_access=True,
+    inputs=[Socket("shape", WIRE_SOLID, list_access=True,
                    accepts=[WIRE_CURVE, WIRE_SELECTION, WIRE_VECTOR, WIRE_PLANE])],
     outputs=[Socket("points", WIRE_VECTOR)],
     code_template={"algebra": "_deconstruct({shape})"},
@@ -772,8 +772,8 @@ register(NodeDef("Deconstruct", "vector", "Deconstruct (points)",
                 "(frames) and Select Vertex (interactive pick)."))
 
 register(NodeDef("DeconstructEdges", "vector", "Deconstruct Edges",
-    inputs=[Socket("shape", WIRE_GEOMETRY, list_access=True,
-                   accepts=[WIRE_SKETCH, WIRE_CURVE, WIRE_SELECTION])],
+    inputs=[Socket("shape", WIRE_SOLID, list_access=True,
+                   accepts=[WIRE_SURFACE, WIRE_CURVE, WIRE_SELECTION])],
     outputs=[Socket("edges", WIRE_CURVE)],
     code_template={"algebra": "_explode({shape}, 'edge')"},
     description="Explode a shape into its edges (curves) — the companion of "
@@ -782,9 +782,9 @@ register(NodeDef("DeconstructEdges", "vector", "Deconstruct Edges",
                 "Move, or any curve input."))
 
 register(NodeDef("DeconstructFaces", "vector", "Deconstruct Faces",
-    inputs=[Socket("shape", WIRE_GEOMETRY, list_access=True,
-                   accepts=[WIRE_SKETCH, WIRE_SELECTION])],
-    outputs=[Socket("faces", WIRE_SKETCH)],
+    inputs=[Socket("shape", WIRE_SOLID, list_access=True,
+                   accepts=[WIRE_SURFACE, WIRE_SELECTION])],
+    outputs=[Socket("faces", WIRE_SURFACE)],
     code_template={"algebra": "_explode({shape}, 'face')"},
     description="Explode a shape into its faces (surfaces): a solid/surface "
                 "gives ALL its constituent faces as a list (fans out). Feed into "
@@ -980,8 +980,8 @@ register(NodeDef("Panel", "panel", "Panel",
                 "friendly ('0,0,0' -> Vector), json, or build123d (eval)."))
 
 register(NodeDef("BoundingBox", "panel", "Bounding Box",
-    inputs=[Socket("shape", WIRE_GEOMETRY)],
-    outputs=[Socket("box", WIRE_GEOMETRY)],
+    inputs=[Socket("shape", WIRE_SOLID)],
+    outputs=[Socket("box", WIRE_SOLID)],
     code_template={"algebra": "{shape}.bounding_box()"},
     description="Bounding box of a shape."))
 
@@ -996,7 +996,7 @@ _GATE_DESC = {
     "surface":   "fills closed curves and pulls the PLANAR faces out of solids",
     "curve":     "outlines surfaces, pulls the edges out of solids and joins points",
     "point":     "explodes any shape into its points (vertices, a plane's origin, …)",
-    "geometry":  "explodes a compound into its individual solids",
+    "solid":     "explodes a compound into its individual solids",
     "plane":     "reads the Plane of each planar face of a surface or solid",
     "selection": "also pulls a solid's faces/edges/vertices into the selection",
 }
@@ -1033,17 +1033,17 @@ def _container(type_: str, label: str, wire: str,
                     f"{label.lower()} through it to colour the wire, label the "
                     f"graph and inspect the value in the Panels tab — unchanged."))
 
-_container("Geometry", "Geometry", WIRE_GEOMETRY, gate="geometry")
-_container("Surface", "Surface", WIRE_SKETCH, gate="surface",
-           accepts=[WIRE_GEOMETRY, WIRE_CURVE])
+_container("Geometry", "Geometry", WIRE_SOLID, gate="solid")
+_container("Surface", "Surface", WIRE_SURFACE, gate="surface",
+           accepts=[WIRE_SOLID, WIRE_CURVE])
 _container("Curve", "Curve", WIRE_CURVE, gate="curve",
-           accepts=[WIRE_GEOMETRY, WIRE_SKETCH, WIRE_VECTOR])
+           accepts=[WIRE_SOLID, WIRE_SURFACE, WIRE_VECTOR])
 _container("Point", "Point", WIRE_VECTOR, gate="point",
-           accepts=[WIRE_GEOMETRY, WIRE_SKETCH, WIRE_CURVE, WIRE_SELECTION, WIRE_PLANE])
+           accepts=[WIRE_SOLID, WIRE_SURFACE, WIRE_CURVE, WIRE_SELECTION, WIRE_PLANE])
 _container("Plane", "Plane", WIRE_PLANE, gate="plane",
-           accepts=[WIRE_SKETCH, WIRE_GEOMETRY])
+           accepts=[WIRE_SURFACE, WIRE_SOLID])
 _container("Selection", "Selection", WIRE_SELECTION, gate="selection",
-           accepts=[WIRE_CURVE, WIRE_SKETCH, WIRE_GEOMETRY, WIRE_VECTOR])
+           accepts=[WIRE_CURVE, WIRE_SURFACE, WIRE_SOLID, WIRE_VECTOR])
 
 # ===========================================================================
 # 12. Inputs / parameters
@@ -1117,14 +1117,14 @@ register(NodeDef("ImportDXF", "import", "Import DXF",
 # 13. Export / IO
 # ===========================================================================
 register(NodeDef("ExportSTEP", "export", "Export STEP",
-    inputs=[Socket("shape", WIRE_GEOMETRY)],
+    inputs=[Socket("shape", WIRE_SOLID)],
     params=[Param("path", "str", "path", "output.step", widget="input")],
     outputs=[],
     code_template={"algebra": "export_step({shape}, {path})"},
     description="Write the shape to a STEP file."))
 
 register(NodeDef("ExportSTL", "export", "Export STL",
-    inputs=[Socket("shape", WIRE_GEOMETRY)],
+    inputs=[Socket("shape", WIRE_SOLID)],
     params=[Param("path", "str", "path", "output.stl", widget="input")],
     outputs=[],
     code_template={"algebra": "export_stl({shape}, {path})"},

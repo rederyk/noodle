@@ -677,7 +677,7 @@ def _gate(_id, _v, _kind, _mode):
         for it in items:
             if _mode == "transform" or _classify(it) == "point":
                 out.extend(_deconstruct(it))
-    elif _kind == "geometry":
+    elif _kind == "solid":
         # filter: keep solids (a compound stays whole); transform: explode a
         # compound into its individual solids.
         for it in items:
@@ -1075,7 +1075,7 @@ def _divide_surface(_shape, _u=6, _v=6):
 
 # Output wire types that yield a drawable preview (mesh for solids/sketches,
 # polylines for curves, dots for points). Mirrors the mesh_extractor render paths.
-_PREVIEWABLE = {catalog.WIRE_GEOMETRY, catalog.WIRE_SKETCH, catalog.WIRE_CURVE,
+_PREVIEWABLE = {catalog.WIRE_SOLID, catalog.WIRE_SURFACE, catalog.WIRE_CURVE,
                 catalog.WIRE_VECTOR}
 
 # Node types whose output is always a Python list at runtime. Feeding one of
@@ -1455,7 +1455,7 @@ class Transpiler:
 
     def _pick_result(self, order: list[str]) -> str | None:
         used_as_source = {c.from_node for c in self.graph.connections}
-        geometry_like = {catalog.WIRE_GEOMETRY, catalog.WIRE_SKETCH}
+        geometry_like = {catalog.WIRE_SOLID, catalog.WIRE_SURFACE}
         candidates = []
         for nid in order:
             if nid not in self.var_of:

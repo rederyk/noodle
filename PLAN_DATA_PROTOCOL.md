@@ -104,10 +104,12 @@ defines "to feed X you accept {…} and coerce with f()".
 
 - **Sub-typing**: do **(A) tag, don't split** now; the real split **(B)** comes
   with the transformer phase.
-- **Type ids**: keep the current ids **for now**, rename later. Target renames:
-  `geometry` → an **umbrella for all geometry** (the user: "geometry should
-  comprise all geometries"); `sketch` is a **confusing name** (it's really a
-  surface/face — clarify); `vertex`/point naming is fine to keep.
+- **Type ids**: ✅ **renamed** `geometry` → **`solid`** (the brep/solid umbrella)
+  and `sketch` → **`surface`** (it was a confusing name — it's really a face/
+  surface). The Python constants are now `WIRE_SOLID` / `WIRE_SURFACE`. **Non-
+  breaking**: wire ids live only in the catalog/runtime — saved graphs reference
+  *socket names* (still `"sketch"`, `"geometry"` on the Extrude/Select inputs) and
+  node types, not wire ids, so no migration was needed. `vertex`/point naming kept.
 - **`curve` is itself a family**: line / polyline / spline (and arc). Treat it
   like `data` — one wire id now, with **subtypes** (`line|polyline|spline|arc`)
   for legend/colour/validation later. Same tag-not-split approach as 4d-A.
