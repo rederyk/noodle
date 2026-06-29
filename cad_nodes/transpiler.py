@@ -866,32 +866,66 @@ def _wire_normal(_w):
         return Vector(0, 0, 1)
 
 
-def _loft(_sections, _ruled=False, _solid=True):
-    \"\"\"Loft through an ordered list of sections. Accepts several wired sketches
-    AND/OR a single list (e.g. ToPlane over Divide Curve). With `solid` (default)
-    each section is filled into a face and the loft is a capped solid; with
-    `solid` off the section outlines are skinned into an open surface (no end
-    caps), so a loft of curve profiles stays a shell. `ruled` = straight skin.\"\"\"
-    secs = [s for s in _flatten(_sections) if s is not None]
-    if len(secs) < 2:
+def _loft(_sections, _ruled=False, _solid=True, _smoothing=False,
+          _continuity="C2", _parametrization="chord", _max_degree=8,
+          _start=None, _end=None):
+    \"\"\"Loft (skin) through an ordered list of sections, exposing the full OCC
+    ThruSections control set. Sections may be several wired sketches/faces/curves
+    AND/OR a single list (e.g. ToPlane over Divide Curve). Settings:
+      ruled           - straight skin between sections (vs a smooth surface).
+      solid           - cap the ends into a solid (vs an open shell of the outlines).
+      smoothing       - use the approximating algorithm instead of exact
+                        interpolation (smooth path); pair with continuity/max_degree.
+      continuity      - C0|C1|C2|G1|G2 of the lofted surface (smoothing).
+      parametrization - uniform|chord|centripetal: how sections are spaced in the
+                        smooth interpolation (changes the bulge between sections).
+      max_degree      - cap on the result surface's B-spline U-degree.
+      _start / _end   - optional points: the loft starts/ends at a tip (a cone cap).
+    Falls back to build123d's high-level loft if the builder fails.\"\"\"
+    secs = [s for s in _flatten([_sections]) if s is not None]
+    n_caps = (1 if _start is not None else 0) + (1 if _end is not None else 0)
+    if len(secs) < 1 or len(secs) + n_caps < 2:
         return None
-    if _solid:
-        faces = [f for f in (_face(s) for s in secs) if f is not None]
-        if len(faces) < 2:
-            return None
-        return loft(faces, ruled=bool(_ruled))
     from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
-    builder = BRepOffsetAPI_ThruSections(False, bool(_ruled), 1e-6)
-    n = 0
-    for s in secs:
-        w = _section_wire(s)
-        if w is not None:
-            builder.AddWire(w.wrapped)
-            n += 1
-    if n < 2:
-        return None
-    builder.Build()
-    return _wrap_shape(builder.Shape())
+    from OCP.GeomAbs import GeomAbs_Shape as _G
+    from OCP.Approx import Approx_ParametrizationType as _P
+    _cont = {"C0": _G.GeomAbs_C0, "C1": _G.GeomAbs_C1, "C2": _G.GeomAbs_C2,
+             "G1": _G.GeomAbs_G1, "G2": _G.GeomAbs_G2}.get(_continuity, _G.GeomAbs_C2)
+    _par = {"uniform": _P.Approx_IsoParametric, "chord": _P.Approx_ChordLength,
+            "centripetal": _P.Approx_Centripetal}.get(_parametrization, _P.Approx_ChordLength)
+    def _vtx(_v):
+        return Vertex(_v.X, _v.Y, _v.Z) if hasattr(_v, "X") else Vertex(*_v)
+    try:
+        b = BRepOffsetAPI_ThruSections(bool(_solid), bool(_ruled), 1e-6)
+        b.SetSmoothing(bool(_smoothing))
+        b.SetContinuity(_cont)
+        b.SetParType(_par)
+        if _max_degree:
+            b.SetMaxDegree(int(_max_degree))
+        b.CheckCompatibility(True)          # reparametrize wires -> no smooth-loft twist
+        if _start is not None:
+            b.AddVertex(_vtx(_start).wrapped)
+        n = 0
+        for s in secs:
+            w = _section_wire(s)
+            if w is not None:
+                b.AddWire(w.wrapped)
+                n += 1
+        if _end is not None:
+            b.AddVertex(_vtx(_end).wrapped)
+        if n < 1:
+            return None
+        b.Build()
+        out = _wrap_shape(b.Shape())
+        if out is not None:
+            return out
+    except Exception:
+        pass
+    if _solid:                              # fallback: high-level loft of the faces
+        faces = [f for f in (_face(s) for s in secs) if f is not None]
+        if len(faces) >= 2:
+            return loft(faces, ruled=bool(_ruled))
+    return None
 
 
 def _extrude(_profile, _amount, _taper=0.0, _both=False, _solid=True):
