@@ -159,8 +159,15 @@ class Graph:
         out = ndef.output(socket_name) if socket_name else (
             ndef.outputs[0] if ndef.outputs else None)
         static = out.wire_type if out else catalog.WIRE_DATA
-        follows = getattr(ndef, "output_follows", None)
         first = ndef.outputs[0].name if ndef.outputs else None
+        # convert/cast mode (containers): the chosen target type overrides the
+        # output type so the graph validates against the converted value.
+        cast_param = getattr(ndef, "cast_param", None)
+        if cast_param and out is not None and (socket_name is None or socket_name == first):
+            tgt = (node.params or {}).get(cast_param) or ""
+            if tgt in catalog.WIRE_TYPES:
+                return tgt
+        follows = getattr(ndef, "output_follows", None)
         if follows and out is not None and (socket_name is None or socket_name == first):
             _seen = _seen or set()
             if node_id in _seen:        # cycle guard (graph should be a DAG anyway)
@@ -192,6 +199,10 @@ class Graph:
         first = ndef.outputs[0].name if ndef.outputs else None
         if socket_name is not None and socket_name != first:
             return ""                   # only the first output follows
+        # a converted value is a new kind — drop the inherited tag.
+        cast_param = getattr(ndef, "cast_param", None)
+        if cast_param and (node.params or {}).get(cast_param) in catalog.WIRE_TYPES:
+            return ""
         follows = getattr(ndef, "subtype_follows", None) or getattr(ndef, "output_follows", None)
         if not follows:
             return ""

@@ -213,8 +213,21 @@ input + same-typed output, emitting `_probe(id, value)` which records the value
 for the **Panels tab** (typed readout: e.g. a Curve shows `Wire {1e, 1v}`) and
 passes it through unchanged. The editor tints the node title with the type's wire
 colour (a legend chip). Type-gated (a curve into the `Geometry` container is
-rejected). The **convert/cast mode** (target-type dropdown) is the deferred
-transformer phase. Scalar containers below already exist as input nodes.
+rejected). Scalar containers below already exist as input nodes.
+
+**✅ Convert / transformer mode DONE (curve ↔ surface).** A container with a
+`convert` select param becomes a **cast node**: the chosen target wire type
+retypes the first output, and the runtime `_convert(value, target)` applies the
+registry helper — **Curve → surface** (`_face`, fill the closed curve) and
+**Surface → curve** (`_outline`, its boundary). Pass-through (the default
+sentinel) leaves it unchanged. New `NodeDef.cast_param`; `Graph.effective_output_type`
+reads it so the graph **validates against the converted type** (verified:
+Rectangle→Make Face→Surface[convert=curve]→Divide Curve is accepted, while
+pass-through is correctly rejected `sketch→curve`). The advisory subtype is dropped
+on conversion. The editor mirrors it live (`refreshCastType()` retypes the output
+slot + recolours the wire + propagates downstream on param change and at load).
+The remaining casts (solid↔surface, *→point/edge/face — the explode family) and
+the real `data` split (4d-B) stay deferred.
 
 Proposed set (reuse what exists, fill the gaps):
 
@@ -328,8 +341,9 @@ these only widen type gates / add casts / unify.
 4. **Deconstruct/explode unification** (I3/I4).
 5. **`data` sub-typing tag** (4d-A) + Panel/inputs read it; legend colours.
 6. **Container nodes** per type (§5), reusing existing source nodes.
-7. **Transformer phase** (deferred): containers gain a target-type cast dropdown;
-   optionally the real `data` split (4d-B).
+7. **Transformer phase** — ✅ containers gain a target-type cast dropdown
+   (curve↔surface via the cast registry; see §5). Remaining: more casts
+   (solid↔surface, explode family) and optionally the real `data` split (4d-B).
 
 > Working discipline stays as in PLAN_PARAMETRIC_CURVES.md: smallest piece first,
 > verify headless, keep both wire tables in sync (or better: generate one from the
