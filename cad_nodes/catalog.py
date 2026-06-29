@@ -995,6 +995,7 @@ register(NodeDef("BoundingBox", "panel", "Bounding Box",
 _GATE_DESC = {
     "surface": "fills closed curves and pulls the PLANAR faces out of solids",
     "curve":   "outlines surfaces, pulls the edges out of solids and joins points",
+    "point":   "explodes any shape into its points (vertices, a plane's origin, …)",
 }
 
 
@@ -1034,7 +1035,8 @@ _container("Surface", "Surface", WIRE_SKETCH, gate="surface",
            accepts=[WIRE_GEOMETRY, WIRE_CURVE])
 _container("Curve", "Curve", WIRE_CURVE, gate="curve",
            accepts=[WIRE_GEOMETRY, WIRE_SKETCH, WIRE_VECTOR])
-_container("Point", "Point", WIRE_VECTOR)
+_container("Point", "Point", WIRE_VECTOR, gate="point",
+           accepts=[WIRE_GEOMETRY, WIRE_SKETCH, WIRE_CURVE, WIRE_SELECTION, WIRE_PLANE])
 _container("Plane", "Plane", WIRE_PLANE)
 _container("Selection", "Selection", WIRE_SELECTION)
 

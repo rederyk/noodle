@@ -669,6 +669,12 @@ def _gate(_id, _v, _kind, _mode):
                     out.extend(it.edges())
                 except Exception:
                     pass
+    elif _kind == "point":
+        # filter: keep only points; transform: explode anything into its points
+        # (vertices of shapes, a plane's origin, …) — same rule as Deconstruct.
+        for it in items:
+            if _mode == "transform" or _classify(it) == "point":
+                out.extend(_deconstruct(it))
     _probe(_id, out)
     return out
 
@@ -1036,7 +1042,7 @@ _LIST_PRODUCERS = {
     "Voronoi2D", "DivideSurface", "PopulateGeometry", "MapToSurface",
     "DivideCurve", "CurveEndpoints", "Deconstruct",
     "DeconstructEdges", "DeconstructFaces",
-    "Surface", "Curve",   # gated containers always emit a list (filter/transform)
+    "Surface", "Curve", "Point",   # gated containers always emit a list (filter/transform)
     "Series", "DivideDomain",
     "Panel",   # source-mode multi-line text -> a list (and pass-through preserves list-ness)
 }
