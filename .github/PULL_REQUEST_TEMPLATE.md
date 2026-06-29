@@ -27,7 +27,7 @@
 
 - [ ] `python -m pytest tests/ -v`
 - [ ] Verified on host with `.venv-b123d` (transpile/execute the graph) — see CLAUDE.md §2
-- [ ] `docker restart cad-studio` + manual check (if backend changed)
+- [ ] `docker restart noodle` + manual check (if backend changed)
 - [ ] Before/after behaviour confirmed
 
 ## AI disclosure (required)

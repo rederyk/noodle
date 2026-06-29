@@ -1,4 +1,4 @@
-# cad-studio — agent guide
+# noodle — agent guide
 
 A **node-based parametric CAD app** built on [build123d](https://build123d.readthedocs.io).
 You wire nodes in a web editor; the backend **transpiles the graph to build123d
@@ -13,14 +13,14 @@ covers what it is, how to run it, how it's laid out, and how to change it safely
 
 ## 1. Run it
 
-The app is containerized (`cad-studio` service). The image is **build123d-only**
+The app is containerized (`noodle` service). The image is **build123d-only**
 on purpose — cadquery 2.7.0 pins an OCP/OCCT build that conflicts with build123d
 (see `PLAN_NODE_CAD.md` and the memory note "build123d/cadquery OCP conflict").
 
 ```bash
 docker compose up -d --build      # build + start
-docker restart cad-studio         # after backend code changes (see §6)
-docker logs -f cad-studio         # tail logs
+docker restart noodle         # after backend code changes (see §6)
+docker logs -f noodle         # tail logs
 ```
 
 - Node editor: <http://localhost:8090/nodes>   ·   code view: `/ui` (read-only
@@ -91,7 +91,7 @@ webui/
                        a CodeBlock's `#@param`s become live widgets + dynamic
                        input sockets (overrides in the `_cb` param namespace),
                        editable via the ✎ Edit code modal. A BroadcastChannel
-                       ('cadstudio:link') cross-links the two views: clicking a
+                       ('noodle:link') cross-links the two views: clicking a
                        value in /ui selects+flashes the node here; selecting a
                        node here scrolls /ui to it (nodeByGraphId tracks on-disk
                        ids). The /ui code view also scrubs numbers by drag,
@@ -218,7 +218,7 @@ transpiler **PREAMBLE** and call it from the template (e.g. `_bbox_plane`,
 template and emit nested `with` blocks — see existing examples.
 
 **Apply / reload rules:**
-- Backend Python change → `docker restart cad-studio` (process caches imports;
+- Backend Python change → `docker restart noodle` (process caches imports;
   the read-only mount alone isn't enough).
 - Frontend (`webui/*.html`) change → hard-refresh the browser (Ctrl+Shift+R);
   the file is static and cached.

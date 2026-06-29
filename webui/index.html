@@ -428,7 +428,7 @@ let lastSpanIdx = -1;           // last cycled span (for the ‹ › toolbar arr
 let isScrubbing = false;        // true while drag-scrubbing a numeric span
 const undoStack = [];           // past param edits, for Ctrl+Z
 // cross-view link with the /nodes editor (other tab): we send "locate", receive "reveal"
-const xlink = (() => { try { return new BroadcastChannel('cadstudio:link'); } catch (_) { return null; } })();
+const xlink = (() => { try { return new BroadcastChannel('noodle:link'); } catch (_) { return null; } })();
 function valuesEqual(a, b) {
   if (typeof a === 'number' && typeof b === 'number') return Math.abs(a - b) < 1e-9;
   return a === b;

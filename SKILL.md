@@ -1,4 +1,4 @@
-# CAD Studio — nanobot Skill
+# noodle — nanobot Skill
 
 ## Descrizione
 CAD parametrico **a nodi**. Si compone un grafo di nodi; il backend lo transpila
@@ -7,7 +7,7 @@ mesh per il viewport. Unico motore geometrico: build123d (OpenCASCADE). Nessun
 OpenSCAD/CadQuery.
 
 ## Servizio
-- **Docker**: container `cad-studio` su porta **8090**
+- **Docker**: container `noodle` su porta **8090**
 - **API base**: `http://localhost:8090`
 - **Editor a nodi**: `http://localhost:8090/nodes`
 - **Vista codice** (build123d generato dal grafo, sola lettura): `http://localhost:8090/ui`
@@ -46,9 +46,9 @@ Vie consigliate, in ordine:
 
 ## Gestione servizio
 ```bash
-cd ~/projects/cad-studio
+cd ~/projects/noodle
 docker compose up -d --build   # avvia
 docker compose logs -f          # log
-docker restart cad-studio       # dopo modifiche a server.py
+docker restart noodle       # dopo modifiche a server.py
 docker compose down             # ferma
 ```

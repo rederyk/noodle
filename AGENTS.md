@@ -8,7 +8,7 @@ noodle exposes the **same** graph engine three ways, all backed by `cad_nodes.ap
 3. **In-app copilot** — the chat box in the web UI (`POST /api/copilot/chat`).
 
 This file covers (1) and (2). Start the app first (`./start.sh`, `start.bat`, or
-`docker compose up -d --build`) so the container `cad-studio` is running.
+`docker compose up -d --build`) so the container `noodle` is running.
 
 ---
 
@@ -24,7 +24,7 @@ identical on Windows and Linux:
   "mcpServers": {
     "noodle": {
       "command": "docker",
-      "args": ["exec", "-i", "cad-studio", "python", "mcp_server.py"]
+      "args": ["exec", "-i", "noodle", "python", "mcp_server.py"]
     }
   }
 }
@@ -32,7 +32,7 @@ identical on Windows and Linux:
 
 - **Claude Code** — add it with the CLI (no manual JSON editing):
   ```bash
-  claude mcp add noodle -- docker exec -i cad-studio python mcp_server.py
+  claude mcp add noodle -- docker exec -i noodle python mcp_server.py
   ```
 - **Claude Desktop** — paste the JSON above into
   `claude_desktop_config.json` (Settings → Developer → Edit Config) and restart.

@@ -52,8 +52,8 @@ Download this repository (green **“Code → Download ZIP”** button on GitHub
 unzip — no git needed), or clone it:
 
 ```bash
-git clone https://github.com/<you>/cad-studio.git
-cd cad-studio
+git clone https://github.com/rederyk/noodle.git
+cd noodle
 ```
 
 Then start it with **one click / one command**:
@@ -114,6 +114,6 @@ python -m pytest tests/ -v   # pure-Python: toposort, validation, transpiler, ap
 
 This project builds on third-party components with their own licenses, most
 notably **OpenCASCADE / OCCT (LGPL-2.1)** via build123d. Because it is used as a
-dynamically-linked library, it does not change cad-studio's MIT license. See
+dynamically-linked library, it does not change noodle's MIT license. See
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the full map and the LGPL
 compliance note.

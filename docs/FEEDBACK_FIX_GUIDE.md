@@ -76,7 +76,7 @@ Se a un certo punto non sei sicuro di cosa hai cambiato: `git diff main...HEAD`.
 modifiche. In sintesi, ciò che rompe più spesso se ignorato:
 
 - **Backend (Python):** dopo aver cambiato `server.py` / `cad_nodes/*` →
-  `docker restart cad-studio` (il processo cache-a gli import; il mount read-only
+  `docker restart noodle` (il processo cache-a gli import; il mount read-only
   da solo non basta). `CLAUDE.md` §1/§6.
 - **Frontend (`webui/*.html`):** hard-refresh del browser (Ctrl+Shift+R), file
   statico cache-ato. `CLAUDE.md` §6.

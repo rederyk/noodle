@@ -1,6 +1,6 @@
 # Changelog
 
-Tutte le modifiche degne di nota a cad-studio. Le versioni seguono `server.py`
+Tutte le modifiche degne di nota a noodle. Le versioni seguono `server.py`
 (`APP_VERSION`).
 
 ## 0.1.0 — non rilasciata

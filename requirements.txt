@@ -1,4 +1,4 @@
-# cad-studio runtime dependencies — single source of truth (the Dockerfile
+# noodle runtime dependencies — single source of truth (the Dockerfile
 # installs from this file). Pinned for reproducibility; bump deliberately.
 #
 # B-Rep kernel: build123d bundles cadquery-ocp (OpenCASCADE/OCCT, LGPL-2.1).
