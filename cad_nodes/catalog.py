@@ -648,8 +648,10 @@ register(NodeDef("Shell", "modifiers", "Shell",
             Socket("thickness", WIRE_DATA, required=False)],
     params=[_f("thickness", 1, 0.05, 100)],
     outputs=_geo(),
-    code_template={"algebra": "offset({part}, amount=-{thickness}, openings={part}.faces().sort_by(Axis.Z)[-1])"},
-    description="Hollow out a part with the given wall thickness, leaving the top (+Z) face open."))
+    code_template={"algebra": "_shell({part}, {thickness})"},
+    description="Hollow out a solid with the given wall thickness, leaving the top "
+                "(+Z) face open. An open surface (e.g. a non-solid Loft) is thickened "
+                "into a solid wall instead."))
 
 register(NodeDef("Offset", "modifiers", "Offset",
     inputs=[Socket("shape", WIRE_SOLID)] + _pin("amount"),
