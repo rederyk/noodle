@@ -259,7 +259,7 @@ these only widen type gates / add casts / unify.
     merged into the frontend's accepts string. Surgical — does **not** let a curve
     into booleans/fillet (verified: `curve→Union` still rejected).
 
-### Unify point extraction (I3/I4) — ✅ DONE (points)
+### Unify point extraction (I3/I4) — ✅ DONE (points + edges + faces)
 - New **Deconstruct (points)** node: one coherent point extractor. Input
   `list_access` accepting `geometry|surface|curve|selection|plane|vector`; output
   `points` (a list → fans out). Runtime `_deconstruct` handles every case: a
@@ -270,8 +270,15 @@ these only widen type gates / add casts / unify.
   Deconstruct** pulls vertices without interactive picking.
 - Kept alongside the specific tools: `DivideCurve` (frames), `CurveEndpoints`
   (just the 2 ends), `SelectVertex` (interactive pick), `DeconstructPlane`
-  (plane→origin alias). Edge/face explode (a `kind` param or Explode node) is a
-  later add — blocked only by the one-output-per-node rule + per-kind output type.
+  (plane→origin alias).
+- **Edge/face explode — ✅ DONE.** Two siblings of Deconstruct, one per output
+  type (the one-output-per-node rule rules out a single `kind` node): **Deconstruct
+  Edges** (`shape → edges:curve`) and **Deconstruct Faces** (`shape → faces:sketch`).
+  Both share a `list_access` input accepting `geometry|surface|curve|selection`
+  (faces drops `curve`) and the same runtime `_explode(shape, 'edge'|'face')` —
+  `.edges()`/`.faces()` on any shape, flattened to a list so downstream fans out
+  (verified: Box→Deconstruct Faces→Extrude extrudes all 6 faces; 12 edges / 6
+  faces / 8 points on a unit box).
 
 ### Type the scalar bus (I5) — see §4d
 - `Panel`: read the `subtype` tag for a typed, coloured readout.
