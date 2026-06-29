@@ -570,17 +570,107 @@ def _face(_s):
         return _s
 
 
-def _convert(_v, _target):
-    \"\"\"Container convert / transformer mode: coerce a value to a target wire type
-    (the cast registry as a node). '' = pass-through (unchanged). curve -> surface
-    fills the closed curve (_face); surface -> curve takes its outline (_outline).
-    Maps over a list input (the container's value socket is list-access).\"\"\"
-    if not _target or _v is None:
-        return _v
-    fn = {"sketch": _face, "curve": _outline}.get(_target)
-    if fn is None:
-        return _v
-    return [fn(x) for x in _v] if _is_seq(_v) else fn(_v)
+def _classify(_it):
+    \"\"\"Coarse geometric kind of a runtime value: 'solid' | 'surface' | 'curve' |
+    'point' | 'other'. Drives the container filter/transform gate (_gate).\"\"\"
+    if _it is None:
+        return "other"
+    if hasattr(_it, "X") and hasattr(_it, "Y") and hasattr(_it, "Z"):
+        return "point"
+    if isinstance(_it, (list, tuple)) and len(_it) >= 3 and not hasattr(_it, "vertices"):
+        return "point"
+    def _cnt(name):
+        try:
+            return len(getattr(_it, name)())
+        except Exception:
+            return 0
+    if _cnt("solids") > 0:
+        return "solid"
+    if _cnt("faces") > 0:
+        return "surface"
+    if _cnt("edges") > 0 or _cnt("wires") > 0:
+        return "curve"
+    if _cnt("vertices") > 0:
+        return "point"
+    return "other"
+
+
+def _is_planar(_f):
+    \"\"\"True if a face is planar (the Surface transform keeps only these).\"\"\"
+    try:
+        return "PLANE" in str(_f.geom_type).upper()
+    except Exception:
+        return True
+
+
+def _polyline_through(_pts):
+    \"\"\"Join >=2 points into one open polyline (the curve transform of points).\"\"\"
+    vs = _deconstruct(_pts)
+    if len(vs) < 2:
+        return None
+    try:
+        return Polyline(*[(v.X, v.Y, v.Z) for v in vs])
+    except Exception:
+        return None
+
+
+def _gate(_id, _v, _kind, _mode):
+    \"\"\"Container filter/transform gate — the typed transformer. `_kind` is the
+    container's OWN type ('surface' | 'curve'); `_mode` is 'filter' | 'transform'.
+      - filter:    keep only inputs already of that kind.
+      - transform: also coerce/extract everything compatible into it —
+          surface: fill closed curves (_face); a solid's PLANAR faces.
+          curve:   a surface's outer outline; a solid's edges (wireframe);
+                   >=2 points joined into one polyline.
+    Always returns a flat LIST (so downstream fans out) and records it for the
+    Panels tab (_probe). Single source of truth for the container transformer.\"\"\"
+    items = [it for it in _flatten([_v]) if it is not None]
+    out = []
+    if _kind == "surface":
+        for it in items:
+            k = _classify(it)
+            if k == "surface":
+                try:
+                    out.extend(it.faces())
+                except Exception:
+                    out.append(it)
+            elif _mode == "transform" and k == "curve":
+                f = _face(it)
+                if f is not None:
+                    out.append(f)
+            elif _mode == "transform" and k == "solid":
+                try:
+                    out.extend([f for f in it.faces() if _is_planar(f)])
+                except Exception:
+                    pass
+    elif _kind == "curve":
+        pts = [it for it in items if _classify(it) == "point"]
+        if _mode == "transform" and len(pts) >= 2:
+            pl = _polyline_through(pts)
+            if pl is not None:
+                out.append(pl)
+        for it in items:
+            k = _classify(it)
+            if k == "curve":
+                try:
+                    ws = list(it.wires())
+                    out.extend(ws if ws else [it])
+                except Exception:
+                    out.append(it)
+            elif _mode == "transform" and k == "surface":
+                try:
+                    for f in it.faces():
+                        w = f.outer_wire() if hasattr(f, "outer_wire") else None
+                        out.append(w if w is not None else f)
+                except Exception:
+                    out.append(it)
+            elif _mode == "transform" and k == "solid":
+                try:
+                    out.extend(it.edges())
+                except Exception:
+                    pass
+    _probe(_id, out)
+    return out
 
 
 def _as_curve(_c):
@@ -946,6 +1036,7 @@ _LIST_PRODUCERS = {
     "Voronoi2D", "DivideSurface", "PopulateGeometry", "MapToSurface",
     "DivideCurve", "CurveEndpoints", "Deconstruct",
     "DeconstructEdges", "DeconstructFaces",
+    "Surface", "Curve",   # gated containers always emit a list (filter/transform)
     "Series", "DivideDomain",
     "Panel",   # source-mode multi-line text -> a list (and pass-through preserves list-ness)
 }
