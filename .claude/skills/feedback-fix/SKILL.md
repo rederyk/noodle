@@ -27,9 +27,10 @@ touching code.**
 2. **Reproduce.** If `graph.snapshot.json` is present, load/execute it to see the
    problem first-hand (host venv or the live API). → guide §1 + `CLAUDE.md` §2.
 
-3. **Make a safe workspace BEFORE editing code.** Confirm a clean tree, branch to
-   `fix/feedback-<id>`, and checkpoint as you go so you can always return to a
-   safe state. → guide §2 "Git in sicurezza".
+3. **Make a safe workspace BEFORE editing code.** Confirm a clean tree, then cut a
+   dedicated PR branch `fix/feedback-<id>` from the user's personal branch
+   (`user/<name>`, which aggregates all their changes); checkpoint as you go so you
+   can always return to a safe state. One PR = one branch. → guide §2 "Git in sicurezza".
 
 4. **Fix, respecting repo rules.** Restart after backend changes, hard-refresh the
    frontend, keep the wire tables in sync, run the tests. → guide §3 + `CLAUDE.md` §6.

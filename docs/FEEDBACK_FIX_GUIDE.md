@@ -34,10 +34,20 @@ Parti dal report **più recente** se non te ne viene indicato uno specifico.
 
 1. **Working tree pulito.** `git status` deve essere clean. Se ci sono modifiche
    pendenti non tue, fermati e chiedi: non mescolare il fix con altro.
-2. **Branch dedicato** dal main pulito:
+2. **Branch personale dell'utente + branch di PR separati.** Strategia a due livelli
+   che tiene insieme tutto il lavoro locale dell'utente **e** mantiene le PR pulite:
+   - **Branch personale** (`user/<nome>`, es. `user/quill`): branch a vita lunga che
+     **aggrega tutte le modifiche dell'utente**. È il suo "main locale" — qui
+     converge tutto ciò che vuole tenere, anche fix non ancora proposti upstream.
+   - **Branch di PR dedicato** per ogni intervento, tagliato dal personale (o da
+     `main`): `fix/feedback-<id>` per un report, `feat/<slug>` per una feature. Una
+     PR = un branch = un argomento, così la review upstream resta isolata e singola.
    ```bash
-   git switch -c fix/feedback-<id>
+   git switch user/quill                 # o: git switch -c user/quill main
+   git switch -c fix/feedback-<id>       # branch di PR, parte dal personale
    ```
+   A fine lavoro, allinea il personale (merge/cherry-pick del branch di PR) così
+   l'utente mantiene insieme tutte le sue modifiche, mentre la PR vive sul suo branch.
 3. **Tag/branch di salvataggio prima di modifiche delicate** (transpiler, executor,
    worker, formato grafo): `git tag safe/before-<id>` — un punto di ritorno esplicito.
 
@@ -86,7 +96,10 @@ Riproduci il bug **prima** del fix e ri-verifica **dopo** (stesso grafo snapshot
 
 ## 4. Comporre la PR
 
-Apri la PR con il template `.github/PULL_REQUEST_TEMPLATE.md`. Includi:
+Apri la PR **dal branch di PR dedicato** (vedi §2: mai dal branch personale, che
+aggrega più cose) usando il template `.github/PULL_REQUEST_TEMPLATE.md`. Una PR
+copre un solo argomento; tieni il personale dell'utente come raccolta a parte.
+Includi:
 
 - **Report di origine:** l'`id` del feedback (`feedback/<id>`). **Non** committare
   i file del report; riferiscili soltanto (eventualmente cita il messaggio).
