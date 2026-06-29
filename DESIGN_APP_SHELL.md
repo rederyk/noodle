@@ -1,4 +1,4 @@
-# CAD Studio — Design del guscio applicativo
+# noodle — Design del guscio applicativo
 
 > Deliverable di **product/UX design** per il guscio attorno al canvas a nodi e al
 > viewport 3D. Non ridisegna l'editor né il viewport; organizza top bar, sessione,
@@ -104,7 +104,7 @@ command palette.
 ```
 ┌─ TOP BAR (sempre) ─────────────────────────────────────────────────────────────┐
 │ ZONA PROGETTO/SESSIONE        ZONA ESECUZIONE            ZONA SISTEMA/UTILITY     │
-│ • app mark "CAD Studio"       • ▶ Run  (primaria)        • ⌘K palette             │
+│ • app mark "noodle"       • ▶ Run  (primaria)        • ⌘K palette             │
 │ • progetto ▾ (apri/cerca)     • ◌ Live (toggle)          • ⚙ Sistema ▾           │
 │ • ● stato documento           • status pill esecuzione      └ Restart backend     │
 │ • ↶ ↷ undo/redo               • ◉ salute backend (dot)      └ Console log         │
@@ -150,7 +150,7 @@ BARRA SELEZIONE FLOTTANTE (2+ nodi, invariata): bypass · group · clone · dele
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────────────────────┐
-│ ◆ CAD Studio │ [ bracket-clip ▾ ] ● Saved   ↶ ↷ ┊ ▶ Run  ◌ Live  ⦿ Ready ┊ ◉  ⌘K ⚙ ⬇▾ ⧉ ?│
+│ ◆ noodle │ [ bracket-clip ▾ ] ● Saved   ↶ ↷ ┊ ▶ Run  ◌ Live  ⦿ Ready ┊ ◉  ⌘K ⚙ ⬇▾ ⧉ ?│
 │  app mark      progetto       doc-status undo    PRIMARY toggle  run-pill  │  sistema/utility │
 └───────────────────────────────────────────────────────────────────────────────────────────┘
  ◉ = salute backend (verde = online).   ┊ = separatore di gruppo.
@@ -161,7 +161,7 @@ Dettaglio zone (mockup ad alta fedeltà del raggruppamento):
 ```
 PROGETTO ───────────────┐  ESECUZIONE ──────────────────┐  SISTEMA ───────────────┐
 ┌─────────────────────┐ │  ┌──────┐ ┌──────┐ ┌────────┐ │  ┌──┐┌──┐┌──┐┌────┐┌──┐ │
-│◆ CAD Studio          │ │  │▶ Run │ │◌ Live│ │⦿ Ready │ │  │◉ ││⌘K││⚙ ││⬇ ▾││? │ │
+│◆ noodle          │ │  │▶ Run │ │◌ Live│ │⦿ Ready │ │  │◉ ││⌘K││⚙ ││⬇ ▾││? │ │
 │[bracket-clip ▾] ●Saved│ │  └──────┘ └──────┘ └────────┘ │  └──┘└──┘└──┘└────┘└──┘ │
 │  ↶  ↷                 │ │   filled   toggle   run-pill   │  health palette sys exp │
 └─────────────────────┘ │                                │                          │
@@ -202,7 +202,7 @@ TOP BAR: ...invariata (Run resta disponibile)...
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────────────────────┐
-│ ◆ CAD Studio │ [ bracket-clip ▾ ] ● Saved   ↶ ↷ ┊ ▷ Run  ◌ Live  ◍ Backend restarting… ┊ ◌ ... │
+│ ◆ noodle │ [ bracket-clip ▾ ] ● Saved   ↶ ↷ ┊ ▷ Run  ◌ Live  ◍ Backend restarting… ┊ ◌ ... │
 │                                              (disabled)        (pill in stato sistema)    (amber)│
 └───────────────────────────────────────────────────────────────────────────────────────────┘
    ▷ Run = disabilitato (grigio).   ◌ salute = amber pulsante.   pill = "Backend restarting…"

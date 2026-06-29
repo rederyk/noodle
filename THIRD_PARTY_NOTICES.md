@@ -1,8 +1,8 @@
 # Third-party notices
 
-cad-studio itself is licensed under the **MIT License** (see `LICENSE`). It builds
+noodle itself is licensed under the **MIT License** (see `LICENSE`). It builds
 on the following third-party components, whose licenses are reproduced/located as
-noted. None of these change the MIT license of cad-studio's own source, because
+noted. None of these change the MIT license of noodle's own source, because
 they are used as **dynamically-linked libraries** (Python imports) or as a
 **separate process** invoked over a CLI — not statically linked or copied into
 this project's source.
@@ -23,9 +23,9 @@ this project's source.
 
 ### LGPL-2.1 compliance note (OCCT)
 
-OCCT is the only "weak copyleft" dependency. cad-studio does **not** modify OCCT
+OCCT is the only "weak copyleft" dependency. noodle does **not** modify OCCT
 and links it only dynamically (via the `cadquery-ocp` Python extension). Under
-LGPL-2.1 this permits cad-studio to remain MIT-licensed, provided we:
+LGPL-2.1 this permits noodle to remain MIT-licensed, provided we:
 
 - keep this notice (attribution),
 - do not strip OCCT's own license/copyright headers from its distribution, and

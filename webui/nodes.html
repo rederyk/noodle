@@ -1713,7 +1713,7 @@ window.openGraph = async function(name){
   setCurrentName(name);
   lastSavedJSON = JSON.stringify(toGraphJSON(name));   // normalized disk baseline
   setDocState('saved');
-  localStorage.setItem('cadstudio:last', name);
+  localStorage.setItem('noodle:last', name);
   setStatus('opened '+name,'ok');
   maybeRestoreDraft(name);
   refreshAssets();   // prime the Import-node asset picker for this project
@@ -2016,7 +2016,7 @@ function selectNodeById(id){
 // ── cross-view linking with the /ui code view (BroadcastChannel) ──
 // We RECEIVE "locate" (the code view clicked a value) and select+flash the node;
 // we SEND "reveal" when a node is selected so the code view scrolls to it.
-const xlink = (() => { try { return new BroadcastChannel('cadstudio:link'); } catch(_){ return null; } })();
+const xlink = (() => { try { return new BroadcastChannel('noodle:link'); } catch(_){ return null; } })();
 let _xlinkEcho = false;   // guard against reacting to our own selection
 function initCrossView(){
   if (!xlink) return;
@@ -2331,7 +2331,7 @@ function setDocState(s){
   el.onclick = (s==='failed') ? (()=>persistToServer().then(ok=>ok&&refreshGraphList())) : null;
 }
 // local draft (browser safety net) ---------------------------------
-function draftKey(name){ return 'cadstudio:draft:'+name; }
+function draftKey(name){ return 'noodle:draft:'+name; }
 function saveDraft(name, json){
   try{ localStorage.setItem(draftKey(name), JSON.stringify({json, base:lastSavedJSON, ts:Date.now()})); }catch(_){}
 }
@@ -2392,7 +2392,7 @@ window.deleteCurrentGraph = async function(){
   if (ok!=='del') return;
   const gone = currentName;
   await fetch(`${API}/api/projects/${gone}`, {method:'DELETE'});
-  clearDraft(gone); localStorage.removeItem('cadstudio:last');
+  clearDraft(gone); localStorage.removeItem('noodle:last');
   lgraph.clear(); currentName=null; lastSavedJSON=null; setCurrentName(null); setDocState('none');
   await refreshGraphList();
   toast('success','Deleted “'+gone+'”');
@@ -2546,7 +2546,7 @@ window.importModel = function(){
  *  Local, non-sensitive feedback channel. A coding agent picks *
  *  up feedback/<id>/ and fixes it — see docs/FEEDBACK_FIX_GUIDE.md
  * ============================================================ */
-const FEEDBACK_FLAG = 'cadstudio:settings:feedbackEnabled';
+const FEEDBACK_FLAG = 'noodle:settings:feedbackEnabled';
 function feedbackEnabled(){ return localStorage.getItem(FEEDBACK_FLAG)==='1'; }
 function applyFeedbackSetting(){
   const btn=document.getElementById('btn-feedback');
@@ -2781,7 +2781,7 @@ document.addEventListener('keydown', e=>{
     if (qs.has('new')) { promptNewGraph(); }
     else if (want && projectNames.includes(want)) { await openGraph(want); }
     else {
-      const last = localStorage.getItem('cadstudio:last');
+      const last = localStorage.getItem('noodle:last');
       if (last && projectNames.includes(last)) await openGraph(last);
     }
     setStatus('ready','ok');

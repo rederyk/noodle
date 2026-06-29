@@ -209,7 +209,7 @@ parametrico. Il CodeBlock diventa un nodo parametrico definito dall'utente.
   `_emit_codeblock` passa `<name>__arg` e avvolge in `_fanout`; `validate()`
   accetta i socket dichiarati per-istanza.
 - **Fase 5 — Cross-view linking + rifiniture.** ✅ FATTO. `BroadcastChannel
-  'cadstudio:link'`: click su uno span → `locate` → `/nodes` seleziona + flash del
+  'noodle:link'`: click su uno span → `locate` → `/nodes` seleziona + flash del
   nodo (mappa `nodeByGraphId` allineata agli id su disco al load/save); selezione
   in `/nodes` → `reveal` → `/ui` scrolla e lampeggia la riga. Scrub-drag numerico
   sugli span (drag = scrub live, click = popup), Tab/Shift+Tab tra gli span,

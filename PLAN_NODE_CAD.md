@@ -1,4 +1,4 @@
-# CAD Studio v2 — Node-Based CAD con build123d + MCP nativo
+# noodle v2 — Node-Based CAD con build123d + MCP nativo
 
 ## Filosofia
 
@@ -667,7 +667,7 @@ def cad_analyze() -> str:
 
 ### Fase 6 — Integrazione nanobot (1 giorno)
 - [ ] Skill CAD: `/cad` comandi in chat
-- [ ] MCP auto-avvio con CAD Studio
+- [ ] MCP auto-avvio con noodle
 - [ ] Notifica su Matrix quando modello pronto
 - [ ] `/cad status`, `/cad export`, `/cad design "descrizione"`
 
@@ -943,7 +943,7 @@ build123d (Apache), OpenSCAD (GPL, opzionale) e i loro avvisi.
 
 ### D2 — Un comando per partire (è già quasi pronto)
 `docker compose up -d` esiste già. Renderlo davvero "facile":
-- Pubblicare l'**immagine pre-buildata** su GHCR (`ghcr.io/<user>/cad-studio`)
+- Pubblicare l'**immagine pre-buildata** su GHCR (`ghcr.io/<user>/noodle`)
   via GitHub Action → l'utente fa `docker run -p 8090:8090 ghcr.io/...` senza
   compilare nulla (OCCT è già dentro la wheel di `cadquery-ocp`, niente build
   nativa).

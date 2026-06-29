@@ -1,5 +1,5 @@
 """
-cad_nodes — Node-based CAD engine for CAD Studio v2.
+cad_nodes — Node-based CAD engine for noodle v2.
 
 Pipeline: graph JSON -> validate -> toposort -> transpile to build123d code
 -> execute in subprocess -> extract mesh/view JSON.

@@ -1,7 +1,7 @@
 services:
-  cad-studio:
+  noodle:
     build: .
-    container_name: cad-studio
+    container_name: noodle
     ports:
       - "8090:8090"
     volumes:

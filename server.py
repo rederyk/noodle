@@ -1,5 +1,5 @@
 """
-CAD Studio — Unified API server for AI + webui CAD modeling.
+noodle — Unified API server for AI + webui CAD modeling.
 Engine: node graphs transpiled to build123d and run in an isolated worker.
 """
 
@@ -41,7 +41,7 @@ FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
 
 APP_VERSION = "0.1.0"
 
-app = FastAPI(title="CAD Studio", version="0.1.0")
+app = FastAPI(title="noodle", version="0.1.0")
 
 # Serve webui static files
 app.mount("/static", StaticFiles(directory="/app/webui"), name="static")
@@ -58,7 +58,7 @@ _LOG_BUFFER: "collections.deque[dict]" = collections.deque(maxlen=2000)
 _LOG_SEQ = itertools.count(1)
 _LOG_LOCK = threading.Lock()
 
-logger = logging.getLogger("cad_studio")
+logger = logging.getLogger("noodle")
 
 
 class _RingBufferHandler(logging.Handler):
@@ -113,7 +113,7 @@ _install_log_capture()
 @app.on_event("startup")
 async def _on_startup() -> None:
     _install_log_capture()
-    logger.info("CAD Studio backend ready (pid %s)", os.getpid())
+    logger.info("noodle backend ready (pid %s)", os.getpid())
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +366,7 @@ async def webui():
     index = Path("/app/webui/index.html")
     if index.exists():
         return index.read_text()
-    return HTMLResponse("<h1>CAD Studio</h1><p>WebUI not found</p>", status_code=404)
+    return HTMLResponse("<h1>noodle</h1><p>WebUI not found</p>", status_code=404)
 
 
 @app.get("/nodes", response_class=HTMLResponse)
@@ -374,7 +374,7 @@ async def webui_nodes():
     page = Path("/app/webui/nodes.html")
     if page.exists():
         return page.read_text()
-    return HTMLResponse("<h1>CAD Studio</h1><p>Node editor not found</p>", status_code=404)
+    return HTMLResponse("<h1>noodle</h1><p>Node editor not found</p>", status_code=404)
 
 
 # ---------------------------------------------------------------------------

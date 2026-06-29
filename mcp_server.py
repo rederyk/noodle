@@ -1,5 +1,5 @@
 """
-CAD Studio — MCP server (Fase 2).
+noodle — MCP server (Fase 2).
 
 Exposes the node-graph engine to AI agents via the Model Context Protocol.
 Thin wrappers over `cad_nodes.api`; state is shared with the REST server through
@@ -18,7 +18,7 @@ from mcp.server.fastmcp import FastMCP
 from cad_nodes import api
 from cad_nodes.store import GraphStore
 
-mcp = FastMCP("CAD Studio")
+mcp = FastMCP("noodle")
 STORE = GraphStore()
 
 
