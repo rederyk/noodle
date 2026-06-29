@@ -579,6 +579,8 @@ def _classify(_it):
         return "point"
     if isinstance(_it, (list, tuple)) and len(_it) >= 3 and not hasattr(_it, "vertices"):
         return "point"
+    if hasattr(_it, "origin") and hasattr(_it, "z_dir"):
+        return "plane"                       # a Plane / frame (no faces/edges)
     def _cnt(name):
         try:
             return len(getattr(_it, name)())
@@ -675,6 +677,49 @@ def _gate(_id, _v, _kind, _mode):
         for it in items:
             if _mode == "transform" or _classify(it) == "point":
                 out.extend(_deconstruct(it))
+    elif _kind == "geometry":
+        # filter: keep solids (a compound stays whole); transform: explode a
+        # compound into its individual solids.
+        for it in items:
+            if _classify(it) != "solid":
+                continue
+            if _mode == "transform":
+                try:
+                    out.extend(it.solids())
+                except Exception:
+                    out.append(it)
+            else:
+                out.append(it)
+    elif _kind == "plane":
+        # filter: keep planes/frames; transform: read the Plane of each PLANAR
+        # face of a surface or solid.
+        for it in items:
+            k = _classify(it)
+            if k == "plane":
+                out.append(it)
+            elif _mode == "transform" and k in ("surface", "solid"):
+                try:
+                    out.extend([Plane(f) for f in it.faces() if _is_planar(f)])
+                except Exception:
+                    pass
+    elif _kind == "selection":
+        # A selection is ONE ShapeList consumed whole (Fillet/Chamfer/…), so this
+        # returns a single ShapeList, not a fan-out list. filter: keep loose
+        # sub-shapes (edges/faces/vertices); transform: also pull a solid's
+        # faces/edges/vertices in. Assemble a pickable selection programmatically.
+        sel = []
+        for it in items:
+            k = _classify(it)
+            if k in ("curve", "surface", "point"):
+                sel.append(it)
+            elif _mode == "transform" and k == "solid":
+                try:
+                    sel.extend(it.faces()); sel.extend(it.edges()); sel.extend(it.vertices())
+                except Exception:
+                    pass
+        res = ShapeList(sel)
+        _probe(_id, res)
+        return res
     _probe(_id, out)
     return out
 
@@ -1043,6 +1088,7 @@ _LIST_PRODUCERS = {
     "DivideCurve", "CurveEndpoints", "Deconstruct",
     "DeconstructEdges", "DeconstructFaces",
     "Surface", "Curve", "Point",   # gated containers always emit a list (filter/transform)
+    "Geometry", "Plane",           # (Selection returns one ShapeList, not a fan-out list)
     "Series", "DivideDomain",
     "Panel",   # source-mode multi-line text -> a list (and pass-through preserves list-ness)
 }
