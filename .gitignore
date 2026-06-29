@@ -4,6 +4,9 @@ __pycache__/
 *.pyc
 *.stl
 *.step
+.env
+.env.*
+!.env.example
 projects/*
 !projects/.gitkeep
 feedback/*
