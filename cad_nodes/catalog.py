@@ -765,6 +765,25 @@ register(NodeDef("Deconstruct", "vector", "Deconstruct (points)",
                 "itself. Outputs a list (fans out). Pairs with Divide Curve "
                 "(frames) and Select Vertex (interactive pick)."))
 
+register(NodeDef("DeconstructEdges", "vector", "Deconstruct Edges",
+    inputs=[Socket("shape", WIRE_GEOMETRY, list_access=True,
+                   accepts=[WIRE_SKETCH, WIRE_CURVE, WIRE_SELECTION])],
+    outputs=[Socket("edges", WIRE_CURVE)],
+    code_template={"algebra": "_explode({shape}, 'edge')"},
+    description="Explode a shape into its edges (curves) — the companion of "
+                "Deconstruct (points): a solid/surface/curve gives ALL its "
+                "constituent edges as a list (fans out). Feed into Sweep.path, "
+                "Move, or any curve input."))
+
+register(NodeDef("DeconstructFaces", "vector", "Deconstruct Faces",
+    inputs=[Socket("shape", WIRE_GEOMETRY, list_access=True,
+                   accepts=[WIRE_SKETCH, WIRE_SELECTION])],
+    outputs=[Socket("faces", WIRE_SKETCH)],
+    code_template={"algebra": "_explode({shape}, 'face')"},
+    description="Explode a shape into its faces (surfaces): a solid/surface "
+                "gives ALL its constituent faces as a list (fans out). Feed into "
+                "Extrude, Thicken, or any surface input."))
+
 # ===========================================================================
 # 8. Vectors & points
 # ===========================================================================

@@ -312,6 +312,28 @@ def _deconstruct(_s):
     return out
 
 
+def _explode(_s, _kind):
+    \"\"\"Explode shape(s) into their sub-shapes of a given kind: 'edge' -> the
+    constituent Edges (curves), 'face' -> the constituent Faces (surfaces). The
+    companion to _deconstruct (points). Accepts a single shape or a list /
+    selection; returns a flat list, so downstream fans out (one run per edge /
+    face). A bare edge/face is passed through unchanged.\"\"\"
+    if _s is None:
+        return []
+    out = []
+    for it in (_s if _is_seq(_s) else [_s]):
+        if it is None:
+            continue
+        subs = None
+        try:
+            subs = list(getattr(it, _kind + "s")())        # .edges() / .faces()
+        except Exception:
+            subs = None
+        if subs:
+            out.extend(subs)
+    return out
+
+
 def _at(_shape, _origin):
     \"\"\"Place _shape at _origin. One point -> a moved copy; many points -> a
     Compound with a copy at each (so a Select Vertex can seed N primitives).\"\"\"
@@ -910,6 +932,7 @@ _LIST_PRODUCERS = {
     "ListSlice", "ListReverse", "ListSort", "ListFlatten", "Concat",
     "Voronoi2D", "DivideSurface", "PopulateGeometry", "MapToSurface",
     "DivideCurve", "CurveEndpoints", "Deconstruct",
+    "DeconstructEdges", "DeconstructFaces",
     "Series", "DivideDomain",
     "Panel",   # source-mode multi-line text -> a list (and pass-through preserves list-ness)
 }
