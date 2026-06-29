@@ -172,6 +172,38 @@ class Graph:
             return static               # followed input unconnected -> static
         return static
 
+    def effective_output_subtype(self, node_id: str, socket_name: str | None = None,
+                                 _seen: set | None = None) -> str:
+        """The advisory sub-type tag of a node's output (number/integer/list/
+        line/spline…), resolving pass-throughs that preserve the tag
+        (`NodeDef.subtype_follows`, defaulting to `output_follows`) up the chain —
+        e.g. a Spline through a Curve container or a Move stays a `spline`. Legend
+        only; never gates a connection. Returns '' when untagged."""
+        try:
+            node = self.node(node_id)
+            ndef = catalog.get(node.type)
+        except (KeyError, Exception):
+            return ""
+        out = ndef.output(socket_name) if socket_name else (
+            ndef.outputs[0] if ndef.outputs else None)
+        static = (out.subtype if out else "") or ""
+        if static:
+            return static
+        first = ndef.outputs[0].name if ndef.outputs else None
+        if socket_name is not None and socket_name != first:
+            return ""                   # only the first output follows
+        follows = getattr(ndef, "subtype_follows", None) or getattr(ndef, "output_follows", None)
+        if not follows:
+            return ""
+        _seen = _seen or set()
+        if node_id in _seen:            # cycle guard (graph should be a DAG anyway)
+            return ""
+        _seen.add(node_id)
+        for c in self.connections:      # the source feeding the followed input
+            if c.to_node == node_id and c.to_socket == follows:
+                return self.effective_output_subtype(c.from_node, c.from_socket, _seen)
+        return ""                       # followed input unconnected -> untagged
+
     # -- serialisation -----------------------------------------------------
     def to_dict(self) -> dict:
         return {

@@ -542,11 +542,17 @@ function registerNodes(defs){
         this.addOutput(s.name, s.wire_type);
         // advisory sub-type (number/list/spline…): show it on the slot so an
         // opaque `data`/`curve` wire reads as its real kind. Legend only.
-        if (s.subtype) this.outputs[this.outputs.length-1].label = s.subtype;
+        const o = this.outputs[this.outputs.length-1];
+        o.cadSubtype = s.subtype || '';            // effective tag (propagated live)
+        if (o.cadSubtype) o.label = o.cadSubtype;
       }
       // type-preserving nodes (transforms): the first output mirrors the wire type
       // of the named input, resolved live in the editor by refreshPolyType().
       this.cadOutputFollows = def.output_follows || null;
+      // subtype pass-throughs (containers/Panel/transforms): the first output
+      // inherits the upstream advisory tag, resolved live by refreshSubtype().
+      this.cadSubtypeFollows = def.subtype_follows || def.output_follows || null;
+      this.cadStaticSubtype = (def.outputs && def.outputs[0]) ? (def.outputs[0].subtype || '') : '';
       this.cadStaticOut = (def.outputs && def.outputs[0]) ? def.outputs[0].wire_type : null;
       // container/legend nodes: tint the title bar with the wire colour of their
       // type so they read as a colour-coded legend chip.
@@ -594,6 +600,7 @@ function registerNodes(defs){
       this.onConnectionsChange = function(type, index, connected, link_info){
         if (type !== LiteGraph.INPUT || loadingGraph) return;
         if (this.cadOutputFollows) refreshPolyType(this);   // retype output to match input
+        if (this.cadSubtypeFollows) refreshSubtype(this);    // re-tag output to match input
         if (this.cadType === 'CodeBlock'){ const s = this; setTimeout(()=> updateCbWired(s), 0); }
         updateGizmoLockedWidgets(this);
         const slot = this.inputs[index];
@@ -1111,6 +1118,7 @@ function fromGraphJSON(data){
   }
   nodeByGraphId = Object.assign({}, map);   // disk ids -> node (matches /ui until next save)
   refreshAllPolyTypes();
+  refreshAllSubtypes();
   lgraph.setDirtyCanvas(true,true);
   loadingGraph = false;
 }
@@ -1143,6 +1151,42 @@ function refreshPolyType(node, _seen){
 
 function refreshAllPolyTypes(){
   for (const n of (lgraph._nodes || [])) refreshPolyType(n);
+}
+
+// Subtype propagation: pass-throughs (containers/Panel/transforms) inherit the
+// upstream advisory tag (number/list/spline…) so the legend stays correct down a
+// chain — e.g. Spline → Curve container still reads `spline`. Mirrors the backend
+// Graph.effective_output_subtype / NodeDef.subtype_follows. Legend only (never
+// affects wire compatibility). Propagates downstream like refreshPolyType.
+function refreshSubtype(node, _seen){
+  if (!node || !node.cadSubtypeFollows || !node.outputs || !node.outputs[0]) return;
+  _seen = _seen || new Set();
+  if (_seen.has(node.id)) return; _seen.add(node.id);   // cycle guard
+  let st = node.cadStaticSubtype || '';
+  if (!st){
+    const inIdx = (node.inputs||[]).findIndex(s => (s.cadName||s.name) === node.cadSubtypeFollows);
+    if (inIdx >= 0 && node.inputs[inIdx].link != null){
+      const l = lgraph.links[node.inputs[inIdx].link];
+      const src = l && lgraph.getNodeById(l.origin_id);
+      const so = src && src.outputs && src.outputs[l.origin_slot];
+      if (so) st = so.cadSubtype || '';
+    }
+  }
+  const o = node.outputs[0];
+  if (o.cadSubtype === st) return;                      // no change
+  o.cadSubtype = st;
+  o.label = st || o.name;                               // revert to name when untagged
+  node.setDirtyCanvas && node.setDirtyCanvas(true, true);
+  for (const lid of (o.links || []).slice()){
+    const l = lgraph.links[lid];
+    if (!l) continue;
+    const dn = lgraph.getNodeById(l.target_id);
+    if (dn) refreshSubtype(dn, _seen);                  // propagate down the chain
+  }
+}
+
+function refreshAllSubtypes(){
+  for (const n of (lgraph._nodes || [])) refreshSubtype(n);
 }
 
 // ── API actions ──
