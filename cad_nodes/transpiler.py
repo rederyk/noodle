@@ -570,6 +570,19 @@ def _face(_s):
         return _s
 
 
+def _convert(_v, _target):
+    \"\"\"Container convert / transformer mode: coerce a value to a target wire type
+    (the cast registry as a node). '' = pass-through (unchanged). curve -> surface
+    fills the closed curve (_face); surface -> curve takes its outline (_outline).
+    Maps over a list input (the container's value socket is list-access).\"\"\"
+    if not _target or _v is None:
+        return _v
+    fn = {"sketch": _face, "curve": _outline}.get(_target)
+    if fn is None:
+        return _v
+    return [fn(x) for x in _v] if _is_seq(_v) else fn(_v)
+
+
 def _as_curve(_c):
     \"\"\"Coerce an input to a 1D curve (Edge/Wire) exposing location_at. Passes a
     curve through; otherwise takes the first edge of a shape.\"\"\"

@@ -126,6 +126,12 @@ class NodeDef:
     # transform). Defaults to `output_follows` when None. Advisory only (legend);
     # never gates a connection. See PLAN_DATA_PROTOCOL.md §4d.
     subtype_follows: Optional[str] = None
+    # cast_param: name of a select param whose chosen value is a target wire type
+    # the FIRST output is coerced to (the container "convert" / transformer mode —
+    # a cast node driven by casts.py). A non-type value (the pass-through sentinel)
+    # leaves the output at its static type. effective_output_type reads it so the
+    # graph validates against the converted type. See PLAN_DATA_PROTOCOL.md §5/§7.
+    cast_param: Optional[str] = None
 
     def param(self, name: str) -> Optional[Param]:
         for p in self.params:
@@ -990,20 +996,41 @@ register(NodeDef("BoundingBox", "panel", "Bounding Box",
 # the wire, label the graph (a legend) and inspect the value (Panels tab) without
 # changing it. A cast/convert mode is planned (PLAN_DATA_PROTOCOL.md).
 # ===========================================================================
-def _container(type_: str, label: str, wire: str) -> NodeDef:
+_PASS_THROUGH = "(pass-through)"   # convert-param sentinel = no cast
+
+
+def _container(type_: str, label: str, wire: str,
+               convert: list[str] | None = None) -> NodeDef:
+    params: list[Param] = []
+    template = "_probe({node_id!r}, {value})"
+    cast_param = None
+    desc_tail = " (A convert/cast mode is planned.)"
+    if convert:
+        # a select that turns the pass-through into a cast node. The option values
+        # ARE the target wire ids (so node.params["convert"] resolves directly in
+        # effective_output_type); the sentinel = pass-through. format_param renders
+        # each as a string literal that the runtime _convert dispatches on.
+        opts = [_PASS_THROUGH] + list(convert)
+        params = [Param("convert", "select", "convert", _PASS_THROUGH,
+                        widget="select", options=opts)]
+        template = "_probe({node_id!r}, _convert({value}, {convert}))"
+        cast_param = "convert"
+        desc_tail = (f" Set `convert` to cast it ({label.lower()} → "
+                     f"{', '.join(convert)}), driven by the cast registry.")
     return register(NodeDef(type_, "container", label,
         inputs=[Socket("value", wire, required=False, list_access=True)],
         outputs=[Socket("value", wire)],
+        params=params,
         subtype_follows="value",   # legend pass-through: keep the upstream tag
-        code_template={"algebra": "_probe({node_id!r}, {value})"},
+        cast_param=cast_param,
+        code_template={"algebra": template},
         description=f"{label} container / legend: a typed pass-through. Wire a "
                     f"{label.lower()} through it to colour the wire, label the "
-                    f"graph and inspect the value in the Panels tab — the data is "
-                    f"unchanged. (A convert/cast mode is planned.)"))
+                    f"graph and inspect the value in the Panels tab." + desc_tail))
 
 _container("Geometry", "Geometry", WIRE_GEOMETRY)
-_container("Surface", "Surface", WIRE_SKETCH)
-_container("Curve", "Curve", WIRE_CURVE)
+_container("Surface", "Surface", WIRE_SKETCH, convert=[WIRE_CURVE])
+_container("Curve", "Curve", WIRE_CURVE, convert=[WIRE_SKETCH])
 _container("Point", "Point", WIRE_VECTOR)
 _container("Plane", "Plane", WIRE_PLANE)
 _container("Selection", "Selection", WIRE_SELECTION)

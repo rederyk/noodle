@@ -553,6 +553,9 @@ function registerNodes(defs){
       // inherits the upstream advisory tag, resolved live by refreshSubtype().
       this.cadSubtypeFollows = def.subtype_follows || def.output_follows || null;
       this.cadStaticSubtype = (def.outputs && def.outputs[0]) ? (def.outputs[0].subtype || '') : '';
+      // convert/cast mode (containers): a select param whose value retypes the
+      // first output to the chosen target, resolved live by refreshCastType().
+      this.cadCastParam = def.cast_param || null;
       this.cadStaticOut = (def.outputs && def.outputs[0]) ? def.outputs[0].wire_type : null;
       // container/legend nodes: tint the title bar with the wire colour of their
       // type so they read as a colour-coded legend chip.
@@ -1117,6 +1120,7 @@ function fromGraphJSON(data){
     node.size = node.computeSize(); node.size[0] = Math.max(node.size[0], 150);
   }
   nodeByGraphId = Object.assign({}, map);   // disk ids -> node (matches /ui until next save)
+  refreshAllCastTypes();   // container convert: retype outputs before poly/subtype
   refreshAllPolyTypes();
   refreshAllSubtypes();
   lgraph.setDirtyCanvas(true,true);
@@ -1163,7 +1167,10 @@ function refreshSubtype(node, _seen){
   _seen = _seen || new Set();
   if (_seen.has(node.id)) return; _seen.add(node.id);   // cycle guard
   let st = node.cadStaticSubtype || '';
-  if (!st){
+  // a converted value (container convert mode) is a new kind — drop the tag.
+  const casting = node.cadCastParam && WIRE_COLORS[node.properties[node.cadCastParam]];
+  if (casting) st = '';
+  else if (!st){
     const inIdx = (node.inputs||[]).findIndex(s => (s.cadName||s.name) === node.cadSubtypeFollows);
     if (inIdx >= 0 && node.inputs[inIdx].link != null){
       const l = lgraph.links[node.inputs[inIdx].link];
@@ -1187,6 +1194,32 @@ function refreshSubtype(node, _seen){
 
 function refreshAllSubtypes(){
   for (const n of (lgraph._nodes || [])) refreshSubtype(n);
+}
+
+// Convert/cast mode (containers): the `convert` select retypes the first output
+// to the chosen target wire type (the cast registry as a node). Mirrors the
+// backend Graph.effective_output_type / NodeDef.cast_param. Recolours the output
+// wire, propagates type/subtype downstream, and re-bakes.
+function refreshCastType(node){
+  if (!node || !node.cadCastParam || !node.outputs || !node.outputs[0]) return;
+  const tgt = node.properties[node.cadCastParam];
+  const t = (tgt && WIRE_COLORS[tgt]) ? tgt : node.cadStaticOut;  // target or pass-through
+  if (node.outputs[0].type !== t){
+    node.outputs[0].type = t;
+    for (const lid of (node.outputs[0].links || []).slice()){
+      const l = lgraph.links[lid];
+      if (!l) continue;
+      l.type = t;                                       // recolour the wire
+      const dn = lgraph.getNodeById(l.target_id);
+      if (dn) refreshPolyType(dn);                      // propagate down a transform chain
+    }
+  }
+  refreshSubtype(node);                                 // converting drops/restores the tag
+  node.setDirtyCanvas && node.setDirtyCanvas(true, true);
+}
+
+function refreshAllCastTypes(){
+  for (const n of (lgraph._nodes || [])) refreshCastType(n);
 }
 
 // ── API actions ──
@@ -1378,6 +1411,7 @@ document.addEventListener('keydown', (e)=>{
 // A param changed on `node`: fast local transform (if enabled & applicable),
 // otherwise/also the debounced exact recompute.
 function onParamChange(node){
+  if (node && node.cadCastParam) refreshCastType(node);   // convert mode: retype output
   if (fastDrag && applyLocalTransform(node)){
     scheduleLive();   // re-bake exactly once the drag settles
     return;
