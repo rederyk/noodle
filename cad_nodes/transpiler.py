@@ -1124,6 +1124,81 @@ def _divide_surface(_shape, _u=6, _v=6):
             except Exception:
                 pass
     return out
+
+
+def _gm_pts(_pts):
+    \"\"\"Normalise GraphMapper control points to [(x, y, hi, ho), ...] where hi/ho
+    are absolute in-/out-handle coords (or None). Accepts plain [x, y] pairs or
+    {p, hi, ho} anchor dicts; sorts by x (a function curve is single-valued).\"\"\"
+    _out = []
+    for _a in (_pts or []):
+        if isinstance(_a, dict):
+            _p, _hi, _ho = _a.get("p"), _a.get("hi"), _a.get("ho")
+        else:
+            _p, _hi, _ho = _a, None, None
+        if not _p:
+            continue
+        _out.append((float(_p[0]), float(_p[1]),
+                     tuple(_hi) if _hi else None, tuple(_ho) if _ho else None))
+    _out.sort(key=lambda _r: _r[0])
+    return _out
+
+
+def _gm_bezier(_x, _pts):
+    \"\"\"y at x along a chained cubic Bezier (anchors _pts = (x, y, hi, ho)). Finds
+    the segment bracketing x, then solves X(s)=x by bisection (the curve is
+    x-monotonic for a function) and returns Y(s). Missing handles fall back to the
+    1/3 and 2/3 chord points (a straight segment).\"\"\"
+    for _i in range(len(_pts) - 1):
+        _x0, _y0, _, _ho = _pts[_i]
+        _x1, _y1, _hi, _ = _pts[_i + 1]
+        if not (_x0 <= _x <= _x1):
+            continue
+        _c0 = _ho if _ho else (_x0 + (_x1 - _x0) / 3.0, _y0 + (_y1 - _y0) / 3.0)
+        _c1 = _hi if _hi else (_x0 + 2 * (_x1 - _x0) / 3.0, _y0 + 2 * (_y1 - _y0) / 3.0)
+        _lo, _hs = 0.0, 1.0
+        for _ in range(48):
+            _s = (_lo + _hs) / 2.0
+            _mt = 1 - _s
+            _xs = (_mt**3 * _x0 + 3 * _mt**2 * _s * _c0[0]
+                   + 3 * _mt * _s**2 * _c1[0] + _s**3 * _x1)
+            if _xs < _x:
+                _lo = _s
+            else:
+                _hs = _s
+        _s = (_lo + _hs) / 2.0
+        _mt = 1 - _s
+        return (_mt**3 * _y0 + 3 * _mt**2 * _s * _c0[1]
+                + 3 * _mt * _s**2 * _c1[1] + _s**3 * _y1)
+    return _pts[-1][1] if _x >= _pts[-1][0] else _pts[0][1]
+
+
+def _graphmap(_t, _pts, _mode="smooth"):
+    \"\"\"Evaluate an editable function curve f(x)->y at parameter(s) _t along x.
+    _pts are control points ([x, y] or {p, hi, ho}); modes: linear | smooth
+    (monotone cubic, no overshoot) | bezier (per-segment cubic with tangent
+    handles). Scalar in -> scalar out, list in -> list out (so it fans out).\"\"\"
+    import numpy as _np
+    _p = _gm_pts(_pts)
+    _scalar = not isinstance(_t, (list, tuple))
+    _ts = _np.atleast_1d(_np.asarray(_t, dtype=float))
+    if len(_p) < 2:
+        _ys = _np.full_like(_ts, _p[0][1] if _p else 0.0)
+        return float(_ys[0]) if _scalar else _ys.tolist()
+    _xs = _np.array([_q[0] for _q in _p])
+    _ys = _np.array([_q[1] for _q in _p])
+    _tc = _np.clip(_ts, _xs[0], _xs[-1])
+    if _mode == "linear":
+        _o = _np.interp(_tc, _xs, _ys)
+    elif _mode == "bezier":
+        _o = _np.array([_gm_bezier(float(_v), _p) for _v in _tc])
+    else:  # smooth: monotone cubic interpolation (no overshoot)
+        try:
+            from scipy.interpolate import PchipInterpolator as _P
+            _o = _P(_xs, _ys)(_tc)
+        except Exception:
+            _o = _np.interp(_tc, _xs, _ys)
+    return float(_o[0]) if _scalar else _o.tolist()
 """
 
 # Output wire types that yield a drawable preview (mesh for solids/sketches,
