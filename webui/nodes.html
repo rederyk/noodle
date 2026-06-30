@@ -616,9 +616,15 @@ function registerNodes(defs){
       };
       this.size = this.computeSize();
       this.size[0] = Math.max(this.size[0], 150);
+      if (this._curvePreviewH){                 // reserve space for the curve mini-preview
+        this.size[0] = Math.max(this.size[0], 200);
+        this.size[1] += this._curvePreviewH;
+      }
       // bypass overlay: dim + diagonal slash + label across the node body
       this.onDrawForeground = function(ctx){
-        if (!this.bypassed || this.flags.collapsed) return;
+        if (this.flags.collapsed) return;
+        if (this._curveParam) drawCurveMini(ctx, this);   // live curve on the node body
+        if (!this.bypassed) return;
         ctx.save();
         ctx.fillStyle = 'rgba(11,14,20,.45)';
         ctx.fillRect(0, 0, this.size[0], this.size[1]);
@@ -710,6 +716,16 @@ function addWidget(node, p){
       onParamChange(node);
     });
     w.cadParam = p.name; return;
+  }
+  if (p.widget === 'curve'){           // editable control-point curve (GraphMapper)
+    const init = Array.isArray(node.properties[p.name]) ? node.properties[p.name]
+               : JSON.parse(JSON.stringify(p.default || [{p:[0,0]},{p:[1,1]}]));
+    node.properties[p.name] = init;
+    const w = node.addWidget('button', '✎ Edit curve', null, ()=> openCurveEditor(node, p.name));
+    w.cadParam = p.name; w.value = init;   // value carries the array for save/load
+    w.isCurveBtn = true;
+    node._curveParam = p.name; node._curvePreviewH = 96;
+    return;
   }
 
   // float / int — dual control: a bounded slider (when min/max are known) plus a
@@ -960,6 +976,305 @@ function openCodeEditor(node){
   };
   ov.style.display = 'flex';
   ta.focus();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Curve editor — a reusable control-point curve widget. One data model:
+// a list of anchors {p:[x,y], hi:[x,y]|null, ho:[x,y]|null, c:'smooth'|'corner'}
+// stored in the node param `curve` (x,y normalised to [0,1]). Modes
+// linear|smooth|bezier MIRROR transpiler._graphmap — keep the two in sync.
+// Used by GraphMapper (and later an editable Spline). The node shows a live
+// mini-preview on its body; the ✎ Edit curve button opens the full modal.
+// ════════════════════════════════════════════════════════════════════
+
+function curveNorm(pts){               // -> sorted [{p,hi,ho,c}], tolerant of [x,y] pairs
+  return (pts||[]).map(a => Array.isArray(a) ? {p:[+a[0],+a[1]]} : {p:[+a.p[0],+a.p[1]],
+            hi:a.hi?[+a.hi[0],+a.hi[1]]:null, ho:a.ho?[+a.ho[0],+a.ho[1]]:null, c:a.c||'smooth'})
+        .filter(a => a.p && isFinite(a.p[0]) && isFinite(a.p[1]))
+        .sort((m,n)=> m.p[0]-n.p[0]);
+}
+function curveLerp(x, xs, ys){
+  for (let i=0;i<xs.length-1;i++){
+    if (x<=xs[i+1]){ const t=(x-xs[i])/((xs[i+1]-xs[i])||1); return ys[i]+t*(ys[i+1]-ys[i]); }
+  }
+  return ys[ys.length-1];
+}
+// Monotone cubic (Fritsch–Carlson) — the no-overshoot interpolant scipy's PCHIP
+// uses, so the preview matches the backend `smooth` mode closely.
+function curvePchip(x, xs, ys){
+  const n=xs.length;
+  if (n<2) return ys[0]||0;
+  const h=[],d=[];
+  for (let i=0;i<n-1;i++){ h[i]=xs[i+1]-xs[i]; d[i]=(ys[i+1]-ys[i])/(h[i]||1); }
+  const m=[m0()];
+  function m0(){ return d[0]; }
+  for (let i=1;i<n-1;i++){
+    if (d[i-1]*d[i]<=0) m[i]=0;
+    else { const w1=2*h[i]+h[i-1], w2=h[i]+2*h[i-1]; m[i]=(w1+w2)/(w1/d[i-1]+w2/d[i]); }
+  }
+  m[n-1]=d[n-2];
+  let i=0; while (i<n-2 && x>xs[i+1]) i++;
+  const t=(x-xs[i])/(h[i]||1), t2=t*t, t3=t2*t;
+  const hh=h[i];
+  return ys[i]*(2*t3-3*t2+1) + m[i]*hh*(t3-2*t2+t)
+       + ys[i+1]*(-2*t3+3*t2) + m[i+1]*hh*(t3-t2);
+}
+function curveBezierAt(x, p){          // mirror of transpiler._gm_bezier
+  for (let i=0;i<p.length-1;i++){
+    const a=p[i], b=p[i+1], x0=a.p[0], y0=a.p[1], x1=b.p[0], y1=b.p[1];
+    if (x<x0 || x>x1) continue;
+    const c0=a.ho||[x0+(x1-x0)/3, y0+(y1-y0)/3];
+    const c1=b.hi||[x0+2*(x1-x0)/3, y0+2*(y1-y0)/3];
+    let lo=0, hs=1;
+    for (let k=0;k<48;k++){
+      const s=(lo+hs)/2, mt=1-s;
+      const xs=mt*mt*mt*x0+3*mt*mt*s*c0[0]+3*mt*s*s*c1[0]+s*s*s*x1;
+      if (xs<x) lo=s; else hs=s;
+    }
+    const s=(lo+hs)/2, mt=1-s;
+    return mt*mt*mt*y0+3*mt*mt*s*c0[1]+3*mt*s*s*c1[1]+s*s*s*y1;
+  }
+  return x>=p[p.length-1].p[0] ? p[p.length-1].p[1] : p[0].p[1];
+}
+function curveEval(x, pts, mode){
+  const p=curveNorm(pts);
+  if (p.length<2) return p.length?p[0].p[1]:0;
+  const xs=p.map(a=>a.p[0]), ys=p.map(a=>a.p[1]);
+  const xc=Math.min(Math.max(x,xs[0]),xs[xs.length-1]);
+  if (mode==='linear') return curveLerp(xc,xs,ys);
+  if (mode==='bezier') return curveBezierAt(xc,p);
+  return curvePchip(xc,xs,ys);
+}
+// Catmull-Rom-ish auto tangents, baked into the anchors so `bezier` mode starts
+// smooth (and the backend, reading the same handles, agrees with the preview).
+function curveAutoHandles(p){
+  for (let i=0;i<p.length;i++){
+    const a=p[i], pr=p[i-1]||a, nx=p[i+1]||a;
+    const tx=(nx.p[0]-pr.p[0])*0.18, ty=(nx.p[1]-pr.p[1])*0.18;
+    a.hi = i>0 ? [a.p[0]-tx, a.p[1]-ty] : null;
+    a.ho = i<p.length-1 ? [a.p[0]+tx, a.p[1]+ty] : null;
+    a.c = a.c || 'smooth';
+  }
+  return p;
+}
+
+const CURVE_PRESETS = {
+  'Linear':     {mode:'linear', pts:[{p:[0,0]},{p:[1,1]}]},
+  'Ease In-Out':{mode:'bezier', pts:[{p:[0,0],ho:[0.42,0],c:'smooth'},{p:[1,1],hi:[0.58,1],c:'smooth'}]},
+  'Smooth S':   {mode:'smooth', pts:[{p:[0,0]},{p:[0.25,0.05]},{p:[0.75,0.95]},{p:[1,1]}]},
+  'Bump':       {mode:'smooth', pts:[{p:[0,0]},{p:[0.5,1]},{p:[1,0]}]},
+};
+
+// Shared renderer. Draws into pixel rect (rx,ry,rw,rh); curve space is [0,1]^2
+// with y up. `st` carries interaction state for the modal (sel/hover/handles/comb).
+function curveDraw(ctx, rx, ry, rw, rh, pts, mode, st){
+  st = st || {};
+  const m = st.pad!=null ? st.pad : 8;
+  const ix=rx+m, iy=ry+m, iw=rw-2*m, ih=rh-2*m;
+  const X = x => ix + x*iw, Y = y => iy + ih - y*ih;
+  const p = curveNorm(pts);
+  // panel + grid
+  ctx.fillStyle = '#0c1118'; ctx.fillRect(rx,ry,rw,rh);
+  ctx.strokeStyle = 'rgba(120,140,170,.12)'; ctx.lineWidth=1; ctx.beginPath();
+  for (let g=0;g<=4;g++){ const gx=ix+iw*g/4, gy=iy+ih*g/4;
+    ctx.moveTo(gx,iy); ctx.lineTo(gx,iy+ih); ctx.moveTo(ix,gy); ctx.lineTo(ix+iw,gy); }
+  ctx.stroke();
+  if (!p.length) return;
+  // control polygon
+  ctx.strokeStyle='rgba(150,170,200,.30)'; ctx.lineWidth=1; ctx.beginPath();
+  p.forEach((a,i)=> i?ctx.lineTo(X(a.p[0]),Y(a.p[1])):ctx.moveTo(X(a.p[0]),Y(a.p[1])));
+  ctx.stroke();
+  // sampled curve
+  const N=Math.max(24, Math.round(iw/2));
+  const x0=p[0].p[0], x1=p[p.length-1].p[0], span=(x1-x0)||1;
+  const sx=[], sy=[];
+  for (let i=0;i<=N;i++){ const x=x0+span*i/N; sx.push(x); sy.push(curveEval(x,p,mode)); }
+  ctx.strokeStyle = st.accent || '#39d3ff'; ctx.lineWidth = st.thick||2; ctx.beginPath();
+  for (let i=0;i<=N;i++) i?ctx.lineTo(X(sx[i]),Y(sy[i])):ctx.moveTo(X(sx[i]),Y(sy[i]));
+  ctx.stroke();
+  // curvature comb (modal toggle)
+  if (st.comb){
+    ctx.strokeStyle='rgba(255,120,90,.55)'; ctx.lineWidth=1; ctx.beginPath();
+    const tips=[];
+    for (let i=1;i<N;i++){
+      const ax=sx[i-1],ay=sy[i-1],bx=sx[i],by=sy[i],cx=sx[i+1]||sx[i],cy=sy[i+1]||sy[i];
+      const v1x=bx-ax,v1y=by-ay,v2x=cx-bx,v2y=cy-by;
+      const cross=v1x*v2y-v1y*v2x;
+      const l1=Math.hypot(v1x,v1y)||1e-6, l2=Math.hypot(v2x,v2y)||1e-6, l3=Math.hypot(cx-ax,cy-ay)||1e-6;
+      const k=2*cross/(l1*l2*l3);
+      let tx=cx-ax, ty=cy-ay; const tl=Math.hypot(tx,ty)||1; tx/=tl; ty/=tl;
+      const nx=-ty, ny=tx, len=Math.max(-0.4,Math.min(0.4,k*0.06));
+      const tipx=bx+nx*len, tipy=by+ny*len;
+      ctx.moveTo(X(bx),Y(by)); ctx.lineTo(X(tipx),Y(tipy)); tips.push([tipx,tipy]);
+    }
+    ctx.stroke();
+    ctx.strokeStyle='rgba(255,120,90,.30)'; ctx.beginPath();
+    tips.forEach((t,i)=> i?ctx.lineTo(X(t[0]),Y(t[1])):ctx.moveTo(X(t[0]),Y(t[1])));
+    ctx.stroke();
+  }
+  // handles (modal, bezier mode) — only on the selected/hovered anchor
+  if (st.handles && mode==='bezier'){
+    const show = new Set([st.sel, st.hover].filter(i=>i!=null));
+    p.forEach((a,i)=>{
+      if (!show.has(i)) return;
+      ['hi','ho'].forEach(h=>{ if(!a[h]) return;
+        ctx.strokeStyle='rgba(120,200,255,.6)'; ctx.lineWidth=1; ctx.beginPath();
+        ctx.moveTo(X(a.p[0]),Y(a.p[1])); ctx.lineTo(X(a[h][0]),Y(a[h][1])); ctx.stroke();
+        ctx.fillStyle='#7fd0ff'; ctx.beginPath(); ctx.arc(X(a[h][0]),Y(a[h][1]),3.2,0,7); ctx.fill();
+      });
+    });
+  }
+  // anchors
+  p.forEach((a,i)=>{
+    const r = (i===st.sel)?5:4;
+    ctx.fillStyle = (i===st.sel)?'#ffd166':(a.c==='corner'?'#ff8d6b':'#cfe6ff');
+    ctx.beginPath(); ctx.arc(X(a.p[0]),Y(a.p[1]),r,0,7); ctx.fill();
+    ctx.strokeStyle='#0c1118'; ctx.lineWidth=1; ctx.stroke();
+  });
+}
+
+// live mini-preview drawn on the node body (called from onDrawForeground)
+function drawCurveMini(ctx, node){
+  const name = node._curveParam, h = node._curvePreviewH||0;
+  if (!name || node.flags.collapsed) return;
+  const pts = node.properties[name] || [];
+  const mode = node.properties.mode || 'smooth';
+  const pad=6, w=node.size[0]-2*pad, hh=h-pad, y=node.size[1]-h;
+  curveDraw(ctx, pad, y, w, hh, pts, mode, {pad:7, thick:2});
+}
+
+function setCurveParam(node, name, pts){
+  node.properties[name] = pts;
+  for (const w of (node.widgets||[])) if (w.cadParam===name) w.value = pts;
+  onParamChange(node);
+  if (typeof lcanvas!=='undefined' && lcanvas) lcanvas.setDirty(true,true);
+}
+function setModeWidget(node, mode){
+  node.properties.mode = mode;
+  for (const w of (node.widgets||[])) if (w.cadParam==='mode') w.value = mode;
+}
+
+function openCurveEditor(node, name){
+  let ov = document.getElementById('curve-editor');
+  if (!ov){
+    ov = document.createElement('div'); ov.id='curve-editor';
+    ov.style.cssText='position:fixed;inset:0;z-index:200;display:none;align-items:center;'+
+      'justify-content:center;background:rgba(0,0,0,.5)';
+    ov.innerHTML =
+      '<div style="background:var(--bg-1);border:1px solid var(--border);border-radius:10px;'+
+        'padding:14px;display:flex;flex-direction:column;gap:10px">'+
+        '<div style="display:flex;align-items:center;gap:10px">'+
+          '<b style="color:var(--accent)">Curve editor</b>'+
+          '<span id="cv-modes" style="display:flex;gap:4px"></span><span style="flex:1"></span>'+
+          '<span style="font-size:11px;color:var(--text-dim)">click add · drag move · dbl-click corner/smooth · shift/right-click delete</span>'+
+        '</div>'+
+        '<canvas id="cv-canvas" width="480" height="340" style="background:#0c1118;'+
+          'border:1px solid #1f2a3a;border-radius:6px;cursor:crosshair"></canvas>'+
+        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
+          '<span id="cv-presets" style="display:flex;gap:4px"></span><span style="flex:1"></span>'+
+          '<label style="font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:4px">'+
+            '<input type="checkbox" id="cv-comb"> curvature</label>'+
+          '<button class="tb-btn primary" id="cv-done">✓ Done</button>'+
+        '</div>'+
+      '</div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('mousedown', e=>{ if(e.target===ov) ov.style.display='none'; });
+  }
+  const cv = document.getElementById('cv-canvas'), ctx = cv.getContext('2d');
+  const W=cv.width, H=cv.height, pad=14;
+  const st = { sel:null, hover:null, drag:null, comb:false, handles:true };
+  document.getElementById('cv-comb').checked = false;
+  document.getElementById('cv-comb').onchange = e=>{ st.comb=e.target.checked; draw(); };
+
+  const get = ()=> curveNorm(node.properties[name]);
+  const mode = ()=> node.properties.mode || 'smooth';
+  const ix=pad+8, iw=W-2*(pad+8), iy=pad+8, ih=H-2*(pad+8);
+  const toCurve = (mx,my)=> [Math.min(1,Math.max(0,(mx-ix)/iw)), Math.min(1,Math.max(0,1-(my-iy)/ih))];
+  const toPx = (x,y)=> [ix+x*iw, iy+ih-y*ih];
+  const commit = pts=> setCurveParam(node, name, pts);
+
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+    curveDraw(ctx, pad, pad, W-2*pad, H-2*pad, get(), mode(),
+      {pad:8, thick:2.5, sel:st.sel, hover:st.hover, comb:st.comb, handles:true});
+  }
+  function hit(mx,my){          // -> {i, handle} nearest anchor/handle within tol
+    const p=get(); let best=null, bd=12*12;
+    p.forEach((a,i)=>{
+      if (mode()==='bezier' && (i===st.sel)) ['hi','ho'].forEach(h=>{ if(!a[h])return;
+        const [hx,hy]=toPx(a[h][0],a[h][1]); const d=(hx-mx)**2+(hy-my)**2;
+        if(d<bd){bd=d;best={i,handle:h};} });
+      const [px,py]=toPx(a.p[0],a.p[1]); const d=(px-mx)**2+(py-my)**2;
+      if(d<bd){bd=d;best={i,handle:null};}
+    });
+    return best;
+  }
+  cv.oncontextmenu = e=>{ e.preventDefault();
+    const r=cv.getBoundingClientRect(), h=hit(e.clientX-r.left,e.clientY-r.top);
+    if(h && h.handle==null){ const p=get(); if(p.length>2){ p.splice(h.i,1); st.sel=null; commit(p);} draw(); } };
+  cv.onmousedown = e=>{
+    const r=cv.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+    const h=hit(mx,my); const p=get();
+    if (e.shiftKey && h && h.handle==null){ if(p.length>2){p.splice(h.i,1);commit(p);} st.sel=null; draw(); return; }
+    if (h){ st.sel=h.i; st.drag=h; draw(); return; }
+    // empty space -> add an anchor at the cursor
+    const [cx,cy]=toCurve(mx,my);
+    let idx=p.findIndex(a=>a.p[0]>cx); if(idx<0) idx=p.length;
+    const a={p:[cx,cy],c:'smooth'}; p.splice(idx,0,a);
+    if(mode()==='bezier') curveAutoHandles(p);
+    st.sel=idx; st.drag={i:idx,handle:null}; commit(p); draw();
+  };
+  cv.onmousemove = e=>{
+    const r=cv.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+    if (!st.drag){ const h=hit(mx,my); const nv=h?h.i:null; if(nv!==st.hover){st.hover=nv; draw();} return; }
+    const p=get(), a=p[st.drag.i];
+    const [cx,cy]=toCurve(mx,my);
+    if (st.drag.handle){
+      a[st.drag.handle]=[cx,cy];
+      if ((a.c||'smooth')==='smooth'){           // C1: mirror the opposite handle
+        const opp = st.drag.handle==='hi'?'ho':'hi';
+        if (a[opp]) a[opp]=[2*a.p[0]-cx, 2*a.p[1]-cy];
+      }
+    } else {
+      const isFirst=st.drag.i===0, isLast=st.drag.i===p.length-1;
+      const lo=isFirst?0:p[st.drag.i-1].p[0]+1e-3, hi=isLast?1:p[st.drag.i+1].p[0]-1e-3;
+      const nx=(isFirst)?0:(isLast)?1:Math.min(hi,Math.max(lo,cx));
+      const dx=nx-a.p[0], dy=cy-a.p[1];
+      a.p=[nx,cy];
+      ['hi','ho'].forEach(hh=>{ if(a[hh]) a[hh]=[a[hh][0]+dx, a[hh][1]+dy]; });
+    }
+    commit(p); draw();
+  };
+  const endDrag=()=>{ if(st.drag){ st.drag=null; commit(curveNorm(node.properties[name])); } };
+  cv.onmouseup = endDrag; cv.onmouseleave = ()=>{ endDrag(); st.hover=null; draw(); };
+  cv.ondblclick = e=>{
+    const r=cv.getBoundingClientRect(), h=hit(e.clientX-r.left,e.clientY-r.top);
+    if(h && h.handle==null){ const p=get(); const a=p[h.i];
+      a.c=(a.c==='corner')?'smooth':'corner';
+      if(a.c==='smooth' && mode()==='bezier') curveAutoHandles(p);
+      commit(p); draw(); }
+  };
+  // mode buttons
+  const mbox=document.getElementById('cv-modes'); mbox.innerHTML='';
+  ['smooth','linear','bezier'].forEach(mo=>{
+    const b=document.createElement('button'); b.className='tb-btn'; b.textContent=mo;
+    if(mo===mode()) b.classList.add('primary');
+    b.onclick=()=>{ setModeWidget(node,mo);
+      if(mo==='bezier') commit(curveAutoHandles(get())); else commit(get());
+      [...mbox.children].forEach(c=>c.classList.remove('primary')); b.classList.add('primary'); draw(); };
+    mbox.appendChild(b);
+  });
+  // presets
+  const pbox=document.getElementById('cv-presets'); pbox.innerHTML='';
+  Object.keys(CURVE_PRESETS).forEach(k=>{
+    const b=document.createElement('button'); b.className='tb-btn'; b.textContent=k;
+    b.onclick=()=>{ const pr=CURVE_PRESETS[k]; setModeWidget(node,pr.mode);
+      commit(curveNorm(JSON.parse(JSON.stringify(pr.pts)))); st.sel=null;
+      [...mbox.children].forEach(c=>c.classList.toggle('primary', c.textContent===pr.mode)); draw(); };
+    pbox.appendChild(b);
+  });
+  document.getElementById('cv-done').onclick=()=>{ ov.style.display='none'; window.runGraph&&window.runGraph(); };
+  ov.style.display='flex'; draw();
 }
 
 // ── serialize Litegraph -> our graph JSON ──

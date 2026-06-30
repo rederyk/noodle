@@ -946,6 +946,23 @@ register(NodeDef("Bounds", "data", "Bounds",
     code_template={"algebra": "_bounds({list})"},
     description="The [min, max] domain spanning a list of numbers."))
 
+register(NodeDef("GraphMapper", "data", "Graph Mapper",
+    inputs=_pin("t"),
+    params=[_f("t", 0.0, 0.0, 1.0, 0.01, label="t"),
+            Param("mode", "select", "mode", "smooth", widget="select",
+                  options=["smooth", "linear", "bezier"]),
+            Param("curve", "curve", "curve",
+                  [{"p": [0.0, 0.0], "hi": None, "ho": None},
+                   {"p": [1.0, 1.0], "hi": None, "ho": None}],
+                  widget="curve", raw=True)],
+    outputs=_data(),
+    code_template={"algebra": "_graphmap({t}, {curve}, {mode})"},
+    description="An editable function curve f(x)->y drawn on the node. Wire a t "
+                "(or a list/Range of t) into it to sample the curve — smooth "
+                "(monotone, no overshoot), linear, or bezier with tangent handles. "
+                "Fans out over a list of t (Divide Curve t → radii → variable "
+                "loft). Pipe the output through Remap to reach a target range."))
+
 # ===========================================================================
 # 10. Math
 # ===========================================================================
