@@ -554,6 +554,23 @@ def _curve_points(_items):
     return _origin_points(_flatten(_items))
 
 
+def _curve_draw(_points, _mode="polyline", _closed=False, _plane=None):
+    \"\"\"Build a curve from local (u, v) points authored with the on-canvas
+    ✎ Draw tool (Curve on Plane node), then re-seat it onto `_plane` (Plane.XY/
+    XZ/YZ by default, or any wired Plane — dynamic frames included). Mirrors
+    _to_plane: the curve is built flat in local XY, then `plane * curve`.\"\"\"
+    pts = [(float(p[0]), float(p[1]), 0.0)
+           for p in (_points or []) if p and len(p) >= 2]
+    if len(pts) < 2:
+        return None
+    if _mode == "spline":
+        crv = Spline(*pts, periodic=bool(_closed))
+    else:
+        crv = Polyline(*pts, close=bool(_closed))
+    pl = _plane if isinstance(_plane, Plane) else Plane.XY
+    return pl * crv
+
+
 def _outline(_s):
     \"\"\"The boundary of a 2D primitive as a closed curve (Wire). A filled
     sketch/face is reduced to its outer wire(s) so primitives read as curves;
