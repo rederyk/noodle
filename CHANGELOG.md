@@ -18,6 +18,19 @@ Tutte le modifiche degne di nota a noodle. Le versioni seguono `server.py`
 
 ### Added
 
+- **42 nuovi nodi** (totale 148) — la "wave 1" dei nodi mancanti dalla roadmap:
+  - *Primitive*: `Wedge`, `Star`, `Slot`; *curve*: `Bezier`, `Helix`.
+  - *Trasformazioni*: `ArrayPolar` (array radiale), `Align` (centra/aggancia).
+  - *Modificatori*: `Split` (taglio con piano, keep top/bottom/both).
+  - *Piani*: `PlaneNormal` (origine+normale), `MovePlane` (offset lungo la normale).
+  - *Vettori*: `CrossProduct`, `DotProduct`, `Normalize`, `VectorLength`,
+    `Distance`, `Midpoint`.
+  - *Math*: `Sin/Cos/Tan`, `ArcSin/ArcCos/ArcTan` (gradi), `Sqrt`, `Abs`,
+    `Floor`, `Ceil`, `Round`, `Modulo`, `Min`, `Max`.
+  - *Misure*: `Volume`, `Area`, `CenterOfMass`.
+  - *Liste*: `ListRepeat`, `ListShift`, `ListFilter` (Dispatch/Cull),
+    `ListUnique`, `Random` (numeri casuali con seed).
+  - *Export*: `Export3MF`, `ExportGLTF`, `ExportSVG`, `ExportDXF`.
 - **Packaging e CI.** `pyproject.toml` (installabile, extra `dev` con
   pytest/ruff, config ruff) e workflow GitHub Actions (`.github/workflows/ci.yml`):
   lint ruff, test su Python 3.10/3.12, build dell'immagine Docker.
