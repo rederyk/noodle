@@ -25,7 +25,8 @@ docker logs -f noodle         # tail logs
 
 - Node editor: <http://localhost:8090/nodes>   ·   code view: `/ui` (read-only
   build123d generated from the graph)   ·   health: `/health`
-- The container runs as **root**, Python 3.10, serving `uvicorn server:app` on 8090.
+- The container runs as the non-root user **noodle (uid 1000)**, Python 3.10,
+  serving `uvicorn server:app` on 8090.
 - Volumes (see `docker-compose.yml`): `./projects` is read-write; `cad_nodes/`,
   `webui/`, `server.py`, `mcp_server.py` are mounted **read-only**, so
   host edits are visible to the container but the running process must be
@@ -129,7 +130,7 @@ cad_nodes/
   copilot.py         ★ in-app NL copilot (§7). OpenAI-compatible tool loop.
   toposort.py        topological sort + cycle detection.
   catalog … examples/  sample graphs used by tests.
-projects/            saved graphs (root-owned — see §6 gotcha).
+projects/            saved graphs (written as uid 1000 — host-editable).
 tests/               test_engine.py, test_api.py — pure-Python (no build123d).
 PLAN_NODE_CAD.md     the full design doc + node roadmap (~150 planned nodes).
 ```
@@ -225,9 +226,14 @@ template and emit nested `with` blocks — see existing examples.
 - Verify engine logic fast on the host with `.venv-b123d` (§2) before restarting.
 
 **Gotchas:**
-- `projects/` is **root-owned** (the container writes as root). To edit a graph
-  file from the host, use `sudo cp` / `sudo tee`; the canonical writer is the
-  server API. Prefer changing graphs via `/api/graph/{name}/...` or the UI.
+- The container runs as **uid 1000** (`noodle`), matching the typical host user,
+  so `projects/` is host-editable. Projects created by pre-non-root images are
+  root-owned — fix once with `sudo chown -R 1000:1000 projects feedback`. The
+  canonical writer is still the server API (`/api/graph/{name}/...` or the UI).
+- Project names are validated (`cad_nodes/store.py::validate_graph_id`): one
+  path segment, `[A-Za-z0-9][A-Za-z0-9._ -]{0,63}`. Anything else is a 400
+  (path-traversal guard) — keep any new route that touches `projects/` on
+  `project_dir()`/`GraphStore.dir()`.
 - Running build123d on the host prints noisy fontconfig warnings to **stderr** —
   redirect `2>/dev/null` and read stdout.
 - The copilot/MCP both go through `cad_nodes.api`; new capabilities belong there

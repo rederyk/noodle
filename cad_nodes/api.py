@@ -9,7 +9,6 @@ Errors are raised as ValueError/KeyError; transport layers translate them.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Optional
 
 from . import catalog

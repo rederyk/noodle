@@ -5,6 +5,23 @@ Tutte le modifiche degne di nota a noodle. Le versioni seguono `server.py`
 
 ## 0.1.0 — non rilasciata
 
+### Security
+
+- **Path traversal chiuso sui nomi progetto.** Un nome progetto ora deve essere
+  un singolo segmento di percorso (`[A-Za-z0-9][A-Za-z0-9._ -]{0,63}`, vedi
+  `cad_nodes/store.py::validate_graph_id`); nomi con `/`, `..` ecc. ricevono
+  400. La validazione copre tutte le superfici (REST, MCP, copilot) perché vive
+  in `GraphStore.dir()` + `server.py::project_dir()`.
+- **Il container gira come utente non-root** (`noodle`, uid 1000). I progetti
+  scritti dal container sono ora editabili dall'host senza sudo. Migrazione da
+  un'immagine precedente: `sudo chown -R 1000:1000 projects feedback`.
+
+### Added
+
+- **Packaging e CI.** `pyproject.toml` (installabile, extra `dev` con
+  pytest/ruff, config ruff) e workflow GitHub Actions (`.github/workflows/ci.yml`):
+  lint ruff, test su Python 3.10/3.12, build dell'immagine Docker.
+
 ### Changed
 
 - **Nodo Shell — ora ispessisce le superfici aperte invece di andare in errore.**

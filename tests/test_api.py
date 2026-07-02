@@ -9,7 +9,7 @@ import pytest
 
 from cad_nodes import api
 from cad_nodes.graph import ValidationError
-from cad_nodes.store import GraphStore
+from cad_nodes.store import GraphStore, validate_graph_id
 
 
 @pytest.fixture
@@ -130,3 +130,27 @@ def test_patch_codeblock_unknown_param(store):
     api.add_node(store, "g", "CodeBlock", {"code": "result=None"})
     with pytest.raises(ValueError):
         api.patch_param(store, "g", "codeblock_1", "_cb.ghost", 1)
+
+
+# --- graph ids are single directory names (path-traversal guard) ----------
+def test_validate_graph_id_accepts_normal_names():
+    for name in ("part1", "My Part 2", "v1.2-final", "a_b-c.d", "X" * 64):
+        assert validate_graph_id(name) == name
+
+
+@pytest.mark.parametrize("bad", [
+    "../etc", "..", ".", "a/b", "a\\b", "/abs", ".hidden", "-flag",
+    "", " leading-space", "x" * 65, "a\x00b", "a\nb",
+])
+def test_validate_graph_id_rejects_traversal(bad):
+    with pytest.raises(ValueError):
+        validate_graph_id(bad)
+
+
+def test_store_refuses_traversal_ids(store, tmp_path):
+    (tmp_path.parent / "outside").mkdir(exist_ok=True)
+    for method in (store.load, store.delete, store.exists):
+        with pytest.raises(ValueError):
+            method("../outside")
+    with pytest.raises(ValueError):
+        api.create_graph(store, "../outside")
