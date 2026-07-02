@@ -1,15 +1,24 @@
-# noodle runtime dependencies — single source of truth (the Dockerfile
-# installs from this file). Pinned for reproducibility; bump deliberately.
+# noodle runtime dependencies — single source of truth: the Dockerfile installs
+# from this file AND pyproject.toml reads it as the package's `dependencies`
+# (comments must stay on their own lines for the setuptools parser).
+# Pinned for reproducibility; bump deliberately.
 #
 # B-Rep kernel: build123d bundles cadquery-ocp (OpenCASCADE/OCCT, LGPL-2.1).
 # See THIRD_PARTY_NOTICES.md for the license map.
 
-build123d==0.11.0          # modelling API (Apache-2.0) — pulls cadquery-ocp / OCCT (LGPL-2.1)
-numpy==2.1.3               # math in the execution worker (BSD-3)
-scipy==1.14.1              # Voronoi2D / spatial helpers in the worker (BSD-3)
+# modelling API (Apache-2.0) — pulls cadquery-ocp / OCCT (LGPL-2.1)
+build123d==0.11.0
+# math in the execution worker (BSD-3)
+numpy==2.1.3
+# Voronoi2D / spatial helpers in the worker (BSD-3)
+scipy==1.14.1
 
-fastapi==0.115.0           # HTTP API (MIT)
-uvicorn[standard]==0.30.0  # ASGI server (BSD-3)
-python-multipart==0.0.12   # multipart form parsing for FastAPI (Apache-2.0)
+# HTTP API (MIT)
+fastapi==0.115.0
+# ASGI server (BSD-3)
+uvicorn[standard]==0.30.0
+# multipart form parsing for FastAPI (Apache-2.0)
+python-multipart==0.0.12
 
-mcp==1.2.0                 # Model Context Protocol server SDK (MIT)
+# Model Context Protocol server SDK (MIT)
+mcp==1.2.0

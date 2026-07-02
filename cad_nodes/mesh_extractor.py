@@ -201,8 +201,11 @@ def _bbox_of_coords(coords) -> dict | None:
     """Axis-aligned bbox from a flat list of [x,y,z] points."""
     if not coords:
         return None
-    xs = [c[0] for c in coords]; ys = [c[1] for c in coords]; zs = [c[2] for c in coords]
-    lo = [min(xs), min(ys), min(zs)]; hi = [max(xs), max(ys), max(zs)]
+    xs = [c[0] for c in coords]
+    ys = [c[1] for c in coords]
+    zs = [c[2] for c in coords]
+    lo = [min(xs), min(ys), min(zs)]
+    hi = [max(xs), max(ys), max(zs)]
     return {"min": lo, "max": hi, "size": [hi[i] - lo[i] for i in range(3)]}
 
 
@@ -290,7 +293,8 @@ def extract_subshapes(shape, kind: str = "edge",
         for i, f in enumerate(shape.faces()):
             try:
                 fv, ft = f.tessellate(_deflection(shape, linear_frac), angular)
-                c = f.center(); nrm = f.normal_at(c)
+                c = f.center()
+                nrm = f.normal_at(c)
                 items.append({"index": i,
                               "mesh": {"vertices": [[v.X, v.Y, v.Z] for v in fv],
                                        "triangles": [list(t) for t in ft]},
