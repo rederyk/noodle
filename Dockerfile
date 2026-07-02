@@ -26,6 +26,14 @@ COPY mcp_server.py .
 COPY cad_nodes/ ./cad_nodes/
 COPY webui/ ./webui/
 
+# Run as a non-root user. UID/GID 1000 match the typical host user so the
+# bind-mounted ./projects and ./feedback stay editable from the host without
+# sudo (chown existing dirs once: `sudo chown -R 1000:1000 projects feedback`).
+RUN useradd --uid 1000 --user-group --create-home noodle \
+    && mkdir -p /app/projects /app/feedback \
+    && chown -R noodle:noodle /app
+USER noodle
+
 # Projects volume
 VOLUME /app/projects
 

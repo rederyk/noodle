@@ -85,7 +85,11 @@ Desktop…) via MCP or HTTP, see **[`AGENTS.md`](AGENTS.md)**.
 > `Expression` nodes) as **arbitrary Python in a subprocess** and is **not yet
 > sandboxed**. Run it **single-user / locally / trusted only** — do **not** expose
 > the port to an untrusted network. Sandboxing is tracked as item **D3** in
-> `PLAN_NODE_CAD.md`.
+> `PLAN_NODE_CAD.md`. The container does run as a **non-root user (uid 1000)**
+> and project names are validated server-side (no path traversal).
+>
+> **Upgrading from an older (root) image**: projects written by it are root-owned
+> on the host; fix once with `sudo chown -R 1000:1000 projects feedback`.
 
 ## Develop without Docker
 

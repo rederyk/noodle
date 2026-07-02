@@ -25,7 +25,7 @@ from cad_nodes import api, catalog
 from cad_nodes.graph import Graph, ValidationError
 from cad_nodes.transpiler import transpile, transpile_with_map
 from cad_nodes.executor import execute_graph, export_graph, extract_subshapes_for_node
-from cad_nodes.store import GraphStore
+from cad_nodes.store import GraphStore, validate_graph_id
 from cad_nodes.copilot import run_chat, copilot_status
 
 # ---------------------------------------------------------------------------
@@ -143,7 +143,12 @@ class FeedbackPayload(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 def project_dir(name: str) -> Path:
-    return PROJECTS_DIR / name
+    # validate_graph_id rejects path separators and ".." so a crafted project
+    # name can never resolve outside PROJECTS_DIR.
+    try:
+        return PROJECTS_DIR / validate_graph_id(name)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
 
 
 def require_project(name: str) -> Path:
@@ -259,7 +264,7 @@ def _render_report_md(fid: str, fb: "FeedbackPayload", stamp: dict) -> str:
         "",
         "## Contesto tecnico",
         "",
-        f"- ultimi errori per-nodo:",
+        "- ultimi errori per-nodo:",
         err_lines,
         f"- snapshot grafo allegato: {'sì (`graph.snapshot.json`)' if fb.graph else 'no'}",
         f"- log backend allegati: {'sì (`backend.log`)' if fb.logs else 'no'}",
@@ -467,7 +472,7 @@ async def save_graph(name: str, graph: dict):
     try:
         Graph.from_dict(graph).validate()
     except ValidationError as e:
-        raise HTTPException(400, f"Invalid graph: {e}")
+        raise HTTPException(400, f"Invalid graph: {e}") from e
 
     d = project_dir(name)
     d.mkdir(parents=True, exist_ok=True)
@@ -497,7 +502,7 @@ async def get_graph_code(name: str, map: int = 0):
             return {"code": code, "params": params}
         return {"code": transpile(_load_graph(name))}
     except ValidationError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
 
 
 @app.patch("/api/graph/{name}/param")
@@ -510,7 +515,7 @@ async def patch_graph_param(name: str, payload: ParamPatch):
     try:
         value = api.patch_param(store, name, payload.node_id, payload.param, payload.value)
     except (ValueError, KeyError) as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     return {"status": "ok", "value": value}
 
 
@@ -523,7 +528,7 @@ async def scan_codeblock_params(name: str, node_id: str):
     try:
         return {"params": api.scan_codeblock(store, name, node_id)}
     except (ValueError, KeyError) as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
 
 
 # Map an imported file's extension to the Import node that reads it.
@@ -604,7 +609,7 @@ async def execute_graph_project(name: str):
         result = execute_graph(graph, d)
     except ValidationError as e:
         logger.error("execute '%s' invalid graph: %s", name, e)
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     if not result["success"]:
         logger.error("execute '%s' failed: %s", name, result.get("errors") or result.get("error_detail"))
         raise HTTPException(400, {
@@ -638,7 +643,7 @@ async def graph_subshapes(name: str, node_id: str, kind: str = "edge"):
     try:
         data = extract_subshapes_for_node(graph, node_id, kind, d)
     except ValidationError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     if not data.get("success"):
         raise HTTPException(400, {"message": "Sub-shape extraction failed",
                                   "error": data.get("error")})
@@ -690,9 +695,9 @@ async def export_graph_project(name: str, fmt: str):
     try:
         out_path = export_graph(graph, d, fmt)
     except ValidationError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     except (RuntimeError, ValueError) as e:
-        raise HTTPException(400, f"Export failed: {e}")
+        raise HTTPException(400, f"Export failed: {e}") from e
     return FileResponse(out_path, media_type=media, filename=f"{name}.{ext}")
 
 
