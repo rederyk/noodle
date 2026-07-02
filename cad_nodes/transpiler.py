@@ -131,6 +131,9 @@ def _annot(node) -> str:
     return f"  # @node:{node.id} ({node.type})"
 
 PREAMBLE = """\
+import math
+import random
+
 from build123d import *
 
 # --- runtime helpers (injected by the transpiler) ---
@@ -1216,6 +1219,141 @@ def _graphmap(_t, _pts, _mode="smooth"):
         except Exception:
             _o = _np.interp(_tc, _xs, _ys)
     return float(_o[0]) if _scalar else _o.tolist()
+
+
+def _array_polar(_shape, _count=6, _angle=360.0, _axis=None):
+    \"\"\"Repeat a shape around a global axis -> list. A full 360 spaces `count`
+    items evenly (no overlap at the seam); a partial angle includes both
+    endpoints. Rotation is about the axis through the origin — Move the shape
+    off-axis first for the classic bolt-circle.\"\"\"
+    if _shape is None:
+        return None
+    _n = max(1, int(_count))
+    _a = float(_angle)
+    _ax = _axis if _axis is not None else Axis.Z
+    if abs(_a) >= 360.0:
+        _step = _a / _n
+    else:
+        _step = _a / (_n - 1) if _n > 1 else 0.0
+    _d = _ax.direction
+    return [Rot(_d.X * _step * _i, _d.Y * _step * _i, _d.Z * _step * _i) * _shape
+            for _i in range(_n)]
+
+
+def _align(_shape, _ref=None, _target=None):
+    \"\"\"Translate a shape so `ref` (default: its bounding-box centre) lands on
+    `target` (default: the global origin). Unwired = centre at origin.\"\"\"
+    if _shape is None:
+        return None
+    _r = _pt(_ref)
+    if _r is None:
+        _bb = _shape.bounding_box()
+        _r = (_bb.min + _bb.max) / 2
+    _t = _pt(_target)
+    if _t is None:
+        _t = Vector(0, 0, 0)
+    _v = _t - _r
+    return Pos(_v.X, _v.Y, _v.Z) * _shape
+
+
+def _split(_shape, _plane=None, _keep=None):
+    \"\"\"Split a shape by a plane, keeping the requested side(s). Defaults to the
+    XY plane / Keep.TOP.\"\"\"
+    if _shape is None:
+        return None
+    _pl = _plane if isinstance(_plane, Plane) else Plane.XY
+    return split(_shape, bisect_by=_pl, keep=_keep if _keep is not None else Keep.TOP)
+
+
+def _plane_normal(_origin=None, _normal=None):
+    \"\"\"A Plane from an origin point and a normal (z) direction.\"\"\"
+    _o = _pt(_origin)
+    _n = _pt(_normal)
+    return Plane(origin=(_o if _o is not None else Vector(0, 0, 0)),
+                 z_dir=(_n if _n is not None else Vector(0, 0, 1)))
+
+
+def _plane_offset(_plane, _dist=0.0):
+    \"\"\"Slide a plane along its own normal by `dist`.\"\"\"
+    _pl = _plane if isinstance(_plane, Plane) else Plane.XY
+    return _pl.offset(float(_dist))
+
+
+def _star(_outer=10.0, _inner=5.0, _points=5):
+    \"\"\"A star outline: 2*points vertices alternating between the outer and
+    inner radius, first spike pointing +Y.\"\"\"
+    _n = max(2, int(_points))
+    _pts = []
+    for _i in range(2 * _n):
+        _r = float(_outer) if _i % 2 == 0 else float(_inner)
+        _a = math.pi * _i / _n + math.pi / 2
+        _pts.append((_r * math.cos(_a), _r * math.sin(_a)))
+    return _outline(Polygon(*_pts))
+
+
+def _repeat(_v, _n=2):
+    \"\"\"Repeat a value (or a whole list, concatenated) n times -> list.\"\"\"
+    _items = list(_v) if _is_seq(_v) else [_v]
+    return _items * max(0, int(_n))
+
+
+def _shift(_lst, _offset=1, _wrap=True):
+    \"\"\"Cyclically shift a list by `offset` (wrap), or drop from one end.\"\"\"
+    _items = list(_lst) if _is_seq(_lst) else [_lst]
+    if not _items:
+        return _items
+    _o = int(_offset)
+    if _wrap:
+        _o %= len(_items)
+        return _items[_o:] + _items[:_o]
+    return _items[_o:] if _o >= 0 else _items[:_o]
+
+
+def _dispatch(_lst, _pattern=True, _invert=False):
+    \"\"\"Keep the items where the (cycled) boolean pattern is True — the GH
+    Dispatch/Cull idiom. `invert` keeps the False side instead.\"\"\"
+    _items = list(_lst) if _is_seq(_lst) else [_lst]
+    _pat = [bool(_p) for _p in (_pattern if _is_seq(_pattern) else [_pattern])]
+    if not _pat:
+        _pat = [True]
+    return [_x for _i, _x in enumerate(_items)
+            if _pat[_i % len(_pat)] != bool(_invert)]
+
+
+def _unique(_lst):
+    \"\"\"Drop duplicate items, keeping first occurrence (hashables by value,
+    shapes by identity).\"\"\"
+    _seen, _out = set(), []
+    for _x in (list(_lst) if _is_seq(_lst) else [_lst]):
+        _k = _x if isinstance(_x, (int, float, str, bool, tuple)) else id(_x)
+        if _k not in _seen:
+            _seen.add(_k)
+            _out.append(_x)
+    return _out
+
+
+def _randlist(_count=10, _lo=0.0, _hi=1.0, _seed=1):
+    \"\"\"`count` uniform random numbers in [lo, hi], deterministic per seed.\"\"\"
+    _rng = random.Random(int(_seed))
+    return [_rng.uniform(float(_lo), float(_hi)) for _ in range(max(0, int(_count)))]
+
+
+def _export_3mf(_shape, _path):
+    \"\"\"Write the shape to a 3MF file (via build123d's Mesher).\"\"\"
+    _m = Mesher()
+    _m.add_shape(_shape)
+    _m.write(_path)
+    return _shape
+
+
+def _export_2d(_shape, _path, _fmt="svg"):
+    \"\"\"Write a 2D shape (sketch/curve, or a Section of a solid) to SVG or DXF.
+    The drawing is the XY projection — seat the geometry with ToPlane/Section
+    first.\"\"\"
+    _exp = ExportSVG() if _fmt == "svg" else ExportDXF()
+    _exp.add_shape(_shape)
+    _exp.write(_path)
+    return _shape
 """
 
 # Output wire types that yield a drawable preview (mesh for solids/sketches,
@@ -1227,8 +1365,9 @@ _PREVIEWABLE = {catalog.WIRE_SOLID, catalog.WIRE_SURFACE, catalog.WIRE_CURVE,
 # these into an item-access input makes the consumer fan out. (A fanned node is
 # added to this set dynamically as the graph is walked, so lists propagate.)
 _LIST_PRODUCERS = {
-    "ArrayLinear", "ListCreate", "ListRange", "ListSeries", "ListRepeat",
+    "ArrayLinear", "ArrayPolar", "ListCreate", "ListRange", "ListSeries", "ListRepeat",
     "ListSlice", "ListReverse", "ListSort", "ListFlatten", "Concat",
+    "ListShift", "ListFilter", "ListUnique", "Random",
     "Voronoi2D", "DivideSurface", "PopulateGeometry", "MapToSurface",
     "DivideCurve", "CurveEndpoints", "Deconstruct",
     "DeconstructEdges", "DeconstructFaces",

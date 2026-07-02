@@ -390,3 +390,73 @@ def test_codeblock_unwired_keeps_override_span():
     assert "#@param" not in code and "teeth=30" in code   # override passed as the argument
     _, spans = transpile_with_map(g)
     assert any(s["param"] == "_cb.teeth" for s in spans)
+
+
+# --- node wave 1 (ArrayPolar, planes, vector math, trig, Split, exports…) --
+def test_all_templates_reference_real_sockets_or_params():
+    # Every {placeholder} in every code template must resolve to an input
+    # socket, a param, or a transpiler-provided name — catches template typos
+    # at registration time for the whole catalog.
+    import re
+    provided = {"node_id", "ctx"}
+    for d in catalog.REGISTRY.values():
+        names = ({s.name for s in d.inputs} | {p.name for p in d.params}
+                 | provided)
+        for tmpl in d.code_template.values():
+            for ph in re.findall(r"{(\w+)(?:!\w)?}", tmpl):
+                assert ph in names, f"{d.type}: template refers to unknown {{{ph}}}"
+
+
+def test_transpile_array_polar():
+    g = Graph.from_dict({
+        "nodes": [{"id": "b", "type": "Box"},
+                  {"id": "p", "type": "ArrayPolar", "params": {"count": 8, "angle": 360}}],
+        "connections": [{"id": "c", "from_node": "b", "from_socket": "result",
+                         "to_node": "p", "to_socket": "shape"}],
+    })
+    code = transpile(g)
+    assert "_array_polar(__out_1, 8, 360.0, Axis.Z)" in code
+
+
+def test_transpile_split_keep_select():
+    g = Graph.from_dict({
+        "nodes": [{"id": "b", "type": "Box"},
+                  {"id": "s", "type": "Split", "params": {"keep": "both"}}],
+        "connections": [{"id": "c", "from_node": "b", "from_socket": "result",
+                         "to_node": "s", "to_socket": "shape"}],
+    })
+    assert "Keep.BOTH" in transpile(g)
+
+
+def test_transpile_trig_and_vector_math():
+    g = Graph.from_dict({
+        "nodes": [
+            {"id": "n", "type": "NumberSlider", "params": {"value": 30}},
+            {"id": "s", "type": "Sin"},
+            {"id": "p1", "type": "ConstructPoint", "params": {"x": 1}},
+            {"id": "p2", "type": "ConstructPoint", "params": {"y": 2}},
+            {"id": "d", "type": "Distance"},
+        ],
+        "connections": [
+            {"id": "1", "from_node": "n", "from_socket": "result", "to_node": "s", "to_socket": "x"},
+            {"id": "2", "from_node": "p1", "from_socket": "point", "to_node": "d", "to_socket": "a"},
+            {"id": "3", "from_node": "p2", "from_socket": "point", "to_node": "d", "to_socket": "b"},
+        ],
+    })
+    code = transpile(g)
+    assert "math.sin(math.radians(__out_1))" in code
+    assert ".length" in code and "_pt(" in code
+
+
+def test_new_list_nodes_fan_out_downstream():
+    # Random is a list producer: feeding it into an item-access input (a
+    # primitive's radius) must fan the consumer out.
+    g = Graph.from_dict({
+        "nodes": [{"id": "r", "type": "Random", "params": {"count": 4}},
+                  {"id": "c", "type": "Circle"}],
+        "connections": [{"id": "1", "from_node": "r", "from_socket": "result",
+                         "to_node": "c", "to_socket": "radius"}],
+    })
+    code = transpile(g)
+    assert "_randlist(4, 0.0, 1.0, 1)" in code
+    assert "_fanout" in code
