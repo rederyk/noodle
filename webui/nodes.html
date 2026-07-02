@@ -206,6 +206,14 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 #gizmo-bar .lbl{font-size:11px;color:var(--accent-edit);font-weight:600;margin-right:2px;}
 #gizmo-bar .tb-btn{padding:4px 9px;}
 #gizmo-bar .tb-btn.on{background:var(--accent-edit);border-color:var(--accent-edit);color:#fff;}
+/* contextual sketch toolbar (over the viewport while drawing a Curve on Plane) */
+#sketch-bar{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:7;display:none;
+  align-items:center;gap:6px;flex-wrap:wrap;max-width:90%;background:var(--bg-1);border:1px solid var(--accent);
+  border-radius:8px;padding:5px 8px;box-shadow:0 6px 20px rgba(0,0,0,.5);}
+#sketch-bar.open{display:flex;}
+#sketch-bar .lbl{font-size:11px;color:var(--accent);font-weight:600;margin-right:2px;}
+#sketch-bar .tb-btn{padding:4px 9px;}
+#sketch-bar .tb-btn.on{background:var(--accent);border-color:var(--accent);color:#fff;}
 /* command palette */
 #cmdk{position:fixed;inset:0;z-index:350;background:rgba(5,7,11,.55);display:none;justify-content:center;align-items:flex-start;}
 #cmdk.open{display:flex;}
@@ -268,7 +276,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
     <!-- ZONA ESECUZIONE -->
     <div class="tb-zone">
       <button class="tb-btn primary" id="btn-run" onclick="runGraph()" title="Run the graph (Ctrl+Enter)">▶ Run</button>
-      <button class="tb-btn toggle" id="btn-live" onclick="toggleLive()" title="Auto-run on every change">Live</button>
+      <button class="tb-btn toggle js-live-btn" id="btn-live" onclick="toggleLive()" title="Auto-run on every change">Live</button>
       <div class="status-pill" id="status">Ready</div>
       <span class="health-dot" id="health" title="Backend health"></span>
     </div>
@@ -309,6 +317,19 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
           <button class="tb-btn" id="btn-snap" onclick="toggleGizmoSnap()" title="Snap the gizmo (1mm · 15° · 0.1×)">⌗ Snap</button>
           <button class="tb-btn" id="btn-space" onclick="toggleGizmoSpace()" title="Gizmo orientation: world / local axes">🌐 World</button>
           <button class="tb-btn" onclick="exitGizmoEdit()" title="Finish editing (Esc)">✓ Done</button>
+        </div>
+        <!-- contextual sketch toolbar (Curve on Plane: draw points with the mouse) -->
+        <div id="sketch-bar">
+          <span class="lbl" id="sketch-bar-label">Drawing</span>
+          <span id="sketch-plane-btns" style="display:flex;gap:3px"></span>
+          <span id="sketch-mode-btns" style="display:flex;gap:3px"></span>
+          <label style="font-size:11px;color:var(--text-dim);display:flex;align-items:center;gap:4px">
+            <input type="checkbox" id="sketch-closed"> closed</label>
+          <button class="tb-btn toggle js-live-btn" id="sketch-live" onclick="toggleLive()" title="Auto-run on every change. Heavy graph? Turn this off while placing points, then Run when ready.">Live</button>
+          <button class="tb-btn" onclick="window.runGraph()" title="Run the graph now (Ctrl+Enter)">▶ Run</button>
+          <button class="tb-btn" id="sketch-del" disabled title="Delete the selected point (Del/Backspace)">🗑 Delete point</button>
+          <span style="font-size:11px;color:var(--text-dim)">click add · click point=select · drag move · Del/shift/right-click delete</span>
+          <button class="tb-btn" onclick="exitCurveDrawMode()" title="Finish drawing (Esc)">✓ Done</button>
         </div>
         <!-- view tools overlay -->
         <div class="vp-tools">
@@ -415,6 +436,16 @@ let gizmoParamStart = null;    // bound param values at edit start
 let gizmoRunTimer = null;      // debounce handle for the exact re-run
 let gizmoSnap = false;         // snap the gizmo to fixed increments
 let gizmoSpace = 'world';      // gizmo axis orientation: 'world' | 'local'
+let sketchNode = null;         // litegraph node whose points are being drawn on-canvas (Curve on Plane)
+let sketchParam = null;        // name of the param holding the point list
+let sketchPlaneAxis = 'XY';    // which construction plane clicks snap to: XY | XZ | YZ
+let sketchPts = [];            // working copy of points [[x,y,z],...]
+let sketchDragIdx = null;      // index of the point currently being dragged, or null
+let sketchSelIdx = null;       // index of the point currently selected (for keyboard/button delete), or null
+let sketchGroup = null;        // THREE.Group: plane helper + line preview + point markers
+let sketchLine = null;         // THREE.Line: live polyline preview through sketchPts
+let sketchMarkers = null;      // THREE.Group of point marker meshes
+let sketchRaycaster = null;    // reused THREE.Raycaster for plane intersection / point hit-test
 
 // ── wire-type colors + input accept-lists (mirrors catalog.WIRE_COMPATIBLE) ──
 const WIRE_COLORS = {
@@ -607,6 +638,8 @@ function registerNodes(defs){
         if (this.cadSubtypeFollows) refreshSubtype(this);    // re-tag output to match input
         if (this.cadType === 'CodeBlock'){ const s = this; setTimeout(()=> updateCbWired(s), 0); }
         updateGizmoLockedWidgets(this);
+        updateParamSocketWired(this);
+        if (sketchNode === this) refreshSketchBarButtons();   // e.g. `plane` got wired/unwired mid-draw
         const slot = this.inputs[index];
         const name = slot && (slot.cadName || slot.name);
         const info = name && this.cadInputs[name];
@@ -616,9 +649,15 @@ function registerNodes(defs){
       };
       this.size = this.computeSize();
       this.size[0] = Math.max(this.size[0], 150);
+      if (this._curvePreviewH){                 // reserve space for the curve mini-preview
+        this.size[0] = Math.max(this.size[0], 200);
+        this.size[1] += this._curvePreviewH;
+      }
       // bypass overlay: dim + diagonal slash + label across the node body
       this.onDrawForeground = function(ctx){
-        if (!this.bypassed || this.flags.collapsed) return;
+        if (this.flags.collapsed) return;
+        if (this._curveParam) drawCurveMini(ctx, this);   // live curve on the node body
+        if (!this.bypassed) return;
         ctx.save();
         ctx.fillStyle = 'rgba(11,14,20,.45)';
         ctx.fillRect(0, 0, this.size[0], this.size[1]);
@@ -710,6 +749,24 @@ function addWidget(node, p){
       onParamChange(node);
     });
     w.cadParam = p.name; return;
+  }
+  if (p.widget === 'curve'){           // editable control-point curve (GraphMapper)
+    const init = Array.isArray(node.properties[p.name]) ? node.properties[p.name]
+               : JSON.parse(JSON.stringify(p.default || [{p:[0,0]},{p:[1,1]}]));
+    node.properties[p.name] = init;
+    const w = node.addWidget('button', '✎ Edit curve', null, ()=> openCurveEditor(node, p.name));
+    w.cadParam = p.name; w.value = init;   // value carries the array for save/load
+    w.isCurveBtn = true;
+    node._curveParam = p.name; node._curvePreviewH = 96;
+    return;
+  }
+  if (p.widget === 'curve3d'){         // draw a curve by clicking points in the 3D viewport
+    const init = Array.isArray(node.properties[p.name]) ? node.properties[p.name]
+               : JSON.parse(JSON.stringify(p.default || []));
+    node.properties[p.name] = init;
+    const w = node.addWidget('button', '✎ Draw', null, ()=> enterCurveDrawMode(node, p.name));
+    w.cadParam = p.name; w.value = init;   // value carries the array for save/load
+    return;
   }
 
   // float / int — dual control: a bounded slider (when min/max are known) plus a
@@ -904,6 +961,19 @@ function updateGizmoLockedWidgets(node){
   node.setDirtyCanvas && node.setDirtyCanvas(true, true);
 }
 
+// Grey out any param widget while an input socket of the SAME name is wired
+// (params-as-inputs: the wire silently overrides the widget — see catalog.py
+// _pin — so an editable-looking widget while wired is misleading). General
+// pass over every node; cheap (a handful of widgets/sockets each).
+function updateParamSocketWired(node){
+  for (const s of (node.inputs||[])){
+    const name = s.cadName || s.name;
+    const w = (node.widgets||[]).find(ww=>ww.cadParam===name);
+    if (w) w.disabled = (s.link != null);
+  }
+  node.setDirtyCanvas && node.setDirtyCanvas(true, true);
+}
+
 // Grey out a param's widget while its socket is wired (the wire drives it).
 function updateCbWired(node){
   if (!node || node.cadType !== 'CodeBlock') return;
@@ -960,6 +1030,535 @@ function openCodeEditor(node){
   };
   ov.style.display = 'flex';
   ta.focus();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Curve editor — a reusable control-point curve widget. One data model:
+// a list of anchors {p:[x,y], hi:[x,y]|null, ho:[x,y]|null, c:'smooth'|'corner'}
+// stored in the node param `curve` (x,y normalised to [0,1]). Modes
+// linear|smooth|bezier MIRROR transpiler._graphmap — keep the two in sync.
+// Used by GraphMapper (and later an editable Spline). The node shows a live
+// mini-preview on its body; the ✎ Edit curve button opens the full modal.
+// ════════════════════════════════════════════════════════════════════
+
+function curveNorm(pts){               // -> sorted [{p,hi,ho,c}], tolerant of [x,y] pairs
+  return (pts||[]).map(a => Array.isArray(a) ? {p:[+a[0],+a[1]]} : {p:[+a.p[0],+a.p[1]],
+            hi:a.hi?[+a.hi[0],+a.hi[1]]:null, ho:a.ho?[+a.ho[0],+a.ho[1]]:null, c:a.c||'smooth'})
+        .filter(a => a.p && isFinite(a.p[0]) && isFinite(a.p[1]))
+        .sort((m,n)=> m.p[0]-n.p[0]);
+}
+function curveLerp(x, xs, ys){
+  for (let i=0;i<xs.length-1;i++){
+    if (x<=xs[i+1]){ const t=(x-xs[i])/((xs[i+1]-xs[i])||1); return ys[i]+t*(ys[i+1]-ys[i]); }
+  }
+  return ys[ys.length-1];
+}
+// Monotone cubic (Fritsch–Carlson) — the no-overshoot interpolant scipy's PCHIP
+// uses, so the preview matches the backend `smooth` mode closely.
+function curvePchip(x, xs, ys){
+  const n=xs.length;
+  if (n<2) return ys[0]||0;
+  const h=[],d=[];
+  for (let i=0;i<n-1;i++){ h[i]=xs[i+1]-xs[i]; d[i]=(ys[i+1]-ys[i])/(h[i]||1); }
+  const m=[m0()];
+  function m0(){ return d[0]; }
+  for (let i=1;i<n-1;i++){
+    if (d[i-1]*d[i]<=0) m[i]=0;
+    else { const w1=2*h[i]+h[i-1], w2=h[i]+2*h[i-1]; m[i]=(w1+w2)/(w1/d[i-1]+w2/d[i]); }
+  }
+  m[n-1]=d[n-2];
+  let i=0; while (i<n-2 && x>xs[i+1]) i++;
+  const t=(x-xs[i])/(h[i]||1), t2=t*t, t3=t2*t;
+  const hh=h[i];
+  return ys[i]*(2*t3-3*t2+1) + m[i]*hh*(t3-2*t2+t)
+       + ys[i+1]*(-2*t3+3*t2) + m[i+1]*hh*(t3-t2);
+}
+function curveBezierAt(x, p){          // mirror of transpiler._gm_bezier
+  for (let i=0;i<p.length-1;i++){
+    const a=p[i], b=p[i+1], x0=a.p[0], y0=a.p[1], x1=b.p[0], y1=b.p[1];
+    if (x<x0 || x>x1) continue;
+    const c0=a.ho||[x0+(x1-x0)/3, y0+(y1-y0)/3];
+    const c1=b.hi||[x0+2*(x1-x0)/3, y0+2*(y1-y0)/3];
+    let lo=0, hs=1;
+    for (let k=0;k<48;k++){
+      const s=(lo+hs)/2, mt=1-s;
+      const xs=mt*mt*mt*x0+3*mt*mt*s*c0[0]+3*mt*s*s*c1[0]+s*s*s*x1;
+      if (xs<x) lo=s; else hs=s;
+    }
+    const s=(lo+hs)/2, mt=1-s;
+    return mt*mt*mt*y0+3*mt*mt*s*c0[1]+3*mt*s*s*c1[1]+s*s*s*y1;
+  }
+  return x>=p[p.length-1].p[0] ? p[p.length-1].p[1] : p[0].p[1];
+}
+function curveEval(x, pts, mode){
+  const p=curveNorm(pts);
+  if (p.length<2) return p.length?p[0].p[1]:0;
+  const xs=p.map(a=>a.p[0]), ys=p.map(a=>a.p[1]);
+  const xc=Math.min(Math.max(x,xs[0]),xs[xs.length-1]);
+  if (mode==='linear') return curveLerp(xc,xs,ys);
+  if (mode==='bezier') return curveBezierAt(xc,p);
+  return curvePchip(xc,xs,ys);
+}
+// Catmull-Rom-ish auto tangents, baked into the anchors so `bezier` mode starts
+// smooth (and the backend, reading the same handles, agrees with the preview).
+function curveAutoHandles(p){
+  for (let i=0;i<p.length;i++){
+    const a=p[i], pr=p[i-1]||a, nx=p[i+1]||a;
+    const tx=(nx.p[0]-pr.p[0])*0.18, ty=(nx.p[1]-pr.p[1])*0.18;
+    a.hi = i>0 ? [a.p[0]-tx, a.p[1]-ty] : null;
+    a.ho = i<p.length-1 ? [a.p[0]+tx, a.p[1]+ty] : null;
+    a.c = a.c || 'smooth';
+  }
+  return p;
+}
+
+const CURVE_PRESETS = {
+  'Linear':     {mode:'linear', pts:[{p:[0,0]},{p:[1,1]}]},
+  'Ease In-Out':{mode:'bezier', pts:[{p:[0,0],ho:[0.42,0],c:'smooth'},{p:[1,1],hi:[0.58,1],c:'smooth'}]},
+  'Smooth S':   {mode:'smooth', pts:[{p:[0,0]},{p:[0.25,0.05]},{p:[0.75,0.95]},{p:[1,1]}]},
+  'Bump':       {mode:'smooth', pts:[{p:[0,0]},{p:[0.5,1]},{p:[1,0]}]},
+};
+
+// Shared renderer. Draws into pixel rect (rx,ry,rw,rh); curve space is [0,1]^2
+// with y up. `st` carries interaction state for the modal (sel/hover/handles/comb).
+function curveDraw(ctx, rx, ry, rw, rh, pts, mode, st){
+  st = st || {};
+  const m = st.pad!=null ? st.pad : 8;
+  const ix=rx+m, iy=ry+m, iw=rw-2*m, ih=rh-2*m;
+  const X = x => ix + x*iw, Y = y => iy + ih - y*ih;
+  const p = curveNorm(pts);
+  // panel + grid
+  ctx.fillStyle = '#0c1118'; ctx.fillRect(rx,ry,rw,rh);
+  ctx.strokeStyle = 'rgba(120,140,170,.12)'; ctx.lineWidth=1; ctx.beginPath();
+  for (let g=0;g<=4;g++){ const gx=ix+iw*g/4, gy=iy+ih*g/4;
+    ctx.moveTo(gx,iy); ctx.lineTo(gx,iy+ih); ctx.moveTo(ix,gy); ctx.lineTo(ix+iw,gy); }
+  ctx.stroke();
+  if (!p.length) return;
+  // control polygon
+  ctx.strokeStyle='rgba(150,170,200,.30)'; ctx.lineWidth=1; ctx.beginPath();
+  p.forEach((a,i)=> i?ctx.lineTo(X(a.p[0]),Y(a.p[1])):ctx.moveTo(X(a.p[0]),Y(a.p[1])));
+  ctx.stroke();
+  // sampled curve
+  const N=Math.max(24, Math.round(iw/2));
+  const x0=p[0].p[0], x1=p[p.length-1].p[0], span=(x1-x0)||1;
+  const sx=[], sy=[];
+  for (let i=0;i<=N;i++){ const x=x0+span*i/N; sx.push(x); sy.push(curveEval(x,p,mode)); }
+  ctx.strokeStyle = st.accent || '#39d3ff'; ctx.lineWidth = st.thick||2; ctx.beginPath();
+  for (let i=0;i<=N;i++) i?ctx.lineTo(X(sx[i]),Y(sy[i])):ctx.moveTo(X(sx[i]),Y(sy[i]));
+  ctx.stroke();
+  // curvature comb (modal toggle)
+  if (st.comb){
+    ctx.strokeStyle='rgba(255,120,90,.55)'; ctx.lineWidth=1; ctx.beginPath();
+    const tips=[];
+    for (let i=1;i<N;i++){
+      const ax=sx[i-1],ay=sy[i-1],bx=sx[i],by=sy[i],cx=sx[i+1]||sx[i],cy=sy[i+1]||sy[i];
+      const v1x=bx-ax,v1y=by-ay,v2x=cx-bx,v2y=cy-by;
+      const cross=v1x*v2y-v1y*v2x;
+      const l1=Math.hypot(v1x,v1y)||1e-6, l2=Math.hypot(v2x,v2y)||1e-6, l3=Math.hypot(cx-ax,cy-ay)||1e-6;
+      const k=2*cross/(l1*l2*l3);
+      let tx=cx-ax, ty=cy-ay; const tl=Math.hypot(tx,ty)||1; tx/=tl; ty/=tl;
+      const nx=-ty, ny=tx, len=Math.max(-0.4,Math.min(0.4,k*0.06));
+      const tipx=bx+nx*len, tipy=by+ny*len;
+      ctx.moveTo(X(bx),Y(by)); ctx.lineTo(X(tipx),Y(tipy)); tips.push([tipx,tipy]);
+    }
+    ctx.stroke();
+    ctx.strokeStyle='rgba(255,120,90,.30)'; ctx.beginPath();
+    tips.forEach((t,i)=> i?ctx.lineTo(X(t[0]),Y(t[1])):ctx.moveTo(X(t[0]),Y(t[1])));
+    ctx.stroke();
+  }
+  // handles (modal, bezier mode) — only on the selected/hovered anchor
+  if (st.handles && mode==='bezier'){
+    const show = new Set([st.sel, st.hover].filter(i=>i!=null));
+    p.forEach((a,i)=>{
+      if (!show.has(i)) return;
+      ['hi','ho'].forEach(h=>{ if(!a[h]) return;
+        ctx.strokeStyle='rgba(120,200,255,.6)'; ctx.lineWidth=1; ctx.beginPath();
+        ctx.moveTo(X(a.p[0]),Y(a.p[1])); ctx.lineTo(X(a[h][0]),Y(a[h][1])); ctx.stroke();
+        ctx.fillStyle='#7fd0ff'; ctx.beginPath(); ctx.arc(X(a[h][0]),Y(a[h][1]),3.2,0,7); ctx.fill();
+      });
+    });
+  }
+  // anchors
+  p.forEach((a,i)=>{
+    const r = (i===st.sel)?5:4;
+    ctx.fillStyle = (i===st.sel)?'#ffd166':(a.c==='corner'?'#ff8d6b':'#cfe6ff');
+    ctx.beginPath(); ctx.arc(X(a.p[0]),Y(a.p[1]),r,0,7); ctx.fill();
+    ctx.strokeStyle='#0c1118'; ctx.lineWidth=1; ctx.stroke();
+  });
+}
+
+// live mini-preview drawn on the node body (called from onDrawForeground)
+function drawCurveMini(ctx, node){
+  const name = node._curveParam, h = node._curvePreviewH||0;
+  if (!name || node.flags.collapsed) return;
+  const pts = node.properties[name] || [];
+  const mode = node.properties.mode || 'smooth';
+  const pad=6, w=node.size[0]-2*pad, hh=h-pad, y=node.size[1]-h;
+  curveDraw(ctx, pad, y, w, hh, pts, mode, {pad:7, thick:2});
+}
+
+function setCurveParam(node, name, pts){
+  node.properties[name] = pts;
+  for (const w of (node.widgets||[])) if (w.cadParam===name) w.value = pts;
+  onParamChange(node);
+  if (typeof lcanvas!=='undefined' && lcanvas) lcanvas.setDirty(true,true);
+}
+function setModeWidget(node, mode){
+  node.properties.mode = mode;
+  for (const w of (node.widgets||[])) if (w.cadParam==='mode') w.value = mode;
+}
+
+function openCurveEditor(node, name){
+  let ov = document.getElementById('curve-editor');
+  if (!ov){
+    ov = document.createElement('div'); ov.id='curve-editor';
+    ov.style.cssText='position:fixed;inset:0;z-index:200;display:none;align-items:center;'+
+      'justify-content:center;background:rgba(0,0,0,.5)';
+    ov.innerHTML =
+      '<div style="background:var(--bg-1);border:1px solid var(--border);border-radius:10px;'+
+        'padding:14px;display:flex;flex-direction:column;gap:10px">'+
+        '<div style="display:flex;align-items:center;gap:10px">'+
+          '<b style="color:var(--accent)">Curve editor</b>'+
+          '<span id="cv-modes" style="display:flex;gap:4px"></span><span style="flex:1"></span>'+
+          '<span style="font-size:11px;color:var(--text-dim)">click add · drag move · dbl-click corner/smooth · shift/right-click delete</span>'+
+        '</div>'+
+        '<canvas id="cv-canvas" width="480" height="340" style="background:#0c1118;'+
+          'border:1px solid #1f2a3a;border-radius:6px;cursor:crosshair"></canvas>'+
+        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
+          '<span id="cv-presets" style="display:flex;gap:4px"></span><span style="flex:1"></span>'+
+          '<label style="font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:4px">'+
+            '<input type="checkbox" id="cv-comb"> curvature</label>'+
+          '<button class="tb-btn toggle js-live-btn" id="cv-live" onclick="toggleLive()" title="Auto-run on every change. Heavy graph? Turn this off while dragging, then Run when ready.">Live</button>'+
+          '<button class="tb-btn" id="cv-run" onclick="window.runGraph()" title="Run the graph now (Ctrl+Enter)">▶ Run</button>'+
+          '<button class="tb-btn primary" id="cv-done">✓ Done</button>'+
+        '</div>'+
+      '</div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('mousedown', e=>{ if(e.target===ov) ov.style.display='none'; });
+  }
+  const cv = document.getElementById('cv-canvas'), ctx = cv.getContext('2d');
+  const W=cv.width, H=cv.height, pad=14;
+  const st = { sel:null, hover:null, drag:null, comb:false, handles:true };
+  document.getElementById('cv-comb').checked = false;
+  document.getElementById('cv-comb').onchange = e=>{ st.comb=e.target.checked; draw(); };
+  document.getElementById('cv-live').classList.toggle('on', liveMode);   // reflect current mode (may have changed since last open)
+
+  const get = ()=> curveNorm(node.properties[name]);
+  const mode = ()=> node.properties.mode || 'smooth';
+  const ix=pad+8, iw=W-2*(pad+8), iy=pad+8, ih=H-2*(pad+8);
+  const toCurve = (mx,my)=> [Math.min(1,Math.max(0,(mx-ix)/iw)), Math.min(1,Math.max(0,1-(my-iy)/ih))];
+  const toPx = (x,y)=> [ix+x*iw, iy+ih-y*ih];
+  const commit = pts=> setCurveParam(node, name, pts);
+
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+    curveDraw(ctx, pad, pad, W-2*pad, H-2*pad, get(), mode(),
+      {pad:8, thick:2.5, sel:st.sel, hover:st.hover, comb:st.comb, handles:true});
+  }
+  function hit(mx,my){          // -> {i, handle} nearest anchor/handle within tol
+    const p=get(); let best=null, bd=12*12;
+    p.forEach((a,i)=>{
+      if (mode()==='bezier' && (i===st.sel)) ['hi','ho'].forEach(h=>{ if(!a[h])return;
+        const [hx,hy]=toPx(a[h][0],a[h][1]); const d=(hx-mx)**2+(hy-my)**2;
+        if(d<bd){bd=d;best={i,handle:h};} });
+      const [px,py]=toPx(a.p[0],a.p[1]); const d=(px-mx)**2+(py-my)**2;
+      if(d<bd){bd=d;best={i,handle:null};}
+    });
+    return best;
+  }
+  cv.oncontextmenu = e=>{ e.preventDefault();
+    const r=cv.getBoundingClientRect(), h=hit(e.clientX-r.left,e.clientY-r.top);
+    if(h && h.handle==null){ const p=get(); if(p.length>2){ p.splice(h.i,1); st.sel=null; commit(p);} draw(); } };
+  cv.onmousedown = e=>{
+    const r=cv.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+    const h=hit(mx,my); const p=get();
+    if (e.shiftKey && h && h.handle==null){ if(p.length>2){p.splice(h.i,1);commit(p);} st.sel=null; draw(); return; }
+    if (h){ st.sel=h.i; st.drag=h; draw(); return; }
+    // empty space -> add an anchor at the cursor
+    const [cx,cy]=toCurve(mx,my);
+    let idx=p.findIndex(a=>a.p[0]>cx); if(idx<0) idx=p.length;
+    const a={p:[cx,cy],c:'smooth'}; p.splice(idx,0,a);
+    if(mode()==='bezier') curveAutoHandles(p);
+    st.sel=idx; st.drag={i:idx,handle:null}; commit(p); draw();
+  };
+  cv.onmousemove = e=>{
+    const r=cv.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+    if (!st.drag){ const h=hit(mx,my); const nv=h?h.i:null; if(nv!==st.hover){st.hover=nv; draw();} return; }
+    const p=get(), a=p[st.drag.i];
+    const [cx,cy]=toCurve(mx,my);
+    if (st.drag.handle){
+      a[st.drag.handle]=[cx,cy];
+      if ((a.c||'smooth')==='smooth'){           // C1: mirror the opposite handle
+        const opp = st.drag.handle==='hi'?'ho':'hi';
+        if (a[opp]) a[opp]=[2*a.p[0]-cx, 2*a.p[1]-cy];
+      }
+    } else {
+      const isFirst=st.drag.i===0, isLast=st.drag.i===p.length-1;
+      const lo=isFirst?0:p[st.drag.i-1].p[0]+1e-3, hi=isLast?1:p[st.drag.i+1].p[0]-1e-3;
+      const nx=(isFirst)?0:(isLast)?1:Math.min(hi,Math.max(lo,cx));
+      const dx=nx-a.p[0], dy=cy-a.p[1];
+      a.p=[nx,cy];
+      ['hi','ho'].forEach(hh=>{ if(a[hh]) a[hh]=[a[hh][0]+dx, a[hh][1]+dy]; });
+    }
+    commit(p); draw();
+  };
+  const endDrag=()=>{ if(st.drag){ st.drag=null; commit(curveNorm(node.properties[name])); } };
+  cv.onmouseup = endDrag; cv.onmouseleave = ()=>{ endDrag(); st.hover=null; draw(); };
+  cv.ondblclick = e=>{
+    const r=cv.getBoundingClientRect(), h=hit(e.clientX-r.left,e.clientY-r.top);
+    if(h && h.handle==null){ const p=get(); const a=p[h.i];
+      a.c=(a.c==='corner')?'smooth':'corner';
+      if(a.c==='smooth' && mode()==='bezier') curveAutoHandles(p);
+      commit(p); draw(); }
+  };
+  // mode buttons
+  const mbox=document.getElementById('cv-modes'); mbox.innerHTML='';
+  ['smooth','linear','bezier'].forEach(mo=>{
+    const b=document.createElement('button'); b.className='tb-btn'; b.textContent=mo;
+    if(mo===mode()) b.classList.add('primary');
+    b.onclick=()=>{ setModeWidget(node,mo);
+      if(mo==='bezier') commit(curveAutoHandles(get())); else commit(get());
+      [...mbox.children].forEach(c=>c.classList.remove('primary')); b.classList.add('primary'); draw(); };
+    mbox.appendChild(b);
+  });
+  // presets
+  const pbox=document.getElementById('cv-presets'); pbox.innerHTML='';
+  Object.keys(CURVE_PRESETS).forEach(k=>{
+    const b=document.createElement('button'); b.className='tb-btn'; b.textContent=k;
+    b.onclick=()=>{ const pr=CURVE_PRESETS[k]; setModeWidget(node,pr.mode);
+      commit(curveNorm(JSON.parse(JSON.stringify(pr.pts)))); st.sel=null;
+      [...mbox.children].forEach(c=>c.classList.toggle('primary', c.textContent===pr.mode)); draw(); };
+    pbox.appendChild(b);
+  });
+  document.getElementById('cv-done').onclick=()=>{ ov.style.display='none'; window.runGraph&&window.runGraph(); };
+  ov.style.display='flex'; draw();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Curve draw — click points directly in the 3D viewport to author a
+// Curve on Plane node (see catalog "CurveOnPlane"). Single-active-edit,
+// same slot pattern as the Move/Rotate/Scale gizmo (enterGizmoEdit): only
+// one of gizmo-edit / sketch-draw is ever active.
+//
+// Points are stored as LOCAL (u, v) pairs on the node's plane — mirrors
+// _curve_draw/_to_plane in the transpiler: build123d does `plane * curve`
+// to seat a flat local-XY curve wherever `plane` resolves (Plane.XY/XZ/YZ,
+// or a wired Plane — dynamic frames included). sketchPlaneAxis is only the
+// EDITING convention (which axis-aligned world plane clicks project onto
+// while drawing); the real seat plane at build time is whatever `plane`
+// resolves to. When the plane socket is wired, the axis picker is locked
+// (see sketchPlaneLocked) since the wire, not the picker, drives the seat.
+// ════════════════════════════════════════════════════════════════════
+
+function sketchLocalToWorld(p, axis){
+  const [u,v] = p;
+  if (axis==='XZ') return [u,0,v];
+  if (axis==='YZ') return [0,u,v];
+  return [u,v,0];
+}
+function sketchWorldToLocal(w, axis){
+  if (axis==='XZ') return [w[0], w[2]];
+  if (axis==='YZ') return [w[1], w[2]];
+  return [w[0], w[1]];
+}
+function sketchPlaneMath(){
+  const n = sketchPlaneAxis==='XZ' ? new THREE.Vector3(0,1,0)
+          : sketchPlaneAxis==='YZ' ? new THREE.Vector3(1,0,0)
+          : new THREE.Vector3(0,0,1);
+  return new THREE.Plane(n, 0);
+}
+function sketchIntersect(clientX, clientY){     // -> local [u,v] on sketchPlaneAxis, or null
+  const r = viewer.canvas.getBoundingClientRect();
+  const mx = ((clientX-r.left)/r.width)*2-1, my = -((clientY-r.top)/r.height)*2+1;
+  if (!sketchRaycaster) sketchRaycaster = new THREE.Raycaster();
+  sketchRaycaster.setFromCamera(new THREE.Vector2(mx,my), viewer.camera);
+  const target = new THREE.Vector3();
+  if (!sketchRaycaster.ray.intersectPlane(sketchPlaneMath(), target)) return null;
+  return sketchWorldToLocal([target.x,target.y,target.z], sketchPlaneAxis);
+}
+function sketchHitTest(clientX, clientY){       // -> index of nearest point marker within tolerance, or -1
+  if (!sketchNode) return -1;
+  const r = viewer.canvas.getBoundingClientRect();
+  let best=-1, bd=14*14;
+  sketchPts.forEach((p,i)=>{
+    const w = sketchLocalToWorld(p, sketchPlaneAxis);
+    const v = new THREE.Vector3(w[0],w[1],w[2]).project(viewer.camera);
+    const px = (v.x*0.5+0.5)*r.width, py = (1-(v.y*0.5+0.5))*r.height;
+    const d = (px-(clientX-r.left))**2 + (py-(clientY-r.top))**2;
+    if (d<bd){ bd=d; best=i; }
+  });
+  return best;
+}
+function sketchPointSegDist2(p, a, b){        // squared distance from p to segment a-b (local uv space)
+  const abx=b[0]-a[0], aby=b[1]-a[1];
+  const apx=p[0]-a[0], apy=p[1]-a[1];
+  const len2 = abx*abx+aby*aby;
+  const t = len2>1e-9 ? Math.max(0,Math.min(1,(apx*abx+apy*aby)/len2)) : 0;
+  const cx=a[0]+t*abx, cy=a[1]+t*aby;
+  return (p[0]-cx)**2+(p[1]-cy)**2;
+}
+function sketchInsertIndex(pt){               // -> array index to splice `pt` into, by nearest existing segment
+  const n = sketchPts.length;
+  if (n < 2) return n;                        // 0 or 1 points: just append
+  const closed = !!(sketchNode && sketchNode.properties.closed);
+  const segCount = closed ? n : n-1;          // closed also has the wrap-around segment (last -> first)
+  let best = n-1, bd = Infinity;
+  for (let i=0;i<segCount;i++){
+    const d = sketchPointSegDist2(pt, sketchPts[i], sketchPts[(i+1)%n]);
+    if (d < bd){ bd = d; best = i; }
+  }
+  return best+1;                              // insert right after the nearest segment's start point
+}
+function sketchDeletePoint(idx){
+  if (idx<0 || idx>=sketchPts.length) return;
+  sketchPts.splice(idx,1);
+  if (sketchSelIdx===idx) sketchSelIdx=null;
+  else if (sketchSelIdx!=null && sketchSelIdx>idx) sketchSelIdx--;
+  commitSketchPts(); refreshSketchVisual(); refreshSketchBarButtons();
+}
+function buildSketchGroup(){
+  sketchGroup = new THREE.Group();
+  const geo = new THREE.PlaneGeometry(400,400);
+  const mat = new THREE.MeshBasicMaterial({color:0x39d3ff, transparent:true, opacity:0.05,
+    side:THREE.DoubleSide, depthWrite:false});
+  const plane = new THREE.Mesh(geo, mat);
+  if (sketchPlaneAxis==='XZ') plane.rotation.x = Math.PI/2;
+  else if (sketchPlaneAxis==='YZ') plane.rotation.y = Math.PI/2;
+  sketchGroup.add(plane);
+  sketchLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({color:0x39d3ff}));
+  sketchGroup.add(sketchLine);
+  sketchMarkers = new THREE.Group();
+  sketchGroup.add(sketchMarkers);
+  viewer.scene.add(sketchGroup);
+  refreshSketchVisual();
+}
+function refreshSketchVisual(){
+  if (!sketchGroup) return;
+  while (sketchMarkers.children.length) sketchMarkers.remove(sketchMarkers.children[0]);
+  const world = sketchPts.map(p=>sketchLocalToWorld(p, sketchPlaneAxis));
+  world.forEach((w,i)=>{
+    const color = i===sketchDragIdx ? 0xffd166 : i===sketchSelIdx ? 0xff6b4a : 0x39d3ff;
+    const m = new THREE.Mesh(new THREE.SphereGeometry(1.6,10,8), new THREE.MeshBasicMaterial({color}));
+    m.position.set(w[0],w[1],w[2]);
+    sketchMarkers.add(m);
+  });
+  const closed = !!(sketchNode && sketchNode.properties.closed) && world.length >= 3;
+  const linePts = closed ? world.concat([world[0]]) : world;   // draw the closing segment back to point 0
+  const pos = new Float32Array(linePts.length*3);
+  linePts.forEach((w,i)=>{ pos[i*3]=w[0]; pos[i*3+1]=w[1]; pos[i*3+2]=w[2]; });
+  sketchLine.geometry.dispose();
+  sketchLine.geometry = new THREE.BufferGeometry();
+  sketchLine.geometry.setAttribute('position', new THREE.BufferAttribute(pos,3));
+}
+function commitSketchPts(){
+  if (!sketchNode) return;
+  const node = sketchNode, name = sketchParam;
+  const pts = sketchPts.map(p=>[p[0],p[1]]);
+  node.properties[name] = pts;
+  for (const w of (node.widgets||[])) if (w.cadParam===name) w.value = pts;
+  onParamChange(node);
+  if (typeof lcanvas!=='undefined' && lcanvas) lcanvas.setDirty(true,true);
+}
+function sketchPlaneLocked(){                   // true when the `plane` socket is wired — it drives the seat
+  if (!sketchNode) return false;
+  return (sketchNode.inputs||[]).some(s => (s.cadName||s.name)==='plane' && s.link != null);
+}
+function enterCurveDrawMode(node, name){
+  if (gizmoNode) exitGizmoEdit();
+  exitCurveDrawMode();                   // only one at a time
+  sketchNode = node; sketchParam = name;
+  sketchPlaneAxis = node.properties.plane || 'XY';
+  sketchDragIdx = null; sketchSelIdx = null;
+  sketchPts = (node.properties[name] || []).map(p=>[+p[0]||0, +p[1]||0]);
+  node._sketchPrevMode = node.previewMode;
+  if (node.previewMode !== 'on'){ node.previewMode = 'on';
+    const ew=(node.widgets||[]).find(w=>w.isEye); if(ew) ew.name = eyeLabel('on'); }
+  buildSketchGroup();
+  document.getElementById('sketch-bar').classList.add('open');
+  document.getElementById('sketch-live').classList.toggle('on', liveMode);
+  const pbox = document.getElementById('sketch-plane-btns'); pbox.innerHTML='';
+  ['XY','XZ','YZ'].forEach(ax=>{
+    const b=document.createElement('button'); b.className='tb-btn'; b.textContent=ax;
+    b.onclick=()=> setSketchPlane(ax);
+    pbox.appendChild(b);
+  });
+  const mbox = document.getElementById('sketch-mode-btns'); mbox.innerHTML='';
+  ['polyline','spline'].forEach(mo=>{
+    const b=document.createElement('button'); b.className='tb-btn'; b.textContent=mo;
+    b.onclick=()=> setSketchMode(mo);
+    mbox.appendChild(b);
+  });
+  document.getElementById('sketch-closed').onchange = e=> setSketchClosed(e.target.checked);
+  document.getElementById('sketch-del').onclick = ()=>{ if (sketchSelIdx!=null) sketchDeletePoint(sketchSelIdx); };
+  refreshSketchBarButtons();
+  if (lcanvas && lcanvas.selectNode) lcanvas.selectNode(node);
+}
+function exitCurveDrawMode(){
+  if (!sketchNode) return;
+  const node = sketchNode;
+  commitSketchPts();
+  if (node._sketchPrevMode !== undefined){
+    node.previewMode = node._sketchPrevMode; delete node._sketchPrevMode;
+    const ew=(node.widgets||[]).find(w=>w.isEye); if(ew) ew.name = eyeLabel(node.previewMode);
+  }
+  sketchNode = null; sketchParam = null; sketchDragIdx = null; sketchSelIdx = null;
+  if (sketchGroup){ viewer.scene.remove(sketchGroup); sketchGroup = null; sketchLine = null; sketchMarkers = null; }
+  document.getElementById('sketch-bar').classList.remove('open');
+  window.runGraph();
+}
+// exposed for the inline onclick="exitCurveDrawMode()" (module top-level
+// bindings are NOT window properties, unlike classic scripts — every other
+// onclick-called function in this file is explicitly window.-assigned for
+// the same reason; this one and exitGizmoEdit's were missed, which is why
+// their "✓ Done" buttons silently did nothing while Esc (a direct in-module
+// call) still worked).
+window.exitCurveDrawMode = exitCurveDrawMode;
+
+// live-edit the plane/mode/closed settings from the sketch-bar itself, so
+// switching them doesn't require leaving and re-entering draw mode.
+function refreshSketchBarButtons(){
+  if (!sketchNode) return;
+  document.getElementById('sketch-bar-label').textContent =
+    'Drawing: ' + (sketchNode.title || sketchNode.cadType);
+  const locked = sketchPlaneLocked();
+  const pbox = document.getElementById('sketch-plane-btns');
+  [...pbox.children].forEach(b=>{
+    b.classList.toggle('primary', b.textContent===sketchPlaneAxis);
+    b.disabled = locked;
+    b.title = locked ? 'Driven by the wired plane input — unwire it to pick XY/XZ/YZ here' : 'Construction plane';
+  });
+  const mbox = document.getElementById('sketch-mode-btns');
+  const mode = sketchNode.properties.mode || 'polyline';
+  [...mbox.children].forEach(b=> b.classList.toggle('primary', b.textContent===mode));
+  document.getElementById('sketch-closed').checked = !!sketchNode.properties.closed;
+  document.getElementById('sketch-del').disabled = (sketchSelIdx==null);
+}
+function setSketchNodeParam(name, value){
+  if (!sketchNode) return;
+  sketchNode.properties[name] = value;
+  for (const w of (sketchNode.widgets||[])) if (w.cadParam===name) w.value = value;
+  onParamChange(sketchNode);
+  if (typeof lcanvas!=='undefined' && lcanvas) lcanvas.setDirty(true,true);
+}
+function setSketchPlane(axis){
+  if (!sketchNode || sketchPlaneAxis===axis || sketchPlaneLocked()) return;
+  const oldAxis = sketchPlaneAxis;
+  sketchPts = sketchPts.map(p => sketchWorldToLocal(sketchLocalToWorld(p, oldAxis), axis));  // preserve world position
+  sketchPlaneAxis = axis;
+  setSketchNodeParam('plane', axis);
+  if (sketchGroup) viewer.scene.remove(sketchGroup);
+  buildSketchGroup();               // rebuilds the plane helper + re-adds markers/line from sketchPts
+  commitSketchPts();
+  refreshSketchBarButtons();
+}
+function setSketchMode(mode){
+  setSketchNodeParam('mode', mode);
+  refreshSketchBarButtons();
+}
+function setSketchClosed(closed){
+  setSketchNodeParam('closed', closed);
+  refreshSketchVisual();          // toggling closed changes the drawn loop immediately, not just the param
+  refreshSketchBarButtons();
 }
 
 // ── serialize Litegraph -> our graph JSON ──
@@ -1060,6 +1659,7 @@ function toGraphJSON(name){
 // ── rebuild Litegraph from our graph JSON (round-trip, incl. MCP-made graphs) ──
 function fromGraphJSON(data){
   if (gizmoNode) exitGizmoEdit();
+  if (sketchNode) exitCurveDrawMode();
   loadingGraph = true;
   lgraph.clear();
   const map = {};
@@ -1118,6 +1718,7 @@ function fromGraphJSON(data){
     }
     if (node.cadType === 'CodeBlock') updateCbWired(node);   // grey out wired params
     updateGizmoLockedWidgets(node);                          // grey gizmo binds when locked
+    updateParamSocketWired(node);                             // grey any param whose socket is wired
     node.size = node.computeSize(); node.size[0] = Math.max(node.size[0], 150);
   }
   nodeByGraphId = Object.assign({}, map);   // disk ids -> node (matches /ui until next save)
@@ -1244,8 +1845,7 @@ function scheduleLive(){
 }
 window.toggleLive = function(){
   liveMode = !liveMode;
-  const b = document.getElementById('btn-live');
-  b.classList.toggle('on', liveMode);
+  document.querySelectorAll('.js-live-btn').forEach(b=>b.classList.toggle('on', liveMode));
   if(liveMode) scheduleLive();
 };
 window.toggleFastDrag = function(){
@@ -1311,6 +1911,7 @@ function cloneSelected(){
 function deleteSelected(){
   const ns = selectedNodes(); if (!ns.length) return;
   if (gizmoNode && ns.includes(gizmoNode)) exitGizmoEdit();
+  if (sketchNode && ns.includes(sketchNode)) exitCurveDrawMode();
   for (const n of ns) lgraph.remove(n);
   lcanvas.selected_nodes = {};
   lcanvas.setDirty(true, true);
@@ -1323,8 +1924,12 @@ document.addEventListener('keydown', (e)=>{
   const k = (e.key || '').toLowerCase();
   if (e.ctrlKey && !e.shiftKey && k === 'g'){ e.preventDefault(); groupSelected(); }
   else if (e.ctrlKey && !e.shiftKey && k === 'b'){ e.preventDefault(); toggleBypassSelected(); }
+  else if ((k === 'delete' || k === 'backspace') && sketchNode && sketchSelIdx!=null){
+    e.preventDefault(); sketchDeletePoint(sketchSelIdx);
+  }
   else if (k === 'delete'){ e.preventDefault(); deleteSelected(); }
   else if (k === 'escape' && gizmoNode){ e.preventDefault(); exitGizmoEdit(); }
+  else if (k === 'escape' && sketchNode){ e.preventDefault(); exitCurveDrawMode(); }
   else if (k === 'f' && !e.ctrlKey && !e.metaKey){ e.preventDefault(); frameView(); }
 });
 
@@ -1480,6 +2085,7 @@ function applyGizmoPrefs(){
 
 function enterGizmoEdit(node){
   exitGizmoEdit();                       // only one at a time
+  if (sketchNode) exitCurveDrawMode();
   gizmoNode = node;
   const g = node._gizmo;
   // force this node visible while editing so you see what you move, then run
@@ -1530,6 +2136,7 @@ function exitGizmoEdit(){
   refreshGizmoButtons();
   showGizmoHint(null);
 }
+window.exitGizmoEdit = exitGizmoEdit;   // pre-existing "✓ Done" (gizmo-bar) had the same missing-window bug
 
 // write a value back onto a node param + its widget(s), clamped to the catalog range
 function gizmoWriteParam(node, name, raw){
@@ -1923,16 +2530,52 @@ function initViewer(){
   transformControls.addEventListener('objectChange', ()=> gizmoDragUpdate());
 
   // click-to-select: a non-drag click picks the preview under it and selects the
-  // owning graph node (the nav ViewHelper + gizmo get first refusal).
+  // owning graph node (the nav ViewHelper + gizmo get first refusal). While a
+  // Curve on Plane is being drawn (sketchNode), clicks add/move/delete its
+  // points instead — first refusal over pick-to-select (see enterCurveDrawMode).
   let vDown = null;
-  canvas.addEventListener('pointerdown', e=>{ vDown=[e.clientX,e.clientY]; });
+  canvas.addEventListener('pointerdown', e=>{
+    vDown=[e.clientX,e.clientY];
+    if (sketchNode && e.button===0){
+      const hit = sketchHitTest(e.clientX, e.clientY);
+      if (hit>=0 && e.shiftKey){ sketchDeletePoint(hit); vDown=null; return; }
+      if (hit>=0){ sketchDragIdx=hit; viewer.controls.enabled=false; refreshSketchVisual(); }
+    }
+  });
+  canvas.addEventListener('pointermove', e=>{
+    if (!sketchNode || sketchDragIdx==null) return;
+    const p = sketchIntersect(e.clientX, e.clientY);
+    if (p){ sketchPts[sketchDragIdx]=p; refreshSketchVisual(); commitSketchPts(); }
+  });
+  canvas.addEventListener('contextmenu', e=>{
+    if (!sketchNode) return;
+    e.preventDefault();
+    const hit = sketchHitTest(e.clientX, e.clientY);
+    if (hit>=0) sketchDeletePoint(hit);
+  });
   canvas.addEventListener('pointerup', (e)=>{
+    if (sketchNode && sketchDragIdx!=null){
+      const idx = sketchDragIdx;
+      const moved = vDown ? Math.hypot(e.clientX-vDown[0], e.clientY-vDown[1]) : 999;
+      sketchDragIdx=null; viewer.controls.enabled=true; vDown=null;
+      if (moved <= 5){ sketchSelIdx = (sketchSelIdx===idx) ? null : idx; refreshSketchBarButtons(); }  // plain click = toggle select
+      refreshSketchVisual();
+      return;
+    }
     if (transformControls && transformControls.dragging){ vDown=null; return; }  // gizmo drag
     viewer.viewHelper.center.copy(viewer.controls.target);
     if (viewer.viewHelper.handleClick(e)){ vDown=null; return; }   // nav gizmo consumed it
     if (!vDown) return;
     const moved = Math.hypot(e.clientX-vDown[0], e.clientY-vDown[1]); vDown=null;
     if (moved > 5) return;                                          // a drag (orbit), not a pick
+    if (sketchNode){
+      const p = sketchIntersect(e.clientX, e.clientY);
+      if (p){                                  // insert by nearest segment, so it also makes sense on a closed loop
+        sketchPts.splice(sketchInsertIndex(p), 0, p);
+        sketchSelIdx=null; commitSketchPts(); refreshSketchVisual(); refreshSketchBarButtons();
+      }
+      return;
+    }
     const id = viewer.pick(e.clientX, e.clientY);
     if (id) selectNodeById(id);
   });

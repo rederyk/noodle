@@ -383,6 +383,25 @@ register(NodeDef("Spline", "curves", "Spline",
     description="Smooth spline (B-spline) through a sequence of points. Wire "
                 "several points and/or a single list of points."))
 
+register(NodeDef("CurveOnPlane", "curves", "Curve on Plane",
+    inputs=[Socket("plane", WIRE_PLANE, required=False)],
+    params=[Param("plane", "select", "plane", "XY", widget="select",
+                  options=["XY", "XZ", "YZ"],
+                  code_map={"XY": "Plane.XY", "XZ": "Plane.XZ", "YZ": "Plane.YZ"}),
+            Param("mode", "select", "mode", "polyline", widget="select",
+                  options=["polyline", "spline"]),
+            Param("closed", "bool", "closed", False, widget="checkbox"),
+            Param("points", "curve3d", "points", [], widget="curve3d", raw=True)],
+    outputs=_cv(),
+    code_template={"algebra": "_curve_draw({points}, {mode}, {closed}, {plane})"},
+    description="Draw a curve by clicking points directly in the 3D viewport "
+                "(✎ Draw button). Points are authored flat in the plane's local "
+                "(u, v) and re-seated by `plane`: pick XY/XZ/YZ, or wire in any "
+                "Plane (Plane Origin, Bounding Plane, Divide Curve frames…) to "
+                "place/orient the curve dynamically. Wiring `plane` locks the "
+                "XY/XZ/YZ picker (on the node and in ✎ Draw) since the wire now "
+                "drives it."))
+
 # --- curve evaluation & division (the frames layer) ---
 register(NodeDef("DivideCurve", "curves", "Divide Curve",
     inputs=[Socket("curve", WIRE_CURVE)] + _pin("count"),
@@ -945,6 +964,23 @@ register(NodeDef("Bounds", "data", "Bounds",
     outputs=_data("domain"),
     code_template={"algebra": "_bounds({list})"},
     description="The [min, max] domain spanning a list of numbers."))
+
+register(NodeDef("GraphMapper", "data", "Graph Mapper",
+    inputs=_pin("t"),
+    params=[_f("t", 0.0, 0.0, 1.0, 0.01, label="t"),
+            Param("mode", "select", "mode", "smooth", widget="select",
+                  options=["smooth", "linear", "bezier"]),
+            Param("curve", "curve", "curve",
+                  [{"p": [0.0, 0.0], "hi": None, "ho": None},
+                   {"p": [1.0, 1.0], "hi": None, "ho": None}],
+                  widget="curve", raw=True)],
+    outputs=_data(),
+    code_template={"algebra": "_graphmap({t}, {curve}, {mode})"},
+    description="An editable function curve f(x)->y drawn on the node. Wire a t "
+                "(or a list/Range of t) into it to sample the curve — smooth "
+                "(monotone, no overshoot), linear, or bezier with tangent handles. "
+                "Fans out over a list of t (Divide Curve t → radii → variable "
+                "loft). Pipe the output through Remap to reach a target range."))
 
 # ===========================================================================
 # 10. Math
