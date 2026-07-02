@@ -260,6 +260,17 @@ register(NodeDef("Torus", "primitives_3d", "Torus",
     code_template={"algebra": "Torus({major_radius}, {minor_radius}, major_angle={arc})"},
     description="Torus / ring. `arc` < 360 makes a partial ring (a C-shape)."))
 
+register(NodeDef("Wedge", "primitives_3d", "Wedge",
+    inputs=_origin_in() + _pin("xsize", "ysize", "zsize"),
+    params=[_f("xsize", 10, 0.1, 500), _f("ysize", 10, 0.1, 500), _f("zsize", 10, 0.1, 500),
+            _f("xmin", 2, 0, 500), _f("zmin", 2, 0, 500),
+            _f("xmax", 8, 0, 500), _f("zmax", 8, 0, 500)],
+    outputs=_geo(),
+    code_template={"algebra": "Wedge({xsize}, {ysize}, {zsize}, {xmin}, {zmin}, {xmax}, {zmax})"},
+    description="Wedge: a box whose top face shrinks to the rectangle "
+                "[xmin..xmax] x [zmin..zmax] (ramps, tapered blocks). Keep "
+                "0 <= xmin < xmax <= xsize and likewise for z."))
+
 register(NodeDef("ConstructPoint", "vector", "Construct Point",
     inputs=[Socket("x", WIRE_DATA, required=False),
             Socket("y", WIRE_DATA, required=False),
@@ -319,6 +330,27 @@ register(NodeDef("Polygon", "primitives_2d", "Regular Polygon",
                 "measures `radius` to the corners (circumscribed); turn it off to "
                 "measure to the edge midpoints (inscribed). `rotation` spins it. "
                 "Feed a Surface (Make Face) node to fill it into a face."))
+
+register(NodeDef("Star", "primitives_2d", "Star",
+    inputs=_origin_in() + _pin("outer_radius", "inner_radius", "points"),
+    params=[_f("outer_radius", 10, 0.1, 500), _f("inner_radius", 5, 0.1, 500),
+            _i("points", 5, 2, 64)],
+    outputs=_cv(),
+    code_template={"algebra": "_star({outer_radius}, {inner_radius}, {points})"},
+    description="Star with `points` spikes alternating between the outer and "
+                "inner radius, as a closed curve. Feed a Surface (Make Face) node "
+                "to fill it into a face."))
+
+register(NodeDef("Slot", "primitives_2d", "Slot",
+    inputs=_origin_in() + _pin("separation", "height"),
+    params=[_f("separation", 20, 0.1, 500, label="separation"),
+            _f("height", 6, 0.1, 500),
+            _f("rotation", 0, -360, 360, label="rotation")],
+    outputs=_cv(),
+    code_template={"algebra": "_outline(SlotCenterToCenter({separation}, {height}, rotation={rotation}))"},
+    description="Slot (oblong hole): two half-circles of diameter `height` whose "
+                "centres sit `separation` apart, as a closed curve. Feed a Surface "
+                "(Make Face) node, then Extrude/Subtract for the classic slot cut."))
 
 register(NodeDef("Text", "primitives_2d", "Text",
     inputs=_origin_in(),
@@ -382,6 +414,26 @@ register(NodeDef("Spline", "curves", "Spline",
     code_template={"algebra": "Spline(*_curve_points([{points}]))"},
     description="Smooth spline (B-spline) through a sequence of points. Wire "
                 "several points and/or a single list of points."))
+
+register(NodeDef("Bezier", "curves", "Bezier",
+    inputs=[Socket("points", WIRE_VECTOR, multiple=True)],
+    outputs=_cv(),
+    code_template={"algebra": "Bezier(*_curve_points([{points}]))"},
+    description="Bezier curve from control points: it starts at the first point, "
+                "ends at the last, and is pulled toward (without touching) the "
+                "ones in between. Unlike Spline it does NOT pass through them."))
+
+register(NodeDef("Helix", "curves", "Helix",
+    inputs=_pin("pitch", "height", "radius"),
+    params=[_f("pitch", 5, 0.1, 500), _f("height", 25, 0.1, 500),
+            _f("radius", 8, 0.1, 500),
+            _f("cone_angle", 0, -60, 60, label="cone angle"),
+            Param("lefthand", "bool", "left-handed", False, widget="checkbox")],
+    outputs=_cv(),
+    code_template={"algebra": "Helix({pitch}, {height}, {radius}, cone_angle={cone_angle}, lefthand={lefthand})"},
+    description="Helix around the Z axis: `pitch` is the climb per turn, `height` "
+                "the total height. `cone angle` tapers it (a spiral on a cone). "
+                "Feed into Sweep.path for springs and thread-like features."))
 
 register(NodeDef("CurveOnPlane", "curves", "Curve on Plane",
     inputs=[Socket("plane", WIRE_PLANE, required=False)],
@@ -694,6 +746,20 @@ register(NodeDef("Section", "modifiers", "Section",
                 "orientation and position). Defaults to the XY plane through the "
                 "global origin when nothing is wired."))
 
+register(NodeDef("Split", "modifiers", "Split",
+    inputs=[Socket("shape", WIRE_SOLID),
+            Socket("plane", WIRE_PLANE, required=False)],
+    params=[Param("keep", "select", "keep", "top", widget="select",
+                  options=["top", "bottom", "both"],
+                  code_map={"top": "Keep.TOP", "bottom": "Keep.BOTTOM",
+                            "both": "Keep.BOTH"})],
+    outputs=_geo(),
+    code_template={"algebra": "_split({shape}, {plane}, {keep})"},
+    description="Cut a shape in two with a plane and keep the side above it "
+                "(`top`), below it (`bottom`) or `both` halves. Wire a Bounding "
+                "Plane / Plane node to place the cut; defaults to XY through the "
+                "origin. Unlike Section (a 2D slice), Split keeps solid geometry."))
+
 # ===========================================================================
 # 6. Transforms
 # ===========================================================================
@@ -763,6 +829,30 @@ register(NodeDef("ArrayLinear", "transform", "Linear Array",
     code_template={"algebra": "[Pos({dx}*i, {dy}*i, {dz}*i) * {shape} for i in range({count})]"},
     description="Repeat a shape along a vector -> list."))
 
+register(NodeDef("ArrayPolar", "transform", "Polar Array",
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE])] + _pin("count", "angle"),
+    params=[_i("count", 6, 1, 200), _f("angle", 360, -360, 360),
+            Param("axis", "select", "axis", "Z", widget="select",
+                  options=["X", "Y", "Z"],
+                  code_map={"X": "Axis.X", "Y": "Axis.Y", "Z": "Axis.Z"})],
+    outputs=[Socket("result", WIRE_SOLID)],
+    code_template={"algebra": "_array_polar({shape}, {count}, {angle}, {axis})"},
+    description="Repeat a shape around a global axis -> list (bolt circles, "
+                "spokes). A full 360 spaces `count` copies evenly; a partial "
+                "`angle` fans them between 0 and angle. Rotation is about the "
+                "axis through the origin — Move the shape off-axis first."))
+
+register(NodeDef("Align", "transform", "Align",
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE]),
+            Socket("ref", WIRE_VECTOR, required=False),
+            Socket("target", WIRE_VECTOR, required=False)],
+    outputs=_geo(),
+    code_template={"algebra": "_align({shape}, {ref}, {target})"},
+    output_follows="shape",
+    description="Translate a shape so `ref` (default: its bounding-box centre) "
+                "lands on `target` (default: the origin). Unwired it just centres "
+                "the shape; wire points to snap a feature onto a location."))
+
 # ===========================================================================
 # 7. Planes
 # ===========================================================================
@@ -786,6 +876,24 @@ register(NodeDef("BoundingPlane", "plane", "Bounding Plane",
                 "the input geometry's bounding box and slid along its normal by "
                 "position (0=min, 0.5=centre, 1=max). A real plane on the wire — "
                 "feed it to Section or any plane input; works for any geometry."))
+
+register(NodeDef("PlaneNormal", "plane", "Plane (normal)",
+    inputs=[Socket("origin", WIRE_VECTOR, required=False),
+            Socket("normal", WIRE_VECTOR, required=False)],
+    outputs=[Socket("plane", WIRE_PLANE)],
+    code_template={"algebra": "_plane_normal({origin}, {normal})"},
+    description="A Plane from an origin point and a normal (z) direction — the "
+                "free-form way to orient work planes. Defaults: origin (0,0,0), "
+                "normal +Z. Wire lists to get many planes (fans out)."))
+
+register(NodeDef("MovePlane", "plane", "Move Plane",
+    inputs=[Socket("plane", WIRE_PLANE)] + _pin("distance"),
+    params=[_f("distance", 5, -500, 500)],
+    outputs=[Socket("plane", WIRE_PLANE)],
+    code_template={"algebra": "_plane_offset({plane}, {distance})"},
+    description="Slide a plane along its own normal by `distance`. Wire a list "
+                "of distances (Range) to get a stack of parallel planes (fans "
+                "out) — e.g. many Sections through a part."))
 
 register(NodeDef("DeconstructPlane", "plane", "Plane Origin",
     inputs=[Socket("plane", WIRE_PLANE)],
@@ -840,6 +948,47 @@ register(NodeDef("Vector", "vector", "Vector",
     code_template={"algebra": "Vector({x}, {y}, {z})"},
     description="A 3D vector. Each component is a widget OR an input; wire a list "
                 "of numbers into a component to build a list of vectors."))
+
+register(NodeDef("CrossProduct", "vector", "Cross Product",
+    inputs=[Socket("a", WIRE_VECTOR), Socket("b", WIRE_VECTOR)],
+    outputs=[Socket("vector", WIRE_VECTOR)],
+    code_template={"algebra": "_pt({a}).cross(_pt({b}))"},
+    description="Cross product a x b: the vector perpendicular to both. Feed "
+                "into Plane (normal) to build a plane from two directions."))
+
+register(NodeDef("DotProduct", "vector", "Dot Product",
+    inputs=[Socket("a", WIRE_VECTOR), Socket("b", WIRE_VECTOR)],
+    outputs=_data(),
+    code_template={"algebra": "_pt({a}).dot(_pt({b}))"},
+    description="Dot product a . b (a number). Zero = perpendicular; negative = "
+                "pointing away from each other."))
+
+register(NodeDef("Normalize", "vector", "Normalize",
+    inputs=[Socket("vector", WIRE_VECTOR)],
+    outputs=[Socket("vector", WIRE_VECTOR)],
+    code_template={"algebra": "_pt({vector}).normalized()"},
+    description="The unit vector (length 1) in the same direction."))
+
+register(NodeDef("VectorLength", "vector", "Vector Length",
+    inputs=[Socket("vector", WIRE_VECTOR)],
+    outputs=_data("length"),
+    code_template={"algebra": "_pt({vector}).length"},
+    description="The length (magnitude) of a vector — also the distance of a "
+                "point from the origin."))
+
+register(NodeDef("Distance", "vector", "Distance",
+    inputs=[Socket("a", WIRE_VECTOR), Socket("b", WIRE_VECTOR)],
+    outputs=_data(),
+    code_template={"algebra": "(_pt({a}) - _pt({b})).length"},
+    description="Distance between two points (a number). Fans out over lists — "
+                "e.g. distances from a grid of points to an attractor, into "
+                "Remap, into a radius."))
+
+register(NodeDef("Midpoint", "vector", "Midpoint",
+    inputs=[Socket("a", WIRE_VECTOR), Socket("b", WIRE_VECTOR)],
+    outputs=[Socket("point", WIRE_VECTOR)],
+    code_template={"algebra": "((_pt({a}) + _pt({b})) / 2)"},
+    description="The point halfway between two points."))
 
 # ===========================================================================
 # 9. Lists / data trees (subset)
@@ -919,6 +1068,50 @@ register(NodeDef("Concat", "data", "Concat",
     outputs=_data(),
     code_template={"algebra": "(list({a}) + list({b}))"},
     description="Join two lists end to end."))
+
+register(NodeDef("ListRepeat", "data", "List Repeat",
+    inputs=[Socket("value", WIRE_DATA, list_access=True)] + _pin("count"),
+    params=[_i("count", 3, 0, 100000, soft_max=200)],
+    outputs=_data(),
+    code_template={"algebra": "_repeat({value}, {count})"},
+    description="Repeat a value `count` times -> list (a whole list is "
+                "concatenated `count` times). The fan-out multiplier."))
+
+register(NodeDef("ListShift", "data", "List Shift",
+    inputs=[Socket("list", WIRE_DATA, list_access=True)] + _pin("offset"),
+    params=[_i("offset", 1, -100000, 100000, widget="input"),
+            Param("wrap", "bool", "wrap", True, widget="checkbox")],
+    outputs=_data(),
+    code_template={"algebra": "_shift({list}, {offset}, {wrap})"},
+    description="Shift a list by `offset` positions. `wrap` (default) cycles "
+                "items around; off drops them from the end instead. Shift a copy "
+                "against the original to pair each item with its neighbour."))
+
+register(NodeDef("ListFilter", "data", "List Filter",
+    inputs=[Socket("list", WIRE_DATA, list_access=True),
+            Socket("pattern", WIRE_DATA, required=False, list_access=True)],
+    params=[Param("invert", "bool", "invert", False, widget="checkbox")],
+    outputs=_data(),
+    code_template={"algebra": "_dispatch({list}, {pattern}, {invert})"},
+    description="Keep the items where the boolean `pattern` is True (the "
+                "pattern cycles: [True, False] keeps every other item — the "
+                "Grasshopper Dispatch/Cull idiom). `invert` keeps the False side."))
+
+register(NodeDef("ListUnique", "data", "List Unique",
+    inputs=[Socket("list", WIRE_DATA, list_access=True)],
+    outputs=_data(),
+    code_template={"algebra": "_unique({list})"},
+    description="Drop duplicate items, keeping the first occurrence of each."))
+
+register(NodeDef("Random", "data", "Random",
+    inputs=_pin("count", "min", "max", "seed"),
+    params=[_i("count", 10, 0, 100000, soft_max=200),
+            _f("min", 0, widget="input"), _f("max", 1, widget="input"),
+            _i("seed", 1, 0, 100000, widget="input")],
+    outputs=_data(),
+    code_template={"algebra": "_randlist({count}, {min}, {max}, {seed})"},
+    description="`count` uniform random numbers in [min, max], deterministic "
+                "per `seed` — jitter for radii/heights/rotations (fans out)."))
 
 # --- domains, series, remap (parametric glue) ---
 register(NodeDef("ConstructDomain", "data", "Domain",
@@ -1013,6 +1206,53 @@ register(NodeDef("Expression", "math", "Expression",
     code_template={"algebra": "({expr})"},
     description="Evaluate an expression of inputs x, y."))
 
+
+def _mathfn(type_, label, expr, desc):
+    """A one-input math function node; fans out over a list of x."""
+    register(NodeDef(type_, "math", label,
+        inputs=[Socket("x", WIRE_DATA)],
+        outputs=_data(),
+        code_template={"algebra": expr},
+        description=desc))
+
+
+_mathfn("Sin", "Sin", "math.sin(math.radians({x}))", "Sine of x (degrees).")
+_mathfn("Cos", "Cos", "math.cos(math.radians({x}))", "Cosine of x (degrees).")
+_mathfn("Tan", "Tan", "math.tan(math.radians({x}))", "Tangent of x (degrees).")
+_mathfn("ArcSin", "ArcSin", "math.degrees(math.asin({x}))",
+        "Inverse sine -> degrees (x in [-1, 1]).")
+_mathfn("ArcCos", "ArcCos", "math.degrees(math.acos({x}))",
+        "Inverse cosine -> degrees (x in [-1, 1]).")
+_mathfn("ArcTan", "ArcTan", "math.degrees(math.atan({x}))",
+        "Inverse tangent -> degrees.")
+_mathfn("Sqrt", "Sqrt", "math.sqrt({x})", "Square root of x.")
+_mathfn("Abs", "Abs", "abs({x})", "Absolute value of x.")
+_mathfn("Floor", "Floor", "math.floor({x})", "Round x down to an integer.")
+_mathfn("Ceil", "Ceil", "math.ceil({x})", "Round x up to an integer.")
+
+register(NodeDef("Round", "math", "Round",
+    inputs=[Socket("x", WIRE_DATA)],
+    params=[_i("decimals", 0, 0, 12, widget="input")],
+    outputs=_data(),
+    code_template={"algebra": "round({x}, {decimals})"},
+    description="Round x to `decimals` decimal places."))
+
+_binop("Modulo", "Modulo", "%")
+
+register(NodeDef("Min", "math", "Min",
+    inputs=[Socket("a", WIRE_DATA), Socket("b", WIRE_DATA)],
+    outputs=_data(),
+    code_template={"algebra": "min({a}, {b})"},
+    description="The smaller of a and b. For a whole list use Bounds (its "
+                "domain is [min, max])."))
+
+register(NodeDef("Max", "math", "Max",
+    inputs=[Socket("a", WIRE_DATA), Socket("b", WIRE_DATA)],
+    outputs=_data(),
+    code_template={"algebra": "max({a}, {b})"},
+    description="The larger of a and b. For a whole list use Bounds (its "
+                "domain is [min, max])."))
+
 # ===========================================================================
 # 11. Panels / inspection
 # ===========================================================================
@@ -1035,6 +1275,26 @@ register(NodeDef("BoundingBox", "panel", "Bounding Box",
     outputs=[Socket("box", WIRE_SOLID)],
     code_template={"algebra": "{shape}.bounding_box()"},
     description="Bounding box of a shape."))
+
+register(NodeDef("Volume", "panel", "Volume",
+    inputs=[Socket("shape", WIRE_SOLID)],
+    outputs=_data("volume"),
+    code_template={"algebra": "{shape}.volume"},
+    description="Volume of a solid (model units cubed). Wire into a Panel to "
+                "read it."))
+
+register(NodeDef("Area", "panel", "Area",
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_SURFACE])],
+    outputs=_data("area"),
+    code_template={"algebra": "{shape}.area"},
+    description="Total surface area of a shape (for a solid: all its faces)."))
+
+register(NodeDef("CenterOfMass", "panel", "Center of Mass",
+    inputs=[Socket("shape", WIRE_SOLID)],
+    outputs=[Socket("point", WIRE_VECTOR)],
+    code_template={"algebra": "{shape}.center(CenterOf.MASS)"},
+    description="The centre of mass of a shape, as a point — wire into Align.ref "
+                "to balance a part on a location, or into a Panel to read it."))
 
 # ===========================================================================
 # 11b. Containers / legend — one typed pass-through per wire type. They colour
@@ -1181,6 +1441,38 @@ register(NodeDef("ExportSTL", "export", "Export STL",
     code_template={"algebra": "export_stl({shape}, {path})"},
     description="Write the shape to an STL file."))
 
+register(NodeDef("Export3MF", "export", "Export 3MF",
+    inputs=[Socket("shape", WIRE_SOLID)],
+    params=[Param("path", "str", "path", "output.3mf", widget="input")],
+    outputs=[],
+    code_template={"algebra": "_export_3mf({shape}, {path})"},
+    description="Write the shape to a 3MF file (the modern 3D-printing format: "
+                "mesh + units in one file)."))
+
+register(NodeDef("ExportGLTF", "export", "Export glTF",
+    inputs=[Socket("shape", WIRE_SOLID)],
+    params=[Param("path", "str", "path", "output.gltf", widget="input")],
+    outputs=[],
+    code_template={"algebra": "export_gltf({shape}, {path})"},
+    description="Write the shape to a glTF file (web/AR viewers, three.js)."))
+
+register(NodeDef("ExportSVG", "export", "Export SVG",
+    inputs=[Socket("shape", WIRE_SURFACE, accepts=[WIRE_CURVE])],
+    params=[Param("path", "str", "path", "output.svg", widget="input")],
+    outputs=[],
+    code_template={"algebra": "_export_2d({shape}, {path}, 'svg')"},
+    description="Write 2D geometry (a sketch, curve, or a Section of a solid) "
+                "to an SVG drawing — the XY projection. Laser cutting, plotting, "
+                "documentation."))
+
+register(NodeDef("ExportDXF", "export", "Export DXF",
+    inputs=[Socket("shape", WIRE_SURFACE, accepts=[WIRE_CURVE])],
+    params=[Param("path", "str", "path", "output.dxf", widget="input")],
+    outputs=[],
+    code_template={"algebra": "_export_2d({shape}, {path}, 'dxf')"},
+    description="Write 2D geometry (a sketch, curve, or a Section of a solid) "
+                "to a DXF drawing — the XY projection. CNC/laser toolchains."))
+
 # ===========================================================================
 # 14. Group nodes (builder mode)
 # ===========================================================================
@@ -1228,14 +1520,23 @@ _OUTPUT_SUBTYPES = {
     "Add": "number", "SubtractNum": "number", "Multiply": "number",
     "Divide": "number", "Power": "number", "Clamp": "number", "Expression": "number",
     "Remap": "number", "CurveLength": "number", "ListLength": "integer",
+    "Sin": "number", "Cos": "number", "Tan": "number",
+    "ArcSin": "number", "ArcCos": "number", "ArcTan": "number",
+    "Sqrt": "number", "Abs": "number", "Round": "number",
+    "Modulo": "number", "Min": "number", "Max": "number",
+    "Floor": "integer", "Ceil": "integer",
+    "DotProduct": "number", "Distance": "number", "VectorLength": "number",
+    "Volume": "number", "Area": "number",
     # data -> list / domain
     "ListCreate": "list", "ListRange": "list", "ListReverse": "list",
     "ListSort": "list", "ListSlice": "list", "ListFlatten": "list",
     "Concat": "list", "Series": "list", "DivideDomain": "list",
+    "ListRepeat": "list", "ListShift": "list", "ListFilter": "list",
+    "ListUnique": "list", "Random": "list",
     "ConstructDomain": "domain", "Bounds": "domain",
     # curve -> line / polyline / spline / arc
-    "Line": "line", "Polyline": "polyline", "Spline": "spline",
-    "Arc3pt": "arc", "ArcCenter": "arc",
+    "Line": "line", "Polyline": "polyline", "Spline": "spline", "Bezier": "spline",
+    "Helix": "spline", "Arc3pt": "arc", "ArcCenter": "arc",
 }
 for _t, _st in _OUTPUT_SUBTYPES.items():
     _d = REGISTRY.get(_t)
