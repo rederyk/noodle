@@ -165,7 +165,7 @@ def get(node_type: str) -> NodeDef:
     try:
         return REGISTRY[node_type]
     except KeyError:
-        raise KeyError(f"Unknown node type: {node_type!r}")
+        raise KeyError(f"Unknown node type: {node_type!r}") from None
 
 
 def as_json() -> list[dict]:

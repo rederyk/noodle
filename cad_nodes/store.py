@@ -15,12 +15,28 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 
 from .graph import Graph
 
 DEFAULT_ROOT = os.environ.get("CAD_PROJECTS_DIR", "/app/projects")
+
+# A graph id is a single directory name under the store root. Rejecting
+# anything else (path separators, "..", hidden names) closes path traversal
+# for every surface that resolves ids to paths (REST, MCP, copilot).
+_GRAPH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,63}$")
+
+
+def validate_graph_id(graph_id: str) -> str:
+    """Return graph_id if it is a safe directory name, else raise ValueError."""
+    if not isinstance(graph_id, str) or not _GRAPH_ID_RE.fullmatch(graph_id):
+        raise ValueError(
+            f"Invalid project name {graph_id!r}: use 1-64 chars of letters, "
+            "digits, '.', '_', '-' or spaces, starting with a letter or digit"
+        )
+    return graph_id
 
 
 class GraphStore:
@@ -29,7 +45,7 @@ class GraphStore:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def dir(self, graph_id: str) -> Path:
-        return self.root / graph_id
+        return self.root / validate_graph_id(graph_id)
 
     def exists(self, graph_id: str) -> bool:
         return (self.dir(graph_id) / "graph.json").exists()
