@@ -41,7 +41,49 @@ build the same graphs — in practice the most capable way to drive it today.
 - **Experimental in-app copilot**: natural-language → graph over any
   OpenAI-compatible endpoint (local Ollama by default) — handy for quick edits,
   still maturing.
+- **Feedback → guided PR**: an in-app form saves a self-contained report — graph
+  snapshot, per-node errors, version, logs — with a precise brief for a coding
+  agent, so your local Claude Code can reproduce it, fix it on a safe branch and
+  open a PR. Bug reports and "make it blue" alike. [See below](#feedback-that-turns-into-a-pr).
 - **Live per-node preview** with a per-node "eye" (auto / on / off).
+
+## Feedback that turns into a PR
+
+Almost everyone who runs noodle already has a coding agent on the same machine —
+so noodle treats **your local agent as the maintainer**. If something breaks, you
+have an idea, or you just want the viewport background a different colour, you
+don't open an issue and wait: you leave a feedback drop and let the agent action
+it, in parallel, while you keep modelling.
+
+**In the app** (⚙ Settings → *Show the Feedback / report button*) the form takes a
+severity — **bug / idea / question** — and a free-text message. On submit it writes
+a self-contained report to `feedback/<id>/` with everything an agent needs to
+reproduce, so there's no back-and-forth:
+
+- the app **version + git commit** and the **project** you were on;
+- the **client** (browser / URL) and the last **per-node errors**;
+- a **snapshot of the exact graph** (`graph.snapshot.json`) and recent
+  **backend logs** (`backend.log`);
+- a human-readable `report.md` that ends with a precise **brief for the coding
+  agent**, pointing it at the fix workflow.
+
+**On your machine**, point your coding agent at it — *"triage `feedback/`"* — and
+the bundled [`feedback-fix`](.claude/skills/feedback-fix/SKILL.md) skill takes
+over: it reads the report, **reproduces** from the graph snapshot, cuts a **safe
+branch with git checkpoints**, makes the fix under the repo rules, runs the tests,
+and opens a **PR** — carrying a **mandatory AI-use disclosure** of which agents and
+models did the work. The full procedure is in
+[`docs/FEEDBACK_FIX_GUIDE.md`](docs/FEEDBACK_FIX_GUIDE.md).
+
+So a throwaway wish — *"this button should be bigger"*, *"this fillet crashes on my
+part"* — becomes a structured, reproducible, reviewable change instead of a lost
+thought. The feedback carries its own telemetry **and** its own instructions; the
+agent does the rest. It's a small idea with a big consequence: the gap between
+*"this annoys me"* and *"here's a PR that fixes it"* collapses to one paragraph and
+one agent run.
+
+> The `feedback/` drop is **local and gitignored** — it can hold your project
+> details, so it stays on your machine and is never committed.
 
 ## Install & run
 
