@@ -13,6 +13,7 @@ The default root is taken from $CAD_PROJECTS_DIR, falling back to /app/projects
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -39,6 +40,22 @@ def validate_graph_id(graph_id: str) -> str:
     return graph_id
 
 
+def stamp_agent_tags(nodes) -> None:
+    """Fill the empty `date` param of ToAgent tag nodes at save time — the
+    provenance date the agent searches by ('il pezzo messo lì ieri'). Accepts
+    Node objects or plain node dicts, so both the GraphStore and the REST
+    save route can stamp."""
+    today = datetime.date.today().isoformat()
+    for n in nodes:
+        is_dict = isinstance(n, dict)
+        ntype = n["type"] if is_dict else n.type
+        if ntype != "ToAgent":
+            continue
+        params = n.setdefault("params", {}) if is_dict else n.params
+        if not params.get("date"):
+            params["date"] = today
+
+
 class GraphStore:
     def __init__(self, root: str | Path = DEFAULT_ROOT):
         self.root = Path(root)
@@ -63,6 +80,7 @@ class GraphStore:
         return Graph.from_dict(json.loads(gpath.read_text()))
 
     def save(self, graph_id: str, graph: Graph, description: str = "") -> None:
+        stamp_agent_tags(graph.nodes)
         d = self.dir(graph_id)
         d.mkdir(parents=True, exist_ok=True)
         (d / "graph.json").write_text(json.dumps(graph.to_dict(), indent=2))
