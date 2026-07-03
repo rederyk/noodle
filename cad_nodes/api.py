@@ -12,7 +12,9 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from . import catalog
-from .executor import execute_graph, export_graph
+from .executor import (execute_graph, export_graph, section_outline_file,
+                       section_outline_graph, slice_summary_file,
+                       slice_summary_graph)
 from .graph import Connection, Graph, Node
 from .store import GraphStore
 from .transpiler import parse_codeblock_params, transpile, transpile_with_map
@@ -216,6 +218,76 @@ def get_view(store: GraphStore, graph_id: str) -> dict | None:
 def get_panels(store: GraphStore, graph_id: str) -> dict:
     view = store.view(graph_id) or {}
     return view.get("panels", {})
+
+
+def _resolve_asset(workdir, path: str):
+    """Validate a project-relative STEP path (traversal-guarded)."""
+    target = (workdir / path).resolve()
+    if not target.is_relative_to(workdir.resolve()):
+        raise ValueError("path escapes the project directory")
+    if target.suffix.lower() not in (".step", ".stp", ".stl"):
+        raise ValueError("only STEP/.stp (exact) and .stl (arc-fitted) files "
+                         "are sliceable; gcode: fase 3")
+    if not target.exists():
+        raise ValueError(f"no such file {path!r} in the project")
+    return target
+
+
+def slice_summary(store: GraphStore, graph_id: str, path: Optional[str] = None,
+                  n_per_axis: int = 10) -> dict:
+    """Symbolic cross-section summary (retro-engineering perception+verify,
+    PLAN_RETROENG fase 1). `path=None` slices the graph's OWN result;
+    `path='assets/part.step'` (project-relative) slices that file. Returns the
+    summary dict; its 'text' field is the LLM-facing symbolic format."""
+    workdir = store.dir(graph_id)
+    n = max(2, min(int(n_per_axis), 40))
+    if path:
+        return slice_summary_file(_resolve_asset(workdir, path), workdir, n)
+    return slice_summary_graph(store.load(graph_id), workdir, n)
+
+
+def section_outline(store: GraphStore, graph_id: str, axis: str = "z",
+                    position: float = 0.0, path: Optional[str] = None) -> dict:
+    """The 'microscope' companion of slice_summary: ONE exact section at
+    `axis`=`position`, every loop edge by edge (type, 2D endpoints, radius/
+    center for arcs). Use it where the symbolic summary is ambiguous."""
+    workdir = store.dir(graph_id)
+    if path:
+        return section_outline_file(_resolve_asset(workdir, path), workdir,
+                                    axis, position)
+    return section_outline_graph(store.load(graph_id), workdir, axis, position)
+
+
+def agent_tags(store: GraphStore) -> list[dict]:
+    """The agent-facing provenance index: every ToAgent tag node across ALL
+    projects, with label, date (stamped at save), workflow (graph id), node id
+    and the upstream source it tags (node type + its file path when it is an
+    Import node). This is how 'retro-engineer part X in workflow Y' resolves."""
+    out = []
+    for gid in store.list():
+        try:
+            graph = store.load(gid)
+        except Exception:  # noqa: BLE001 — one broken project must not hide the rest
+            continue
+        for node in graph.nodes:
+            if node.type != "ToAgent":
+                continue
+            source = None
+            conn = next((c for c in graph.connections
+                         if c.to_node == node.id and c.to_socket == "value"), None)
+            if conn is not None:
+                try:
+                    src = graph.node(conn.from_node)
+                    source = {"node_id": src.id, "type": src.type}
+                    if src.params.get("path"):
+                        source["path"] = src.params["path"]
+                except KeyError:
+                    pass
+            out.append({"graph": gid, "node_id": node.id,
+                        "label": node.params.get("label", ""),
+                        "date": node.params.get("date", ""),
+                        "source": source})
+    return out
 
 
 def export(store: GraphStore, graph_id: str, fmt: str = "step") -> str:
