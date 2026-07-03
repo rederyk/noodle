@@ -229,13 +229,12 @@ def _mesh_volume(tris) -> float:
 def _mesh_section_loops(tris, axis: str, pos: float):
     """Slice the mesh with the plane axis=pos -> list of closed 2D loops
     (in-plane coords, ordered vertices, last != first)."""
-    import numpy as np
     ai = _AXIS_I[axis]
     ui, vi = _PROJ_I[axis]
     d = tris[:, :, ai] - pos
     hit = (d.min(axis=1) < 0) & (d.max(axis=1) > 0)
     segs = []
-    for T, dd in zip(tris[hit], d[hit]):
+    for T, dd in zip(tris[hit], d[hit], strict=True):
         pts = []
         for i, j in ((0, 1), (1, 2), (2, 0)):
             if dd[i] * dd[j] < 0:
@@ -244,7 +243,9 @@ def _mesh_section_loops(tris, axis: str, pos: float):
                 pts.append((p[ui], p[vi]))
         if len(pts) == 2:
             segs.append(pts)
-    q = lambda p: (round(p[0], 3), round(p[1], 3))
+    def q(p):
+        return (round(p[0], 3), round(p[1], 3))
+
     adj: dict = {}
     for a, b in segs:
         qa, qb = q(a), q(b)
@@ -261,7 +262,6 @@ def _mesh_section_loops(tris, axis: str, pos: float):
         while True:
             nxt = next((p for p in adj.get(cur, ()) if p != prev and p not in used), None)
             if nxt is None:
-                closed = start in adj.get(cur, ())
                 break
             loop.append(nxt)
             used.add(nxt)
@@ -482,7 +482,6 @@ def summarize_stl(path: str, n_per_axis: int = 10) -> dict:
     tris = _load_stl(path)
     if not len(tris):
         return {"success": False, "error": "empty or unreadable STL"}
-    import numpy as np
     lo = tris.reshape(-1, 3).min(axis=0)
     hi = tris.reshape(-1, 3).max(axis=0)
     size = hi - lo
