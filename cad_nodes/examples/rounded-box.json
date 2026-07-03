@@ -1,0 +1,10 @@
+{
+  "name": "rounded-box",
+  "nodes": [
+    {"id": "box", "type": "Box", "params": {"width": 40, "height": 25, "depth": 15}, "position": [0, 0]},
+    {"id": "fil", "type": "Fillet", "params": {"radius": 4}, "position": [220, 0], "preview": true}
+  ],
+  "connections": [
+    {"id": "k1", "from_node": "box", "from_socket": "result", "to_node": "fil", "to_socket": "part"}
+  ]
+}

@@ -113,6 +113,12 @@ _install_log_capture()
 @app.on_event("startup")
 async def _on_startup() -> None:
     _install_log_capture()
+    try:
+        seeded = GraphStore(PROJECTS_DIR).seed_examples()
+        if seeded:
+            logger.info("seeded example projects: %s", ", ".join(seeded))
+    except Exception:  # seeding is a nicety — never let it block startup
+        logger.exception("example seeding failed")
     logger.info("noodle backend ready (pid %s)", os.getpid())
 
 

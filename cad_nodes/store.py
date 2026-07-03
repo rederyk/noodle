@@ -24,6 +24,17 @@ from .graph import Graph
 
 DEFAULT_ROOT = os.environ.get("CAD_PROJECTS_DIR", "/app/projects")
 
+# Curated example graphs bundled in the repo (tracked in git; projects/ is not,
+# so they reach a fresh install through seed_examples() below).
+EXAMPLES_DIR = Path(__file__).parent / "examples"
+
+_EXAMPLE_DESCRIPTIONS = {
+    "rounded-box": "Hello-world: a box with every edge filleted (primitive → modifier).",
+    "flange": "Parametric plate with a bore, exported to STEP (booleans + export).",
+    "bolt-flange": "Bolt-circle flange: one hole polar-arrayed and subtracted "
+                   "wholesale — Grasshopper-style list fan-out.",
+}
+
 # A graph id is a single directory name under the store root. Rejecting
 # anything else (path separators, "..", hidden names) closes path traversal
 # for every surface that resolves ids to paths (REST, MCP, copilot).
@@ -100,6 +111,31 @@ class GraphStore:
         d = self.dir(graph_id)
         if d.is_dir():
             shutil.rmtree(d)
+
+    def seed_examples(self) -> list[str]:
+        """On a fresh store (no projects yet, never seeded), copy the bundled
+        example graphs in so a new user lands on real graphs instead of a blank
+        canvas. Idempotent and non-destructive: a `.seeded` marker means we
+        never re-add examples the user has since deleted, and an existing
+        project short-circuits it entirely. Returns the names seeded."""
+        marker = self.root / ".seeded"
+        if marker.exists() or self.list():
+            return []
+        seeded: list[str] = []
+        for jp in sorted(EXAMPLES_DIR.glob("*.json")):
+            name = jp.stem
+            try:
+                validate_graph_id(name)
+                graph = Graph.from_dict(json.loads(jp.read_text()))
+                self.save(name, graph, _EXAMPLE_DESCRIPTIONS.get(name, ""))
+                seeded.append(name)
+            except Exception:
+                continue  # a broken example must never break startup
+        try:
+            marker.write_text("")
+        except OSError:
+            pass
+        return seeded
 
     def view(self, graph_id: str) -> dict | None:
         vpath = self.dir(graph_id) / "view.json"
