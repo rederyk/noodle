@@ -336,6 +336,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
           <button class="tb-icon" onclick="frameView()" title="Fit to view (F · dbl-click)">⛶</button>
           <button class="tb-icon on" id="btn-grid" onclick="toggleGrid()" title="Show / hide grid">▦</button>
           <button class="tb-icon" id="btn-fast" onclick="toggleFastDrag()" title="Drag Move/Rotate/Scale = instant local preview">✥</button>
+          <button class="tb-icon" id="btn-isolate" onclick="toggleIsolate()" title="Isolate selected — show only the selected nodes'/group's shapes (I)">◎</button>
         </div>
       </div>
       <div class="panel">
@@ -427,6 +428,8 @@ let runAbort = null;       // AbortController for the in-flight run
 let loadingGraph = false;  // suppress live triggers while rebuilding the graph
 let fastDrag = false;      // local JS transform while dragging Move/Rotate/Scale
 let previewMeshes = {};    // graph node-id -> THREE.Mesh currently shown
+let isolateSel = false;    // "isolate": show only the selected nodes'/group's shapes
+let _isoDirty  = false;    // isolate hid some meshes -> restore visibility once when off
 let lastView = null;       // last execution view (for instant display-only refresh)
 let transformControls = null;  // viewport gizmo (E1: translate)
 let gizmoAnchor = null;        // invisible proxy the gizmo drags
@@ -1931,6 +1934,7 @@ document.addEventListener('keydown', (e)=>{
   else if (k === 'escape' && gizmoNode){ e.preventDefault(); exitGizmoEdit(); }
   else if (k === 'escape' && sketchNode){ e.preventDefault(); exitCurveDrawMode(); }
   else if (k === 'f' && !e.ctrlKey && !e.metaKey){ e.preventDefault(); frameView(); }
+  else if (k === 'i' && !e.ctrlKey && !e.metaKey){ e.preventDefault(); toggleIsolate(); }
 });
 
 // ── floating selection toolbar (anchored above the selection) ──
@@ -1958,6 +1962,7 @@ document.addEventListener('keydown', (e)=>{
   (function loop(){
     requestAnimationFrame(loop);
     if (!lcanvas){ bar.style.display = 'none'; return; }
+    applyIsolate();   // keep isolate in sync with the live selection (any count)
     // only for a real multi-selection (2+ nodes) or a selected group
     const selNodes = Object.values(lcanvas.selected_nodes || {});
     const grp = lcanvas.selected_group;
@@ -2587,6 +2592,28 @@ window.toggleGrid = function(){
   const on = !viewer.grid.visible; viewer.setGrid(on);
   const b = document.getElementById('btn-grid'); if(b) b.classList.toggle('on', on);
 };
+// "Isolate" (Grasshopper-style solo, simpler): show only the preview meshes of
+// the selected node(s) / group; hide the rest. Live-tracks the selection via the
+// sel-toolbar RAF loop, and re-applies after each render. No selection -> show all.
+function applyIsolate(){
+  if(!isolateSel){
+    if(_isoDirty){ for(const id in previewMeshes){ const m=previewMeshes[id]; if(m) m.visible=true; } _isoDirty=false; }
+    return;
+  }
+  const sel = new Set(selectedNodes().map(n=>'n'+n.id));
+  const hasSel = sel.size > 0;                 // nothing picked -> nothing to isolate to
+  for(const id in previewMeshes){
+    const m = previewMeshes[id]; if(!m) continue;
+    m.visible = !hasSel || sel.has(id);
+  }
+  _isoDirty = hasSel;
+}
+window.toggleIsolate = function(){
+  isolateSel = !isolateSel;
+  const b = document.getElementById('btn-isolate'); if(b) b.classList.toggle('on', isolateSel);
+  applyIsolate();
+  setStatus(isolateSel ? 'Isolate on — showing only the selected shapes' : 'Isolate off', 'ok');
+};
 function resizeViewer(){ if (viewer) viewer.resize(); }
 
 // resolve a node's preview colour: explicit choice wins, else a stable palette
@@ -2616,6 +2643,7 @@ function renderPreviews(view){
         { onSize:(s)=>{ if(s) setStats(`${s.x.toFixed(1)} × ${s.y.toFixed(1)} × ${s.z.toFixed(1)} mm`); } }); },
   });
   previewMeshes = r.meshes;
+  applyIsolate();                        // re-hide unselected shapes after a fresh render
   if(!r.order.length) return;            // onEmpty handled the legend / STL fallback
   const legend = [];
   for(const id of r.order){
@@ -3114,7 +3142,7 @@ function showRestoreModal(name, d){
 window.openShortcuts = function(){
   closeMenus();
   const rows=[['Ctrl+Enter','Run graph'],['Ctrl+S','Save'],['Ctrl+N','New project'],['Ctrl+K','Command palette'],
-    ['F','Fit to view'],['Ctrl+G','Group selection'],['Ctrl+B','Bypass'],['Del','Delete'],
+    ['F','Fit to view'],['I','Isolate selected shapes'],['Ctrl+G','Group selection'],['Ctrl+B','Bypass'],['Del','Delete'],
     ['Ctrl+C / Ctrl+V','Copy / paste'],['Esc','Exit edit / close'],['dbl-click','Search nodes']];
   buildModal(`<h3>Keyboard shortcuts</h3><div class="kbd-grid">`+
     rows.map(([k,v])=>`<kbd>${k}</kbd><span>${v}</span>`).join('')+
@@ -3343,6 +3371,7 @@ function paletteCommands(){
     {ic:'⬆',label:'Import model (STEP/STL/SVG/DXF)…', k:'', run:()=>importModel()},
     {ic:'⛶', label:'Fit to view', k:'F', run:()=>frameView()},
     {ic:'▦', label:'Toggle grid', k:'', run:()=>toggleGrid()},
+    {ic:'◎', label:'Isolate selected shapes', k:'I', run:()=>toggleIsolate()},
     {ic:'⬇', label:'Export STEP', k:'', run:()=>exportStep()},
     {ic:'⛌', label:'Open backend console', k:'', run:()=>openConsole()},
     {ic:'⟳', label:'Restart backend…', k:'', run:()=>confirmRestart()},
