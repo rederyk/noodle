@@ -645,8 +645,10 @@ register(NodeDef("Intersect", "boolean", "Intersect",
 register(NodeDef("BooleanMulti", "boolean", "Union (N)",
     inputs=[Socket("shapes", WIRE_SOLID, multiple=True)],
     outputs=_geo(),
-    code_template={"algebra": "Part() + [{shapes}]"},
-    description="Fuse an arbitrary number of shapes."))
+    code_template={"algebra": "Part() + _flatten([{shapes}])"},
+    description="Fuse an arbitrary number of shapes. List inputs (e.g. an "
+                "ArrayLinear output) are flattened, so it also collapses a "
+                "list of solids into one part."))
 
 # ===========================================================================
 # 5. Modifiers
@@ -1256,6 +1258,20 @@ register(NodeDef("Max", "math", "Max",
 # ===========================================================================
 # 11. Panels / inspection
 # ===========================================================================
+register(NodeDef("ToAgent", "data", "To Agent",
+    inputs=[Socket("value", WIRE_DATA, required=False, list_access=True)],
+    params=[Param("label", "str", "label", "", widget="input"),
+            Param("date", "str", "date", "", widget="input")],
+    outputs=_data("value"),
+    subtype_follows="value",
+    code_template={"algebra": "{value}"},
+    description="Provenance tag for the AI agent/copilot. Whatever you wire in "
+                "passes through UNCHANGED, but the node registers label + date + "
+                "location (workflow, node id, upstream source) in the agent's "
+                "index, so you can say 'retro-engineer part X in workflow Y'. "
+                "Tag an ImportSTEP/ImportSTL to hand the agent a file; `date` "
+                "is stamped automatically when the graph is saved."))
+
 register(NodeDef("Panel", "panel", "Panel",
     inputs=[Socket("value", WIRE_DATA, required=False, list_access=True)],
     params=[Param("text", "str", "text", "", widget="text"),

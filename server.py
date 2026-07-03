@@ -25,7 +25,7 @@ from cad_nodes import api, catalog
 from cad_nodes.graph import Graph, ValidationError
 from cad_nodes.transpiler import transpile, transpile_with_map
 from cad_nodes.executor import execute_graph, export_graph, extract_subshapes_for_node
-from cad_nodes.store import GraphStore, validate_graph_id
+from cad_nodes.store import GraphStore, stamp_agent_tags, validate_graph_id
 from cad_nodes.copilot import run_chat, copilot_status
 
 # ---------------------------------------------------------------------------
@@ -476,6 +476,7 @@ async def save_graph(name: str, graph: dict):
 
     d = project_dir(name)
     d.mkdir(parents=True, exist_ok=True)
+    stamp_agent_tags(graph.get("nodes", []))  # date the 'To Agent' tags
     (d / "graph.json").write_text(json.dumps(graph, indent=2))
     (d / "meta.json").write_text(json.dumps({
         "backend": "nodegraph",
@@ -630,6 +631,45 @@ async def execute_graph_project(name: str):
         "node_errors": result.get("node_errors", {}),
         "stl": f"/api/projects/{name}/download" if result.get("stl") else None,
     }
+
+
+@app.get("/api/agent/tags")
+async def agent_tags_route():
+    """Provenance index of every 'To Agent' tag node across all projects."""
+    return api.agent_tags(GraphStore(PROJECTS_DIR))
+
+
+@app.get("/api/graph/{name}/section_outline")
+async def graph_section_outline(name: str, axis: str = "z", pos: float = 0.0,
+                                path: str = ""):
+    """One exact section, edge by edge (the slice_summary 'microscope')."""
+    require_project(name)
+    try:
+        data = api.section_outline(GraphStore(PROJECTS_DIR), name, axis, pos,
+                                   path or None)
+    except (ValidationError, ValueError) as e:
+        raise HTTPException(400, str(e)) from e
+    if not data.get("success"):
+        raise HTTPException(400, {"message": "Section outline failed",
+                                  "error": data.get("error")})
+    return data
+
+
+@app.get("/api/graph/{name}/slice_summary")
+async def graph_slice_summary(name: str, path: str = "", n: int = 10):
+    """Symbolic cross-section summary (retro-engineering, PLAN_RETROENG).
+    Without `path`: slices the graph's own result. With `path` (project-relative
+    STEP, e.g. assets/part.step): slices that file."""
+    require_project(name)
+    store = GraphStore(PROJECTS_DIR)
+    try:
+        data = api.slice_summary(store, name, path or None, n)
+    except (ValidationError, ValueError) as e:
+        raise HTTPException(400, str(e)) from e
+    if not data.get("success"):
+        raise HTTPException(400, {"message": "Slice summary failed",
+                                  "error": data.get("error")})
+    return data
 
 
 @app.post("/api/graph/{name}/subshapes/{node_id}")

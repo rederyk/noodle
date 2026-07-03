@@ -28,7 +28,7 @@ from . import api, catalog
 from .graph import ValidationError
 from .store import GraphStore
 
-MAX_STEPS = 16
+MAX_STEPS = int(os.environ.get("COPILOT_MAX_STEPS", "24"))
 
 
 # ── provider resolution ─────────────────────────────────────────────────────
@@ -148,7 +148,43 @@ def _make_tools(store: GraphStore, graph_id: str, state: dict):
             state["changed"] = True
             return {"ok": True}
         if name == "execute":
-            return _lean_view(api.execute(store, graph_id))
+            # api.execute returns the executor result dict; the drawable view is
+            # nested. Surface BOTH the view summary and the failure diagnostics —
+            # a success:false with no explanation leaves the model guessing.
+            res = api.execute(store, graph_id)
+            out = _lean_view(res.get("view") or {})
+            out["success"] = bool(res.get("success"))
+            if res.get("errors"):
+                out["errors"] = str(res["errors"])[:600]
+            if res.get("warnings"):
+                out["warnings"] = res["warnings"]
+            ne = res.get("node_errors") or {}
+            if ne:
+                out["node_errors"] = {nid: (e.get("message") if isinstance(e, dict) else str(e))
+                                      for nid, e in ne.items()}
+            det = res.get("error_detail")
+            if det:
+                out["error_detail"] = {k: det[k] for k in
+                                       ("node_id", "message", "hint", "exception")
+                                       if det.get(k)}
+            return out
+        if name == "slice_summary":
+            gid = a.get("graph") or graph_id   # read-only cross-graph is fine
+            res = api.slice_summary(store, gid, a.get("path") or None,
+                                    int(a.get("n_per_axis") or 10))
+            if not res.get("success"):
+                return {"error": res.get("error", "slice failed")}
+            return {"summary": res["text"]}
+        if name == "section_outline":
+            gid = a.get("graph") or graph_id
+            res = api.section_outline(store, gid, a.get("axis") or "z",
+                                      float(a.get("position") or 0.0),
+                                      a.get("path") or None)
+            if not res.get("success"):
+                return {"error": res.get("error", "outline failed")}
+            return {"outline": res["text"]}
+        if name == "list_agent_tags":
+            return {"tags": api.agent_tags(store)}
         return {"error": f"unknown tool {name}"}
 
     def dispatch(name, args):
@@ -183,6 +219,25 @@ def _make_tools(store: GraphStore, graph_id: str, state: dict):
            {"node_id": s, "params": {"type": "object"}}, ["node_id", "params"]),
         fn("delete_node", "Delete a node and its connections.", {"node_id": s}, ["node_id"]),
         fn("execute", "Run the graph; returns volume, counts, and any per-node errors.", {}, []),
+        fn("slice_summary", "Symbolic cross-section summary (your 'eyes'). Slices the shape "
+           "with ~n_per_axis planes per axis and returns compact text: a bbox+volume checksum, "
+           "then per-axis stacks with runs of identical sections merged into intervals; each "
+           "loop is classified (circle/rect/rrect/slot, or a poly fallback) with its holes. "
+           "Without `path` it slices the CURRENT graph result; with `path` (project-relative, "
+           "e.g. 'assets/part.step') it slices that STEP file. Use it to read a target part "
+           "AND to verify a reconstruction by comparing the two summaries as text. "
+           "`graph` (optional) reads from another project — e.g. where a ToAgent tag points.",
+           {"path": s, "n_per_axis": {"type": "integer"}, "graph": s}, []),
+        fn("section_outline", "The microscope: ONE exact cross-section at axis=position, "
+           "every loop edge by edge (LINE/CIRCLE, 2D endpoints, radius+center for arcs). "
+           "Use it when the slice_summary line for a section is ambiguous (poly fallback, "
+           "unclear joins). Same path/graph semantics as slice_summary.",
+           {"axis": s, "position": {"type": "number"}, "path": s, "graph": s}, ["axis", "position"]),
+        fn("list_agent_tags", "The provenance index: every 'To Agent' tag node the user "
+           "placed, across ALL projects — label, date, graph, node id, and the tagged "
+           "source (an ImportSTEP's file path, etc.). When the user says 'part X in "
+           "workflow Y from yesterday', resolve it here, then slice_summary(graph=..., "
+           "path=...).", {}, []),
     ]
     return specs, dispatch
 
@@ -213,6 +268,28 @@ Rules:
 - After making changes, call execute and check for node_errors; if any, fix and execute again.
 - When done, reply briefly in the user's language: what you built and the result (volume/errors).
   Keep the final reply short — the user sees the graph update visually.
+
+Retro-engineering — rebuilding a part from a file:
+0. LOCATE: if the user refers to a tagged part ('part X', 'in workflow Y', 'from
+   yesterday'), call list_agent_tags and match label/date/graph; the tag's source gives
+   the file path, and graph=... lets slice_summary read it from that project.
+1. PERCEIVE: call slice_summary(path='assets/<file>.step'). Read the checksum, then the
+   Z stack first; the X/Y stacks are confirmation. A section that stays constant over an
+   interval IS an extrusion of that profile; the interval endpoints give its height and
+   position. Holes listed on a loop are holes through that profile. Where one summary
+   line is ambiguous (a poly fallback, an unclear join), zoom with
+   section_outline(axis, position) — exact edges, no guessing.
+2. PROCEDURALIZE — rebuild intent, not coordinates:
+   - N equal circles regularly placed -> ONE hole + ArrayLinear/ArrayPolar (count stays a
+     parameter), not N copied nodes.
+   - Small corner arcs / a 'rrect' outline -> model the sharp shape and add a Fillet node
+     downstream, don't trace the rounded geometry.
+   - Overall dimensions and counts -> node params (sliders), so the rebuild stays editable.
+   - The USER's stated intent about what to parameterize always WINS over these defaults.
+3. VERIFY: after building, call execute, then slice_summary() with NO path (= your own
+   result) and compare the two texts line by line: bbox, volume, radii, positions, interval
+   heights. Fix each mismatch and re-verify. Small numeric noise (<0.1) is fine. Report the
+   residual differences honestly in your final reply.
 
 Node catalog (type [category] in:(socket:wire) out:(socket:wire) params):
 %s

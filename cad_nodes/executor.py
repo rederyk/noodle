@@ -411,6 +411,105 @@ def extract_subshapes_for_node(graph: Graph, node_id: str, kind: str,
     return {"success": False, "error": (proc.stderr or "no output")[:600]}
 
 
+_TOOL_EPILOGUE = """
+
+# --- {func} (injected by executor) ---
+import sys as _sys, json as _json
+_sys.path.insert(0, {repo_root!r})
+from cad_nodes.slice_summary import {func} as _tool
+try:
+    _data = _tool(__result__, {kwargs})
+except Exception as _e:
+    _data = {{"success": False, "error": f"{{type(_e).__name__}}: {{_e}}"}}
+with open({out!r}, "w") as _f:
+    _json.dump(_data, _f)
+"""
+
+
+def _run_slice(code: str, workdir: Path, func: str, kwargs: str,
+               timeout: int) -> dict:
+    """Run `code` (which must define __result__) + a slice_summary-tool
+    epilogue calling `func(__result__, kwargs)`; return the JSON it writes.
+    Warm worker with a cold-subprocess fallback."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    out_path = workdir / f"_{func}.json"
+    script_path = workdir / f"_{func}.py"
+    if out_path.exists():
+        out_path.unlink()
+    script_path.write_text(code + _TOOL_EPILOGUE.format(
+        repo_root=_REPO_ROOT, func=func, kwargs=kwargs, out=str(out_path)))
+
+    def _read():
+        if out_path.exists():
+            try:
+                return json.loads(out_path.read_text())
+            except Exception:
+                return None
+        return None
+
+    if _USE_WARM:
+        try:
+            res = _WORKER.run(script_path, workdir, timeout)
+            if res.get("timeout"):
+                return {"success": False, "error": f"timed out after {timeout}s"}
+            data = _read()
+            if data is not None:
+                return data
+            return {"success": False, "error": (res.get("error") or "no output")[:600]}
+        except Exception:
+            pass  # fall back to a cold subprocess
+
+    try:
+        proc = subprocess.run([sys.executable, str(script_path)],
+                              capture_output=True, text=True,
+                              timeout=timeout, cwd=str(workdir))
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": f"timed out after {timeout}s"}
+    data = _read()
+    if data is not None:
+        return data
+    return {"success": False, "error": (proc.stderr or "no output")[:600]}
+
+
+def _import_code(path: Path) -> str:
+    # STL: __result__ stays the PATH — the slice tools slice meshes themselves
+    # (triangle/plane intersection + arc-fitting); OCCT's section() segfaults
+    # on the mesh Face that import_stl returns.
+    if path.suffix.lower() == ".stl":
+        return f"__result__ = {str(path)!r}\n"
+    return ("from build123d import *\n"
+            f"__result__ = import_step({str(path)!r})\n")
+
+
+def slice_summary_graph(graph: Graph, workdir: Path, n_per_axis: int = 10,
+                        timeout: int = 120) -> dict:
+    """Symbolic slice summary of the graph's own result (the verify half of
+    the retro-engineering loop — see cad_nodes/slice_summary.py)."""
+    return _run_slice(transpile(graph), workdir, "summarize",
+                      f"n_per_axis={int(n_per_axis)}", timeout)
+
+
+def slice_summary_file(path: Path, workdir: Path, n_per_axis: int = 10,
+                       timeout: int = 120) -> dict:
+    """Symbolic slice summary of a STEP file (the perception half)."""
+    return _run_slice(_import_code(path), workdir, "summarize",
+                      f"n_per_axis={int(n_per_axis)}", timeout)
+
+
+def section_outline_graph(graph: Graph, workdir: Path, axis: str = "z",
+                          position: float = 0.0, timeout: int = 120) -> dict:
+    """Exact edge-by-edge outline of ONE section of the graph's result."""
+    return _run_slice(transpile(graph), workdir, "outline",
+                      f"axis={str(axis)!r}, position={float(position)}", timeout)
+
+
+def section_outline_file(path: Path, workdir: Path, axis: str = "z",
+                         position: float = 0.0, timeout: int = 120) -> dict:
+    """Exact edge-by-edge outline of ONE section of a STEP file."""
+    return _run_slice(_import_code(path), workdir, "outline",
+                      f"axis={str(axis)!r}, position={float(position)}", timeout)
+
+
 _EXPORTERS = {
     "step": ("export_step", "step"),
     "stl": ("export_stl", "stl"),

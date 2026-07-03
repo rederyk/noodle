@@ -23,6 +23,7 @@ services:
       - COPILOT_MODEL=${COPILOT_MODEL:-qwen2.5}
       - COPILOT_BASE_URL=${COPILOT_BASE_URL:-}
       - COPILOT_API_KEY=${COPILOT_API_KEY:-}
+      - COPILOT_MAX_STEPS=${COPILOT_MAX_STEPS:-24}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
