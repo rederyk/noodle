@@ -124,6 +124,39 @@ def cad_execute(graph_id: str) -> dict:
 
 
 @mcp.tool()
+def cad_slice_summary(graph_id: str, path: str = "", n_per_axis: int = 10) -> dict:
+    """Symbolic cross-section summary (retro-engineering 'eyes'). Slices the
+    shape with ~n_per_axis planes per axis (X/Y/Z) and returns compact text:
+    bbox+volume checksum, then per-axis stacks with identical consecutive
+    sections merged into intervals; each loop is classified (circle/rect/
+    rrect/slot, poly fallback) with its holes. Empty `path`: slice the graph's
+    OWN result. `path='assets/part.step'` (project-relative): slice that file.
+    Rebuild loop: slice the target, build the graph, execute, slice again
+    without path, compare the two texts, fix, repeat."""
+    return _safe(api.slice_summary, STORE, graph_id, path or None, n_per_axis)
+
+
+@mcp.tool()
+def cad_section_outline(graph_id: str, axis: str = "z", position: float = 0.0,
+                        path: str = "") -> dict:
+    """The 'microscope' companion of cad_slice_summary: ONE exact section at
+    axis=position, every loop edge by edge (LINE/CIRCLE, projected endpoints,
+    radius+center for arcs). Empty `path`: section the graph's own result;
+    `path='assets/part.step'`: section that file. Use it where a summary line
+    is ambiguous (poly fallback, unclear joins)."""
+    return _safe(api.section_outline, STORE, graph_id, axis, position, path or None)
+
+
+@mcp.tool()
+def cad_agent_tags() -> list:
+    """Provenance index: every 'To Agent' tag node across ALL projects —
+    label, date (auto-stamped at save), graph, node id and the tagged source
+    (e.g. an ImportSTEP's file path). Resolve 'part X in workflow Y' here,
+    then cad_slice_summary(graph_id=<that graph>, path=<that path>)."""
+    return _safe(api.agent_tags, STORE)
+
+
+@mcp.tool()
 def cad_get_view(graph_id: str, fmt: str = "json") -> dict:
     """Read the last execution's view. fmt='mesh' includes the tessellated
     mesh; fmt='json' (default) omits it."""
