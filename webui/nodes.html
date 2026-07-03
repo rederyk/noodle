@@ -430,6 +430,9 @@ let fastDrag = false;      // local JS transform while dragging Move/Rotate/Scal
 let previewMeshes = {};    // graph node-id -> THREE.Mesh currently shown
 let isolateSel = false;    // "isolate": show only the selected nodes'/group's shapes
 let _isoDirty  = false;    // isolate hid some meshes -> restore visibility once when off
+let _isoForced = [];       // nodes whose preview eye isolate forced on (to restore)
+let _isoSig    = null;     // last selection signature (re-force only on change)
+let _isoRunT   = null;     // debounce timer for isolate-triggered re-runs
 let lastView = null;       // last execution view (for instant display-only refresh)
 let transformControls = null;  // viewport gizmo (E1: translate)
 let gizmoAnchor = null;        // invisible proxy the gizmo drags
@@ -1962,7 +1965,7 @@ document.addEventListener('keydown', (e)=>{
   (function loop(){
     requestAnimationFrame(loop);
     if (!lcanvas){ bar.style.display = 'none'; return; }
-    applyIsolate();   // keep isolate in sync with the live selection (any count)
+    syncIsolate();    // isolate: force-preview the selection on change + refresh filter
     // only for a real multi-selection (2+ nodes) or a selected group
     const selNodes = Object.values(lcanvas.selected_nodes || {});
     const grp = lcanvas.selected_group;
@@ -2592,9 +2595,14 @@ window.toggleGrid = function(){
   const on = !viewer.grid.visible; viewer.setGrid(on);
   const b = document.getElementById('btn-grid'); if(b) b.classList.toggle('on', on);
 };
-// "Isolate" (Grasshopper-style solo, simpler): show only the preview meshes of
-// the selected node(s) / group; hide the rest. Live-tracks the selection via the
-// sel-toolbar RAF loop, and re-applies after each render. No selection -> show all.
+// "Isolate" (Grasshopper-style solo, simpler): show only the selected node(s)'/
+// group's shapes and hide the rest — INDEPENDENT of each node's preview "eye". A
+// selected node whose eye is auto/off isn't in the render at all, so isolate also
+// force-previews the selection (like enterGizmoEdit does) and re-runs. The force is
+// transient: it's restored when the selection changes or isolate turns off (which
+// re-runs, healing the on-disk graph too). Two layers:
+//   applyIsolate()      — client-side visibility filter (cheap, runs every frame)
+//   syncIsolateForce()  — force-preview the selection, restore the rest, re-run
 function applyIsolate(){
   if(!isolateSel){
     if(_isoDirty){ for(const id in previewMeshes){ const m=previewMeshes[id]; if(m) m.visible=true; } _isoDirty=false; }
@@ -2608,10 +2616,44 @@ function applyIsolate(){
   }
   _isoDirty = hasSel;
 }
+function _setEye(n, mode){ n.previewMode = mode;
+  const ew=(n.widgets||[]).find(w=>w.isEye); if(ew) ew.name = eyeLabel(mode); }
+function _isoScheduleRun(){ if(_isoRunT) clearTimeout(_isoRunT);
+  _isoRunT = setTimeout(()=>{ _isoRunT=null; window.runGraph(); }, 120); }   // debounce marquee
+// Force the selected nodes' previews on (so isolate can reveal a node whose eye
+// is auto/off) and restore nodes no longer selected. Re-runs only when a preview
+// mode actually flips — a node already on screen keeps its eye untouched.
+function syncIsolateForce(){
+  const want = new Set(isolateSel ? selectedNodes() : []);
+  let changed = false;
+  for(const n of want){
+    if(_isoForced.includes(n)) continue;
+    _isoForced.push(n);
+    n._isoPrevMode = n.previewMode;
+    const shown = !!previewMeshes['n'+n.id];    // already visible -> don't disturb its eye
+    if(!shown && n.previewMode !== 'on'){ _setEye(n,'on'); changed = true; }
+  }
+  for(const n of _isoForced.slice()){
+    if(want.has(n)) continue;
+    _isoForced = _isoForced.filter(x=>x!==n);
+    if(n._isoPrevMode !== undefined){
+      if(n.previewMode !== n._isoPrevMode){ _setEye(n, n._isoPrevMode); changed = true; }
+      delete n._isoPrevMode;
+    }
+  }
+  if(changed){ if(lcanvas) lcanvas.setDirty(true,true); _isoScheduleRun(); }
+}
+// Called every frame from the selection loop: on a selection change, force-preview
+// the new selection; then refresh the visibility filter.
+function syncIsolate(){
+  const sig = isolateSel ? selectedNodes().map(n=>n.id).sort().join(',') : '';
+  if(sig !== _isoSig){ _isoSig = sig; syncIsolateForce(); }
+  applyIsolate();
+}
 window.toggleIsolate = function(){
   isolateSel = !isolateSel;
   const b = document.getElementById('btn-isolate'); if(b) b.classList.toggle('on', isolateSel);
-  applyIsolate();
+  _isoSig = null; syncIsolate();               // force-preview (or restore) + filter now
   setStatus(isolateSel ? 'Isolate on — showing only the selected shapes' : 'Isolate off', 'ok');
 };
 function resizeViewer(){ if (viewer) viewer.resize(); }
