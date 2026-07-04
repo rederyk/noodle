@@ -247,7 +247,8 @@ export class CadViewer {
     this._ray.setFromCamera(this._mouse, this.camera);
     this._ray.params.Line.threshold = 0.5;
     this._ray.params.Points.threshold = 3;
-    const hits = this._ray.intersectObjects(this.previewGroup.children, false);
+    const hits = this._ray.intersectObjects(this.previewGroup.children, false)
+      .filter(h => h.object.visible !== false);   // don't pick hidden (e.g. isolated) shapes
     return (hits.length && hits[0].object.userData.nodeId) || null;
   }
 }
