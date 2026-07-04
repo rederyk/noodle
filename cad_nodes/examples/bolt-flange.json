@@ -1,0 +1,16 @@
+{
+  "name": "bolt-flange",
+  "nodes": [
+    {"id": "plate", "type": "Cylinder", "params": {"radius": 40, "height": 6}, "position": [0, 0]},
+    {"id": "hole", "type": "Cylinder", "params": {"radius": 3.5, "height": 20}, "position": [0, 220]},
+    {"id": "move", "type": "Move", "params": {"x": 28, "y": 0, "z": 0}, "position": [220, 220]},
+    {"id": "arr", "type": "ArrayPolar", "params": {"count": 6, "angle": 360, "axis": "Z"}, "position": [440, 220]},
+    {"id": "sub", "type": "Subtract", "params": {}, "position": [660, 100], "preview": true}
+  ],
+  "connections": [
+    {"id": "k1", "from_node": "hole", "from_socket": "result", "to_node": "move", "to_socket": "shape"},
+    {"id": "k2", "from_node": "move", "from_socket": "result", "to_node": "arr", "to_socket": "shape"},
+    {"id": "k3", "from_node": "plate", "from_socket": "result", "to_node": "sub", "to_socket": "a"},
+    {"id": "k4", "from_node": "arr", "from_socket": "result", "to_node": "sub", "to_socket": "b"}
+  ]
+}

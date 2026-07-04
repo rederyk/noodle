@@ -5,19 +5,26 @@
 <h1 align="center">noodle</h1>
 <p align="center"><em>nodes → solid</em></p>
 
-A **node-based parametric CAD** app, in the spirit of Grasshopper — for people who
-want visual, parametric 3D modelling without writing code, with an **AI copilot**
-built in from day one. (In node editors the wires between nodes are called
-*noodles* — so is this.)
+A **node-based parametric CAD** app, in the spirit of Grasshopper — visual,
+parametric 3D modelling without writing code. (In node editors the wires between
+nodes are called *noodles* — so is this.)
 
 You wire nodes in a browser. The backend transpiles the graph to
 [build123d](https://build123d.readthedocs.io) Python, runs it in an isolated
-worker, and streams back an STL plus a live mesh preview for the 3D viewport.
-The same operations are exposed over an **MCP server**, so any MCP-capable AI
-client can read and build graphs too.
+worker, and streams back a solid (STL/STEP/…) plus a live mesh preview for the 3D
+viewport. Every operation is also exposed over an **MCP server** and a REST API,
+so an external AI **coding agent** (Claude Code, Claude Desktop, …) can read and
+build the same graphs — in practice the most capable way to drive it today.
 
-<!-- Add a screenshot or gif of the node editor here, e.g.:
-![node editor](docs/screenshot.png) -->
+> **Status — early beta (v0.1.0).** The modelling engine, ~150 nodes and
+> STL / STEP / 3MF / glTF / SVG / DXF export work and are usable today; onboarding
+> and polish are still landing. It's **single-user — run it locally.** Feedback
+> is very welcome.
+
+<!-- TODO: drop a GIF of the node editor here → ![node editor](docs/screenshot.gif) -->
+> **New here?** Start the app, open the node editor, and pick one of the bundled
+> example projects — **rounded-box**, **flange**, **bolt-flange** — from *Your
+> projects*. They seed automatically on the first run.
 
 ## Features
 
@@ -27,10 +34,56 @@ client can read and build graphs too.
   shell, loft, sweep, revolve, plus parametric curves → frames → variable loft.
 - **Interactive sub-shape selection**: click the edges/faces/vertices you want,
   persisted by geometric signature (survives parameter tweaks).
-- **In-app AI copilot**: natural language → graph, over any OpenAI-compatible
-  endpoint (free local Ollama by default).
-- **MCP server**: drive the same operations from Claude or any MCP client.
+- **Drive it from an AI coding agent**: an **MCP server** + REST API expose every
+  operation (add nodes, wire, set params, execute, export), so Claude Code /
+  Claude Desktop or any MCP client can build and edit graphs. This is the most
+  robust AI workflow today — see [`AGENTS.md`](AGENTS.md).
+- **Experimental in-app copilot**: natural-language → graph over any
+  OpenAI-compatible endpoint (local Ollama by default) — handy for quick edits,
+  still maturing.
+- **Feedback → guided PR**: an in-app form saves a self-contained report — graph
+  snapshot, per-node errors, version, logs — with a precise brief for a coding
+  agent, so your local Claude Code can reproduce it, fix it on a safe branch and
+  open a PR. Bug reports and "make it blue" alike. [See below](#feedback-that-turns-into-a-pr).
 - **Live per-node preview** with a per-node "eye" (auto / on / off).
+
+## Feedback that turns into a PR
+
+Almost everyone who runs noodle already has a coding agent on the same machine —
+so noodle treats **your local agent as the maintainer**. If something breaks, you
+have an idea, or you just want the viewport background a different colour, you
+don't open an issue and wait: you leave a feedback drop and let the agent action
+it, in parallel, while you keep modelling.
+
+**In the app** (⚙ Settings → *Show the Feedback / report button*) the form takes a
+severity — **bug / idea / question** — and a free-text message. On submit it writes
+a self-contained report to `feedback/<id>/` with everything an agent needs to
+reproduce, so there's no back-and-forth:
+
+- the app **version + git commit** and the **project** you were on;
+- the **client** (browser / URL) and the last **per-node errors**;
+- a **snapshot of the exact graph** (`graph.snapshot.json`) and recent
+  **backend logs** (`backend.log`);
+- a human-readable `report.md` that ends with a precise **brief for the coding
+  agent**, pointing it at the fix workflow.
+
+**On your machine**, point your coding agent at it — *"triage `feedback/`"* — and
+the bundled [`feedback-fix`](.claude/skills/feedback-fix/SKILL.md) skill takes
+over: it reads the report, **reproduces** from the graph snapshot, cuts a **safe
+branch with git checkpoints**, makes the fix under the repo rules, runs the tests,
+and opens a **PR** — carrying a **mandatory AI-use disclosure** of which agents and
+models did the work. The full procedure is in
+[`docs/FEEDBACK_FIX_GUIDE.md`](docs/FEEDBACK_FIX_GUIDE.md).
+
+So a throwaway wish — *"this button should be bigger"*, *"this fillet crashes on my
+part"* — becomes a structured, reproducible, reviewable change instead of a lost
+thought. The feedback carries its own telemetry **and** its own instructions; the
+agent does the rest. It's a small idea with a big consequence: the gap between
+*"this annoys me"* and *"here's a PR that fixes it"* collapses to one paragraph and
+one agent run.
+
+> The `feedback/` drop is **local and gitignored** — it can hold your project
+> details, so it stays on your machine and is never committed.
 
 ## Install & run
 
@@ -73,13 +126,15 @@ Stop it any time with `docker compose down`.
 > for a host virtualenv. Docker is the supported path for now; a standalone
 > desktop app is planned (`DESIGN_APP_SHELL.md`).
 
-### Optional — AI copilot & agents
+### Optional — AI agents & copilot
 
-To enable the in-app AI copilot, copy `.env.example` to `.env` and configure a
-provider (or run a local [Ollama](https://ollama.com) with a tool-capable model).
+**Recommended:** drive noodle from an external AI **coding agent** (Claude Code,
+Claude Desktop, openclaw…) over **MCP or HTTP** — it's the most capable way to
+build graphs. See **[`AGENTS.md`](AGENTS.md)**.
 
-To drive noodle from an external AI agent (Claude Code, openclaw, Claude
-Desktop…) via MCP or HTTP, see **[`AGENTS.md`](AGENTS.md)**.
+The **in-app copilot** is experimental: copy `.env.example` to `.env` and
+configure an OpenAI-compatible provider (or run a local [Ollama](https://ollama.com)
+with a tool-capable model).
 
 > ⚠️ **Security**: the engine executes graph code (including `CodeBlock` /
 > `Expression` nodes) as **arbitrary Python in a subprocess** and is **not yet
