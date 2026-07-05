@@ -99,6 +99,9 @@ class NodeDef:
     code_template: dict[str, str] = field(default_factory=dict)
     imports: list[str] = field(default_factory=lambda: ["from build123d import *"])
     description: str = ""
+    # Hidden from the editor's add-node search/menu (frontend sets litegraph's
+    # skip_list), but still registered so older graphs referencing it load & run.
+    hidden: bool = False
     is_group: bool = False
     # For group nodes: how to read the result out of the context manager var.
     group_kind: Optional[str] = None  # "part" | "sketch" | "line"
@@ -1272,19 +1275,39 @@ register(NodeDef("ToAgent", "data", "To Agent",
                 "Tag an ImportSTEP/ImportSTL to hand the agent a file; `date` "
                 "is stamped automatically when the graph is saved."))
 
-register(NodeDef("Panel", "panel", "Panel",
-    inputs=[Socket("value", WIRE_DATA, required=False, list_access=True)],
-    params=[Param("text", "str", "text", "", widget="text"),
+register(NodeDef("Note", "panel", "Note",
+    inputs=[], outputs=[],
+    params=[Param("text", "str", "text", "", widget="note")],
+    code_template={"algebra": "None"},   # never emitted — the transpiler skips Note
+    description="A sticky note — free-text annotation and instructions pinned to "
+                "the canvas, in the spirit of ComfyUI's Note node. Multi-line text "
+                "that keeps its formatting; it has no sockets and no effect on the "
+                "model. Double-click to edit."))
+
+# The old dual-mode Panel is gone, split into two single-responsibility nodes:
+# Input (text -> value SOURCE) and Display (inspect + route a wired value). Both
+# live in the `panel` category so the add-node search still finds them by typing
+# "panel" (litegraph matches the category/type path). Legacy Panel nodes are
+# remapped on load (see nodes.html::fromGraphJSON).
+register(NodeDef("Input", "panel", "Input",
+    params=[Param("text", "str", "text", "", widget="note"),
             Param("mode", "select", "mode", "friendly", widget="select",
                   options=["friendly", "json", "build123d"])],
     outputs=_data("value"),
-    subtype_follows="value",   # inspector pass-through: keep the upstream tag
-    code_template={"algebra": "_panel({node_id!r}, {value}, {text}, {mode})"},
-    description="Dual-mode Panel. Wire a value to INSPECT it (multi-line, "
-                "list-aware, passes through). Leave it unwired and type into "
-                "`text` to use it as a data SOURCE — one item per line (several "
-                "lines = a list that fans out). `mode` picks the syntax: "
-                "friendly ('0,0,0' -> Vector), json, or build123d (eval)."))
+    code_template={"algebra": "_panel({node_id!r}, None, {text}, {mode})"},
+    description="Text -> data SOURCE. Type values, one per line (several lines = "
+                "a list that fans out downstream). `mode` picks the syntax: "
+                "friendly ('0,0,0' -> Vector), json, or build123d (eval). No "
+                "input — a pure value source on the wire. Double-click to edit."))
+
+register(NodeDef("Display", "panel", "Display",
+    inputs=[Socket("value", WIRE_DATA, required=False, list_access=True)],
+    outputs=_data("value"),
+    subtype_follows="value",   # pass-through: keep the upstream tag
+    code_template={"algebra": "_probe({node_id!r}, {value})"},
+    description="Display + routing. Wire a value in to SEE it — shown on the node "
+                "itself AND in the Panels tab — and passed through unchanged, so "
+                "you can tap a wire without altering the data."))
 
 register(NodeDef("BoundingBox", "panel", "Bounding Box",
     inputs=[Socket("shape", WIRE_SOLID)],

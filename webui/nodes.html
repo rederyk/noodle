@@ -64,6 +64,11 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 .ai-input-row{display:flex;gap:6px;padding:8px;border-top:1px solid var(--border);}
 .ai-input-row textarea{flex:1;resize:none;background:var(--bg-3);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-family:var(--font);font-size:12px;max-height:120px;}
 .ai-input-row textarea:focus{outline:none;border-color:var(--accent);}
+/* inline note/panel text editor — glued over the node body (ComfyUI-style) */
+.inline-note-editor{position:fixed;z-index:150;box-sizing:border-box;resize:none;overflow:auto;
+  background:var(--bg-2);color:var(--text);border:1px solid var(--accent);border-radius:4px;
+  font-family:var(--mono,monospace);line-height:1.25;white-space:pre;outline:none;
+  box-shadow:0 6px 20px rgba(0,0,0,.5);}
 /* bottom tabs */
 .panel{height:220px;display:flex;flex-direction:column;background:var(--bg-1);}
 .tabs{display:flex;border-bottom:1px solid var(--border);}
@@ -349,7 +354,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
         </div>
         <div class="tab-body code" id="body-code">// Run the graph to generate build123d code</div>
         <div class="tab-body" id="body-view" style="display:none">No execution yet.</div>
-        <div class="tab-body" id="body-panels" style="display:none">No Panel nodes. Add a Panel node and wire a value into it.</div>
+        <div class="tab-body" id="body-panels" style="display:none">No Display nodes. Add a Display node and wire a value into it.</div>
         <div id="body-log" style="display:none;flex:1;flex-direction:column;min-height:0;overflow:hidden;">
           <div class="console-bar">
             <label>Source
@@ -549,6 +554,9 @@ document.addEventListener('click', e=>{
 
 // ── register every catalog node as a Litegraph type ──
 function registerNodes(defs){
+  // Drop litegraph's built-in nodes (widget/panel, basic/*, math/*, audio/*, …)
+  // and their search extras — this is a CAD app; only `cad/*` nodes belong here.
+  LiteGraph.clearRegisteredTypes();
   for (const def of defs){
     catalog[def.type] = def;
     const ctor = function(){
@@ -601,11 +609,36 @@ function registerNodes(defs){
         this.color = WIRE_COLORS[this.cadStaticOut];
       }
       for (const p of (def.params||[])) addWidget(this, p);
-      // Panel: a multi-line text editor (text ↔ data, 3 syntaxes) instead of the
-      // single-line prompt; the `text`/`mode` widgets still round-trip the value.
-      if (def.type === 'Panel'){
-        const pb = this.addWidget('button', '✎ Edit text', null, ()=> openPanelEditor(this));
-        pb.isPanelBtn = true;
+      // Nodes with a `note` param (Note, Data): multi-line text drawn on the body
+      // and edited inline (double-click), ComfyUI-style. Preserves formatting —
+      // it never round-trips through litegraph's single-line prompt.
+      if (this._noteParam){
+        this.onDblClick = ()=>{ openInlineNoteEditor(this); return true; };
+        this.resizable = true;
+        if (def.type === 'Note'){          // a sticky note: no sockets, sized for text
+          this.color = '#8a7a2c'; this.bgcolor = '#2a2712';
+          this.size = [240, 130];
+          // litegraph shrinks widget-less nodes to the title; keep a roomy floor so
+          // the text has space and any user resize sticks.
+          this.computeSize = function(){ return [Math.max((this.size&&this.size[0])||240, 180),
+                                                  Math.max((this.size&&this.size[1])||130, 90)]; };
+        } else {                           // Data (and legacy Panel): text below sockets+widgets
+          this.size = [240, 150];
+          this.computeSize = function(){
+            const base = LGraphNode.prototype.computeSize.call(this);   // sockets + widgets
+            return [Math.max(base[0], 200), Math.max(base[1] + 64, this.size[1] || 150)];
+          };
+        }
+      }
+      // Display: no text of its own — it shows the WIRED value on the body (read
+      // from the last run's Panels data) and routes it through unchanged.
+      if (def.type === 'Display'){
+        this.resizable = true;
+        this.size = [220, 120];
+        this.computeSize = function(){
+          const base = LGraphNode.prototype.computeSize.call(this);
+          return [Math.max(base[0], 190), Math.max(base[1] + 60, this.size[1] || 120)];
+        };
       }
       // CodeBlock: a real multi-line editor + live `#@param` widgets/sockets.
       if (def.type === 'CodeBlock'){
@@ -663,6 +696,11 @@ function registerNodes(defs){
       this.onDrawForeground = function(ctx){
         if (this.flags.collapsed) return;
         if (this._curveParam) drawCurveMini(ctx, this);   // live curve on the node body
+        if (this._noteParam){                             // multi-line note text on the body
+          drawNoteBody(ctx, this);
+          if (inlineEditor && inlineEditor.node === this) positionInlineEditor();
+        }
+        if (this.cadType === 'Display') drawDisplayBody(ctx, this);   // wired value on the body
         if (!this.bypassed) return;
         ctx.save();
         ctx.fillStyle = 'rgba(11,14,20,.45)';
@@ -699,6 +737,7 @@ function registerNodes(defs){
     };
     ctor.title = def.label || def.type;
     ctor.desc = def.description || '';
+    ctor.skip_list = !!def.hidden;   // deprecated nodes: still creatable, hidden from search
     LiteGraph.registerNodeType('cad/'+def.category+'/'+def.type, ctor);
   }
   // colour links by their (output) wire type
@@ -746,6 +785,11 @@ function addWidget(node, p){
       return files.length ? files.concat([ASSET_UPLOAD]) : [ASSET_UPLOAD];
     }});
     w.cadParam = p.name; return;
+  }
+  if (p.widget === 'note'){            // multi-line text drawn on the body, edited inline
+    node.properties[p.name] = p.default ?? '';   // no litegraph widget: a single-line
+    node._noteParam = p.name;                     // 'text' widget's prompt would strip newlines.
+    return;                                        // value is serialised straight from properties.
   }
   if (p.type === 'str'){
     node.properties[p.name] = p.default ?? '';
@@ -1633,6 +1677,10 @@ function toGraphJSON(name){
     const params = {};
     const nd = {id, type:n.cadType, params, position:[Math.round(n.pos[0]),Math.round(n.pos[1])]};
     if (n.widgets) for (const w of n.widgets) if (w.cadParam) params[w.cadParam] = w.value;
+    if (n._noteParam){
+      params[n._noteParam] = n.properties[n._noteParam] ?? '';   // note text (no widget)
+      if (n.cadType === 'Note') nd.size = [Math.round(n.size[0]), Math.round(n.size[1])];   // keep a resized note
+    }
     // CodeBlock #@param overrides -> a `_cb` namespace (only what differs from the
     // in-code default, so editing a default still takes effect; mirrors the backend).
     if (n.cadType === 'CodeBlock'){
@@ -1666,10 +1714,18 @@ function toGraphJSON(name){
 function fromGraphJSON(data){
   if (gizmoNode) exitGizmoEdit();
   if (sketchNode) exitCurveDrawMode();
+  closeInlineNoteEditor(false);   // drop any open note editor before the canvas is rebuilt
   loadingGraph = true;
   lgraph.clear();
   const map = {};
+  // legacy migration: the old dual-mode Panel is gone. A Panel with an incoming
+  // wire was an inspector/router -> Display; otherwise it was a text source -> Input.
+  const hasIncoming = new Set((data.connections||[]).map(c=>c.to_node));
   for (const nd of (data.nodes||[])){
+    if (nd.type === 'Panel'){
+      if (hasIncoming.has(nd.id)){ nd.type = 'Display'; if (nd.params){ delete nd.params.text; delete nd.params.mode; } }
+      else nd.type = 'Input';
+    }
     const def = catalog[nd.type]; if(!def){ log('unknown node type '+nd.type,'err'); continue; }
     const node = LiteGraph.createNode('cad/'+def.category+'/'+nd.type);
     node.pos = nd.position || [120, 120];
@@ -1686,6 +1742,9 @@ function fromGraphJSON(data){
       }
       if (w.isEye) w.name = eyeLabel(node.previewMode);
     }
+    if (node._noteParam && nd.params && node._noteParam in nd.params)
+      node.properties[node._noteParam] = nd.params[node._noteParam];   // note text (no widget)
+    if (node._noteParam && Array.isArray(nd.size)) node.size = nd.size.slice();   // restore resized note
     // CodeBlock: seed #@param overrides, then build the dynamic widgets + input
     // sockets BEFORE connections are restored (so a wired `teeth` socket exists).
     if (nd.type === 'CodeBlock'){
@@ -2398,11 +2457,13 @@ function renderPanels(view){
   const body = document.getElementById('body-panels');
   const badge = document.getElementById('panel-count');
   const panels = (view && view.panels) || {};
+  lastPanels = panels;                       // Display nodes read this to draw their value
+  if (lcanvas) lcanvas.setDirty(true, true);  // redraw Display bodies with fresh values
   const ids = Object.keys(panels);
   badge.textContent = ids.length || '';
   badge.classList.toggle('visible', ids.length > 0);
   if (!ids.length){
-    body.textContent = 'No Panel nodes. Add a Panel node and wire a value into it.';
+    body.textContent = 'No Display nodes. Add a Display node and wire a value into it.';
     return;
   }
   body.innerHTML = '';
@@ -2443,64 +2504,132 @@ function panelLines(v, indent=''){
 }
 function fmtPanel(v){ return panelLines(v).join('\n'); }
 
-// ── Panel text editor (multi-line · 3 syntaxes · text ↔ data) ──
-const PANEL_HINTS = {
-  friendly: 'One item per line. "0,0,0" → Vector · numbers/strings direct · [..]/{..} = JSON. Several lines = a list (fans out).',
-  json:     'Whole block as one JSON document, or one JSON value per line.',
-  build123d:'Each line eval\'d as build123d (e.g. Vector(0,0,0), Plane.XY, Box(2,2,2).volume). ⚠ runs Python.',
-};
-function setPanelParam(node, name, val){
-  node.properties[name] = val;
-  for (const w of (node.widgets||[])) if (w.cadParam===name) w.value = val;
-  node.setDirtyCanvas && node.setDirtyCanvas(true,true);
-}
-function openPanelEditor(node){
-  let ov = document.getElementById('panel-editor');
-  if (!ov){
-    ov = document.createElement('div'); ov.id = 'panel-editor';
-    ov.style.cssText = 'position:fixed;inset:0;z-index:200;display:none;align-items:center;'+
-      'justify-content:center;background:rgba(0,0,0,.5)';
-    ov.innerHTML =
-      '<div style="background:var(--bg-1);border:1px solid var(--border);border-radius:10px;'+
-        'width:540px;max-width:92vw;padding:14px;display:flex;flex-direction:column;gap:10px">'+
-        '<div style="display:flex;align-items:center;gap:10px">'+
-          '<b style="color:var(--accent)">Panel — text ↔ data</b><span style="flex:1"></span>'+
-          '<label style="font-size:12px;color:var(--text-dim)">syntax</label>'+
-          '<select id="pe-mode" style="background:var(--bg-3);color:var(--text);'+
-            'border:1px solid var(--border);border-radius:5px;padding:4px 6px;font-size:12px">'+
-            '<option value="friendly">friendly</option><option value="json">json</option>'+
-            '<option value="build123d">build123d</option></select>'+
-        '</div>'+
-        '<textarea id="pe-text" rows="9" spellcheck="false" placeholder="0,0,0&#10;10,0,5&#10;42" '+
-          'style="resize:vertical;background:var(--bg-3);color:var(--text);border:1px solid var(--border);'+
-          'border-radius:6px;padding:8px;font-family:var(--font);font-size:12px;line-height:1.5"></textarea>'+
-        '<div id="pe-hint" style="font-size:11px;color:var(--text-dim)"></div>'+
-        '<div style="display:flex;gap:8px;justify-content:flex-end">'+
-          '<button class="tb-btn" id="pe-cancel">Cancel</button>'+
-          '<button class="tb-btn primary" id="pe-apply">✓ Apply &amp; translate</button>'+
-        '</div>'+
-      '</div>';
-    document.body.appendChild(ov);
-    ov.addEventListener('mousedown', e=>{ if (e.target===ov) ov.style.display='none'; });
-    document.getElementById('pe-cancel').onclick = ()=>{ ov.style.display='none'; };
-    document.getElementById('pe-mode').onchange = ()=>{
-      document.getElementById('pe-hint').textContent = PANEL_HINTS[document.getElementById('pe-mode').value]; };
+// ── Display node: draw the last run's wired value on the node body ──
+let lastPanels = {};   // id -> typed panel value, from the most recent view.json
+function drawDisplayBody(ctx, node){
+  const pad = 8, lh = 14, top = noteTextTop(node), w = node.size[0] - pad*2;
+  const val = lastPanels['n' + node.id];
+  ctx.save();
+  ctx.font = '11px var(--mono, monospace)';
+  ctx.textBaseline = 'top';
+  if (val === undefined){
+    ctx.fillStyle = 'rgba(197,205,216,.35)';
+    ctx.fillText('wire a value · Run', pad, top);
+    ctx.restore(); return;
   }
-  const modeSel = document.getElementById('pe-mode'), ta = document.getElementById('pe-text');
-  modeSel.value = node.properties.mode || 'friendly';
-  ta.value = node.properties.text || '';
-  document.getElementById('pe-hint').textContent = PANEL_HINTS[modeSel.value];
-  document.getElementById('pe-apply').onclick = ()=>{
-    setPanelParam(node, 'text', ta.value);
-    setPanelParam(node, 'mode', modeSel.value);
-    ov.style.display = 'none';
-    showTab('panels');          // show the translated result
-    window.runGraph();
-  };
-  ov.style.display = 'flex';
-  ta.focus();
+  ctx.fillStyle = '#9fe0c0';
+  const lines = fmtPanel(val).split('\n');
+  let y = top; const maxY = node.size[1] - lh;
+  for (const line of lines){
+    let s = line;
+    while (ctx.measureText(s).width > w && s.length > 1) s = s.slice(0, -1);   // clip to width
+    ctx.fillText(s + (s.length < line.length ? '…' : ''), pad, y); y += lh;
+    if (y > maxY){ ctx.fillText('…', pad, y); break; }
+  }
+  ctx.restore();
 }
 
+// ── ComfyUI-style note: multi-line text drawn on the node body + inline editor ──
+// The text lives in node.properties[node._noteParam]; it never passes through a
+// single-line prompt, so newlines and indentation survive every edit round-trip.
+let inlineEditor = null;   // { node, param, el } while a textarea overlay is open
+
+function noteLines(node){
+  const raw = String(node.properties[node._noteParam] ?? '');
+  return raw.length ? raw.split('\n') : [];
+}
+// Where the note text starts inside the body: the whole body for a Note, but for
+// Data/Panel it sits BELOW the sockets + mode widget (litegraph's computed content).
+function noteTextTop(node){
+  if (node.cadType === 'Note') return 6;
+  try { return LGraphNode.prototype.computeSize.call(node)[1] + 6; }
+  catch(_){ return 48; }
+}
+function drawNoteBody(ctx, node){
+  if (inlineEditor && inlineEditor.node === node) return;   // textarea covers the body
+  const pad = 8, top = noteTextTop(node), lh = 15, w = node.size[0] - pad*2;
+  const lines = noteLines(node);
+  ctx.save();
+  ctx.font = '12px var(--mono, monospace)';
+  ctx.textBaseline = 'top';
+  if (!lines.length){
+    ctx.fillStyle = 'rgba(197,205,216,.35)';
+    ctx.fillText('Double-click to edit…', pad, top);
+    ctx.restore(); return;
+  }
+  ctx.fillStyle = '#c5cdd8';
+  let y = top;
+  const maxY = node.size[1] - lh;
+  outer: for (const line of lines){
+    // word-wrap each source line to the node width
+    let cur = '';
+    for (const word of line.split(' ')){
+      const trial = cur ? cur + ' ' + word : word;
+      if (ctx.measureText(trial).width > w && cur){
+        ctx.fillText(cur, pad, y); y += lh; cur = word;
+        if (y > maxY){ ctx.fillText('…', pad, y); break outer; }
+      } else cur = trial;
+    }
+    ctx.fillText(cur, pad, y); y += lh;
+    if (y > maxY && line !== lines[lines.length-1]){ ctx.fillText('…', pad, y); break; }
+  }
+  ctx.restore();
+}
+function openInlineNoteEditor(node){
+  if (!node._noteParam) return;
+  closeInlineNoteEditor(true);                 // commit any other open editor first
+  const el = document.createElement('textarea');
+  el.className = 'inline-note-editor';
+  el.spellcheck = false;
+  el.value = node.properties[node._noteParam] ?? '';
+  document.body.appendChild(el);
+  // Commit on a click anywhere outside the textarea (ComfyUI-style). We use an
+  // outside-pointerdown listener instead of `blur`, because litegraph reclaims
+  // canvas focus right after the opening double-click and would blur us instantly.
+  const onOutside = (e)=>{ if (e.target !== el) closeInlineNoteEditor(true); };
+  inlineEditor = { node, param: node._noteParam, el, onOutside };
+  positionInlineEditor();
+  el.addEventListener('input', ()=>{
+    node.properties[node._noteParam] = el.value;   // live: body redraws, checkDirty autosaves
+    node.setDirtyCanvas && node.setDirtyCanvas(true,true);
+  });
+  el.addEventListener('keydown', e=>{
+    if (e.key === 'Escape'){ e.preventDefault(); closeInlineNoteEditor(true); }
+    else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); closeInlineNoteEditor(true); }
+    e.stopPropagation();                         // keep litegraph/global shortcuts out of the textarea
+  });
+  // defer focus + outside-listener so the opening double-click fully settles first
+  setTimeout(()=>{
+    if (inlineEditor && inlineEditor.el === el){
+      el.focus(); el.select();
+      document.addEventListener('mousedown', onOutside, true);
+    }
+  }, 60);
+}
+function positionInlineEditor(){
+  if (!inlineEditor || !lcanvas) return;
+  const { node, el } = inlineEditor;
+  const ds = lcanvas.ds, r = lcanvas.canvas.getBoundingClientRect(), s = ds.scale;
+  const top = noteTextTop(node) - 6;   // align the textarea with the drawn text region
+  el.style.left   = ((node.pos[0] + ds.offset[0]) * s + r.left) + 'px';
+  el.style.top    = ((node.pos[1] + top + ds.offset[1]) * s + r.top)  + 'px';
+  el.style.width  = (node.size[0] * s) + 'px';
+  el.style.height = ((node.size[1] - top) * s) + 'px';
+  el.style.fontSize = (12 * s) + 'px';
+  el.style.padding  = (6 * s) + 'px ' + (8 * s) + 'px';
+}
+function closeInlineNoteEditor(commit){
+  if (!inlineEditor) return;
+  const { node, param, el, onOutside } = inlineEditor;
+  inlineEditor = null;                           // clear first so handlers become no-ops
+  if (onOutside) document.removeEventListener('mousedown', onOutside, true);
+  if (commit) node.properties[param] = el.value;
+  el.remove();
+  if (commit){
+    node.setDirtyCanvas && node.setDirtyCanvas(true,true);
+    if ((node.outputs || []).length) onParamChange(node);   // Panel is a data source → re-run
+  }
+}
 // ── error node highlighting ──
 function clearHighlights(){
   for (const n of highlighted){ n.color = undefined; n.bgcolor = undefined; }
