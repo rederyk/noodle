@@ -1,0 +1,57 @@
+{
+  "name": "parametric-gear",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# Parametric spur gear \u2014 tweak the #@param knobs (on the node or in /ui)\nimport math\nteeth = 16        #@param int min=6 max=40\nradius = 18.0     #@param min=8 max=40 step=1\nthickness = 6.0   #@param min=2 max=20 step=0.5\nbore = 5.0        #@param min=0 max=14 step=0.5\n\nbody = Cylinder(radius, thickness)\ntooth = Box((2 * math.pi * radius / teeth) * 0.55, radius * 0.36, thickness)\ng = body\nfor i in range(int(teeth)):\n    g += Rot(0, 0, i * 360.0 / teeth) * (Pos(0, radius, 0) * tooth)\nif bore > 0:\n    g -= Cylinder(bore, thickness)\nresult = g\n",
+        "_cb": {
+          "radius": 21,
+          "thickness": 5,
+          "bore": 0
+        }
+      },
+      "position": [
+        360,
+        180
+      ],
+      "preview": true
+    },
+    {
+      "id": "n3",
+      "type": "NumberInput",
+      "params": {
+        "value": 12
+      },
+      "position": [
+        55,
+        301
+      ]
+    },
+    {
+      "id": "note_doc",
+      "type": "Note",
+      "params": {
+        "text": "Custom node from scratch\n\nThis whole spur gear is ONE CodeBlock of build123d Python. Its #@param knobs (teeth, radius, thickness, bore) become live widgets \u2014 tweak them on the node or in /ui and the gear rebuilds."
+      },
+      "position": [
+        55,
+        -91
+      ],
+      "size": [
+        320,
+        150
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "l1",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n1",
+      "to_socket": "in_1"
+    }
+  ]
+}

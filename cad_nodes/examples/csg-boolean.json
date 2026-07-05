@@ -1,0 +1,72 @@
+{
+  "name": "csg-boolean",
+  "nodes": [
+    {
+      "id": "box_1",
+      "type": "Box",
+      "params": {
+        "depth": 20,
+        "height": 20,
+        "width": 20
+      },
+      "position": [
+        120,
+        160
+      ],
+      "parent": null
+    },
+    {
+      "id": "sphere_1",
+      "type": "Sphere",
+      "params": {
+        "radius": 12
+      },
+      "position": [
+        350,
+        160
+      ],
+      "parent": null
+    },
+    {
+      "id": "subtract_1",
+      "type": "Subtract",
+      "params": {},
+      "position": [
+        580,
+        160
+      ],
+      "parent": null
+    },
+    {
+      "id": "note_doc",
+      "type": "Note",
+      "params": {
+        "text": "CSG basics\n\nA Box and a Sphere combined with a Subtract (boolean) node \u2014 the sphere is carved out of the box. Swap Subtract for Union or Intersect to see the other booleans."
+      },
+      "position": [
+        120,
+        -70
+      ],
+      "size": [
+        320,
+        150
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "c1",
+      "from_node": "box_1",
+      "from_socket": "result",
+      "to_node": "subtract_1",
+      "to_socket": "a"
+    },
+    {
+      "id": "c2",
+      "from_node": "sphere_1",
+      "from_socket": "result",
+      "to_node": "subtract_1",
+      "to_socket": "b"
+    }
+  ]
+}

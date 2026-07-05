@@ -1,0 +1,71 @@
+{
+  "name": "scatter-surface",
+  "nodes": [
+    {
+      "id": "surf",
+      "type": "Sphere",
+      "params": {
+        "radius": 20
+      },
+      "position": [
+        80,
+        80
+      ]
+    },
+    {
+      "id": "div",
+      "type": "DivideSurface",
+      "params": {
+        "u_count": 12,
+        "v_count": 7
+      },
+      "position": [
+        330,
+        80
+      ]
+    },
+    {
+      "id": "stud",
+      "type": "Sphere",
+      "params": {
+        "radius": 2
+      },
+      "position": [
+        580,
+        80
+      ],
+      "preview": true
+    },
+    {
+      "id": "note_doc",
+      "type": "Note",
+      "params": {
+        "text": "DivideSurface + fan-out\n\nDivideSurface lays a U x V grid of points over the big sphere, and a small sphere (a stud) is scattered onto every point. Change u_count / v_count to re-tile the surface."
+      },
+      "position": [
+        80,
+        -150
+      ],
+      "size": [
+        320,
+        150
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "1",
+      "from_node": "surf",
+      "from_socket": "result",
+      "to_node": "div",
+      "to_socket": "surface"
+    },
+    {
+      "id": "2",
+      "from_node": "div",
+      "from_socket": "points",
+      "to_node": "stud",
+      "to_socket": "origin"
+    }
+  ]
+}
