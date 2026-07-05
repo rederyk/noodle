@@ -1,0 +1,195 @@
+{
+  "name": "parametric-curves",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "ConstructPoint",
+      "params": {
+        "x": -30,
+        "y": 0,
+        "z": 0
+      },
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "id": "n2",
+      "type": "ConstructPoint",
+      "params": {
+        "x": -10,
+        "y": 25,
+        "z": 0
+      },
+      "position": [
+        0,
+        80
+      ]
+    },
+    {
+      "id": "n3",
+      "type": "ConstructPoint",
+      "params": {
+        "x": 10,
+        "y": -10,
+        "z": 0
+      },
+      "position": [
+        0,
+        160
+      ]
+    },
+    {
+      "id": "n4",
+      "type": "ConstructPoint",
+      "params": {
+        "x": 30,
+        "y": 20,
+        "z": 0
+      },
+      "position": [
+        0,
+        240
+      ]
+    },
+    {
+      "id": "n5",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        200,
+        120
+      ],
+      "multi": [
+        "items"
+      ]
+    },
+    {
+      "id": "n6",
+      "type": "Spline",
+      "params": {},
+      "position": [
+        400,
+        120
+      ],
+      "preview": true
+    },
+    {
+      "id": "n7",
+      "type": "ArcCenter",
+      "params": {
+        "radius": 18,
+        "start_angle": 200,
+        "end_angle": 340
+      },
+      "position": [
+        400,
+        260
+      ],
+      "preview": true
+    },
+    {
+      "id": "n8",
+      "type": "ConstructPoint",
+      "params": {
+        "x": -30,
+        "y": -25,
+        "z": 0
+      },
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "id": "n9",
+      "type": "ConstructPoint",
+      "params": {
+        "x": 30,
+        "y": -25,
+        "z": 0
+      },
+      "position": [
+        200,
+        360
+      ]
+    },
+    {
+      "id": "n10",
+      "type": "Line",
+      "params": {},
+      "position": [
+        400,
+        330
+      ],
+      "preview": true
+    },
+    {
+      "id": "note_doc",
+      "type": "Note",
+      "params": {
+        "text": "Parametric curves\n\nBuild wire geometry from points: a Spline through control points, an ArcCenter and a Line. Curves like these feed sketches, sweeps and lofts downstream."
+      },
+      "position": [
+        0,
+        -230
+      ],
+      "size": [
+        320,
+        150
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "l1",
+      "from_node": "n1",
+      "from_socket": "point",
+      "to_node": "n5",
+      "to_socket": "items"
+    },
+    {
+      "id": "l2",
+      "from_node": "n2",
+      "from_socket": "point",
+      "to_node": "n5",
+      "to_socket": "items"
+    },
+    {
+      "id": "l3",
+      "from_node": "n3",
+      "from_socket": "point",
+      "to_node": "n5",
+      "to_socket": "items"
+    },
+    {
+      "id": "l4",
+      "from_node": "n4",
+      "from_socket": "point",
+      "to_node": "n5",
+      "to_socket": "items"
+    },
+    {
+      "id": "l5",
+      "from_node": "n5",
+      "from_socket": "result",
+      "to_node": "n6",
+      "to_socket": "points"
+    },
+    {
+      "id": "l6",
+      "from_node": "n8",
+      "from_socket": "point",
+      "to_node": "n10",
+      "to_socket": "start"
+    },
+    {
+      "id": "l7",
+      "from_node": "n9",
+      "from_socket": "point",
+      "to_node": "n10",
+      "to_socket": "end"
+    }
+  ]
+}

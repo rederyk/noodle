@@ -1,0 +1,133 @@
+{
+  "name": "gear-row-fanout",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "Display",
+      "params": {},
+      "position": [
+        644,
+        366
+      ]
+    },
+    {
+      "id": "n2",
+      "type": "ConstructPoint",
+      "params": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "position": [
+        357,
+        561
+      ]
+    },
+    {
+      "id": "n3",
+      "type": "ListRange",
+      "params": {
+        "start": 0,
+        "count": 4,
+        "step": 60
+      },
+      "position": [
+        116,
+        571
+      ]
+    },
+    {
+      "id": "n4",
+      "type": "ListRange",
+      "params": {
+        "start": 8,
+        "count": 4,
+        "step": 4
+      },
+      "position": [
+        126,
+        91
+      ]
+    },
+    {
+      "id": "n5",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# Parametric spur gear. `teeth` is wired from a Range -> the whole block\n# FANS OUT (one gear per value); a matching Range of X positions spreads them.\nimport math\nteeth = 12        #@param int min=6 max=40\nradius = 16.0     #@param min=8 max=40 step=1\nthickness = 5.0   #@param min=2 max=20 step=0.5\nbore = 4.0        #@param min=0 max=14 step=0.5\n\nbody = Cylinder(radius, thickness)\ntooth = Box((2 * math.pi * radius / teeth) * 0.55, radius * 0.36, thickness)\ng = body\nfor i in range(int(teeth)):\n    g += Rot(0, 0, i * 360.0 / teeth) * (Pos(0, radius, 0) * tooth)\nif bore > 0:\n    g -= Cylinder(bore, thickness)\nresult = g\n",
+        "_cb": {
+          "radius": 18.3111,
+          "thickness": 9.5
+        }
+      },
+      "position": [
+        375,
+        -28
+      ]
+    },
+    {
+      "id": "n6",
+      "type": "Move",
+      "params": {
+        "x": 33.3333,
+        "y": -169.4444,
+        "z": 283.3333
+      },
+      "position": [
+        895,
+        59
+      ]
+    },
+    {
+      "id": "n7",
+      "type": "Note",
+      "params": {
+        "text": "Grasshopper-style fan-out\n\nA Range feeds the gear CodeBlock, so the node runs once per value and outputs a whole ROW of gears. Wire a list into any input and the node fans out automatically."
+      },
+      "position": [
+        116,
+        -258
+      ],
+      "size": [
+        240,
+        130
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "l1",
+      "from_node": "n4",
+      "from_socket": "result",
+      "to_node": "n5",
+      "to_socket": "teeth"
+    },
+    {
+      "id": "l2",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n2",
+      "to_socket": "x"
+    },
+    {
+      "id": "l3",
+      "from_node": "n5",
+      "from_socket": "result",
+      "to_node": "n6",
+      "to_socket": "shape"
+    },
+    {
+      "id": "l4",
+      "from_node": "n2",
+      "from_socket": "point",
+      "to_node": "n1",
+      "to_socket": "value"
+    },
+    {
+      "id": "l5",
+      "from_node": "n1",
+      "from_socket": "value",
+      "to_node": "n6",
+      "to_socket": "offset"
+    }
+  ]
+}

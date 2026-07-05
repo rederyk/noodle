@@ -1,0 +1,149 @@
+{
+  "name": "voronoi-panel",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "Rectangle",
+      "params": {
+        "width": 120,
+        "height": 80
+      },
+      "position": [
+        40,
+        120
+      ],
+      "preview": false
+    },
+    {
+      "id": "nbase",
+      "type": "Extrude",
+      "params": {
+        "amount": 6,
+        "taper": 0,
+        "both": false
+      },
+      "position": [
+        320,
+        40
+      ],
+      "preview": false
+    },
+    {
+      "id": "n2",
+      "type": "PopulateGeometry",
+      "params": {
+        "count": 34,
+        "seed": 3,
+        "width": 110,
+        "height": 70
+      },
+      "position": [
+        40,
+        320
+      ],
+      "preview": false
+    },
+    {
+      "id": "n3",
+      "type": "Voronoi2D",
+      "params": {
+        "scale": 0.82
+      },
+      "position": [
+        320,
+        280
+      ],
+      "preview": false
+    },
+    {
+      "id": "nholes",
+      "type": "Extrude",
+      "params": {
+        "amount": 6,
+        "taper": 0,
+        "both": true
+      },
+      "position": [
+        580,
+        280
+      ],
+      "preview": false
+    },
+    {
+      "id": "nsub",
+      "type": "Subtract",
+      "params": {},
+      "position": [
+        840,
+        140
+      ],
+      "preview": true
+    },
+    {
+      "id": "note_doc",
+      "type": "Note",
+      "params": {
+        "text": "Voronoi2D\n\nScattered points become Voronoi cells; the cells are extruded and subtracted from a base plate to make a perforated panel. Tweak count / seed / scale to change the pattern."
+      },
+      "position": [
+        40,
+        -190
+      ],
+      "size": [
+        320,
+        150
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "c1",
+      "from_node": "n1",
+      "from_socket": "result",
+      "to_node": "nbase",
+      "to_socket": "sketch"
+    },
+    {
+      "id": "c2",
+      "from_node": "n1",
+      "from_socket": "result",
+      "to_node": "n2",
+      "to_socket": "region"
+    },
+    {
+      "id": "c3",
+      "from_node": "n1",
+      "from_socket": "result",
+      "to_node": "n3",
+      "to_socket": "boundary"
+    },
+    {
+      "id": "c4",
+      "from_node": "n2",
+      "from_socket": "points",
+      "to_node": "n3",
+      "to_socket": "points"
+    },
+    {
+      "id": "c5",
+      "from_node": "n3",
+      "from_socket": "cells",
+      "to_node": "nholes",
+      "to_socket": "sketch"
+    },
+    {
+      "id": "c6",
+      "from_node": "nbase",
+      "from_socket": "result",
+      "to_node": "nsub",
+      "to_socket": "a"
+    },
+    {
+      "id": "c7",
+      "from_node": "nholes",
+      "from_socket": "result",
+      "to_node": "nsub",
+      "to_socket": "b"
+    }
+  ]
+}
