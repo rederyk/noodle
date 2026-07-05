@@ -1374,7 +1374,8 @@ _LIST_PRODUCERS = {
     "Surface", "Curve", "Point",   # gated containers always emit a list (filter/transform)
     "Geometry", "Plane",           # (Selection returns one ShapeList, not a fan-out list)
     "Series", "DivideDomain",
-    "Panel",   # source-mode multi-line text -> a list (and pass-through preserves list-ness)
+    "Input",    # source-mode multi-line text -> a list
+    "Display",  # pass-through preserves list-ness
 }
 
 
@@ -1751,8 +1752,12 @@ class Transpiler:
         chosen = (sinks or candidates)
         if chosen:
             return self.var_of[chosen[-1]]
-        # fallback: last variable produced at all
-        return self.var_of[order[-1]] if order and order[-1] in self.var_of else None
+        # fallback: the last variable actually produced (skip nodes that emit no
+        # var — Note annotations, export sinks — which can sit last in topo order)
+        for nid in reversed(order):
+            if nid in self.var_of:
+                return self.var_of[nid]
+        return None
 
     def _extract_spans(self, text: str) -> tuple[str, list[dict]]:
         """Strip the source-map sentinels from `text`, returning the clean source
@@ -1796,6 +1801,8 @@ class Transpiler:
             node = self.graph.node(nid)
             if node.parent is not None:
                 continue  # emitted inside its group
+            if node.type == "Note":
+                continue  # canvas annotation only — never emitted
             if getattr(node, "bypassed", False):
                 self._emit_bypass(node, body)
                 continue
