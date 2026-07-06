@@ -1707,7 +1707,18 @@ function toGraphJSON(name){
       to_node:idMap[l.target_id],   to_socket:tn.inputs[l.target_slot].name,
     });
   }
-  return {name, nodes, connections};
+  // Group boxes (editor-only): serialise so logical clustering survives a
+  // round-trip. LiteGraph's own LGraphGroup.serialize gives {title,bounding,
+  // color,font_size}; fall back to reading the fields directly.
+  const groups = [];
+  for (const g of (lgraph._groups||[])){
+    if (g.serialize){ groups.push(g.serialize()); continue; }
+    const b = g._bounding || [0,0,140,80];
+    groups.push({title:g.title||'Group', bounding:[Math.round(b[0]),Math.round(b[1]),Math.round(b[2]),Math.round(b[3])], color:g.color, font_size:g.font_size});
+  }
+  const out = {name, nodes, connections};
+  if (groups.length) out.groups = groups;
+  return out;
 }
 
 // ── rebuild Litegraph from our graph JSON (round-trip, incl. MCP-made graphs) ──
@@ -1785,6 +1796,15 @@ function fromGraphJSON(data){
     updateGizmoLockedWidgets(node);                          // grey gizmo binds when locked
     updateParamSocketWired(node);                             // grey any param whose socket is wired
     node.size = node.computeSize(); node.size[0] = Math.max(node.size[0], 150);
+  }
+  // Restore group boxes (editor-only clustering). LiteGraph's add() routes an
+  // LGraphGroup into lgraph._groups; configure() reads title/bounding/color.
+  const GroupCtor = window.LGraphGroup || LiteGraph.LGraphGroup;
+  if (GroupCtor) for (const gd of (data.groups||[])){
+    const g = new GroupCtor();
+    if (g.configure) g.configure(gd);
+    else { g.title = gd.title||'Group'; g.color = gd.color; if (gd.bounding && g._bounding) g._bounding.set(gd.bounding); }
+    lgraph.add(g);
   }
   nodeByGraphId = Object.assign({}, map);   // disk ids -> node (matches /ui until next save)
   refreshAllPolyTypes();
