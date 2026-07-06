@@ -290,9 +290,9 @@ def test_plain_transpile_has_no_sentinels():
 
 
 def test_wired_param_has_no_span():
-    # width is driven by a Panel source -> its literal isn't in the code, so no span
+    # width is driven by an Input source -> its literal isn't in the code, so no span
     g = Graph.from_dict({"name": "m", "nodes": [
-        {"id": "p1", "type": "Panel", "params": {"text": "42"}, "position": [0, 0]},
+        {"id": "p1", "type": "Input", "params": {"text": "42"}, "position": [0, 0]},
         {"id": "box_1", "type": "Box", "params": {"width": 20}, "position": [0, 0]},
     ], "connections": [
         {"id": "c1", "from_node": "p1", "from_socket": "value",

@@ -1,0 +1,366 @@
+{
+  "name": "voronoi-vase",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "DivideDomain",
+      "params": {
+        "count": 10
+      },
+      "position": [
+        -442,
+        -500
+      ]
+    },
+    {
+      "id": "n2",
+      "type": "ConstructDomain",
+      "params": {
+        "min": 0,
+        "max": 30
+      },
+      "position": [
+        -715,
+        -503
+      ]
+    },
+    {
+      "id": "n3",
+      "type": "Display",
+      "params": {},
+      "position": [
+        -274,
+        -554
+      ]
+    },
+    {
+      "id": "n4",
+      "type": "Polyline",
+      "params": {
+        "closed": false
+      },
+      "position": [
+        -243,
+        -754
+      ]
+    },
+    {
+      "id": "n5",
+      "type": "SelectVertex",
+      "params": {},
+      "position": [
+        95,
+        -888
+      ]
+    },
+    {
+      "id": "n6",
+      "type": "ConstructPoint",
+      "params": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "position": [
+        354,
+        -889
+      ]
+    },
+    {
+      "id": "n7",
+      "type": "Circle",
+      "params": {
+        "radius": 10
+      },
+      "position": [
+        626,
+        -888
+      ],
+      "multi": [
+        "radius"
+      ]
+    },
+    {
+      "id": "n8",
+      "type": "Rectangle",
+      "params": {
+        "width": 157.08,
+        "height": 70
+      },
+      "position": [
+        8,
+        136
+      ],
+      "preview": true
+    },
+    {
+      "id": "n9",
+      "type": "MapToSurface",
+      "params": {
+        "width": 100,
+        "height": 100
+      },
+      "position": [
+        760,
+        180
+      ]
+    },
+    {
+      "id": "n10",
+      "type": "Input",
+      "params": {
+        "mode": "friendly",
+        "text": "10\n12\n13\n15\n17\n18\n19\n17\n12\n10"
+      },
+      "position": [
+        64,
+        -704
+      ]
+    },
+    {
+      "id": "n11",
+      "type": "ConstructPoint",
+      "params": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "position": [
+        -86,
+        -359
+      ]
+    },
+    {
+      "id": "n12",
+      "type": "Circle",
+      "params": {
+        "radius": 389.9572
+      },
+      "position": [
+        218,
+        -369
+      ],
+      "preview": true
+    },
+    {
+      "id": "n13",
+      "type": "PopulateGeometry",
+      "params": {
+        "count": 21,
+        "seed": 1,
+        "width": 30,
+        "height": 100
+      },
+      "position": [
+        278,
+        316
+      ]
+    },
+    {
+      "id": "n14",
+      "type": "Extrude",
+      "params": {
+        "amount": 6,
+        "taper": 0,
+        "both": true,
+        "solid": true
+      },
+      "position": [
+        1000,
+        180
+      ]
+    },
+    {
+      "id": "n15",
+      "type": "Subtract",
+      "params": {},
+      "position": [
+        1240,
+        80
+      ],
+      "preview": true
+    },
+    {
+      "id": "n16",
+      "type": "Voronoi2D",
+      "params": {
+        "scale": 0.2209
+      },
+      "position": [
+        526,
+        324
+      ],
+      "preview": true
+    },
+    {
+      "id": "n17",
+      "type": "Shell",
+      "params": {
+        "thickness": 1
+      },
+      "position": [
+        1047,
+        -335
+      ]
+    },
+    {
+      "id": "n18",
+      "type": "Loft",
+      "params": {
+        "ruled": false,
+        "solid": false,
+        "smoothing": true,
+        "continuity": "C2",
+        "parametrization": "chord",
+        "max_degree": 8
+      },
+      "position": [
+        587,
+        -418
+      ]
+    },
+    {
+      "id": "n19",
+      "type": "Note",
+      "params": {
+        "text": "Advanced combo\n\nVoronoi cells are mapped onto a revolved surface, then the result is shelled into a thin-walled vase. Shows MapToSurface, Voronoi2D, Shell and Loft working together."
+      },
+      "position": [
+        -715,
+        -1119
+      ],
+      "size": [
+        240,
+        130
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "l1",
+      "from_node": "n8",
+      "from_socket": "result",
+      "to_node": "n13",
+      "to_socket": "region"
+    },
+    {
+      "id": "l2",
+      "from_node": "n13",
+      "from_socket": "points",
+      "to_node": "n16",
+      "to_socket": "points"
+    },
+    {
+      "id": "l3",
+      "from_node": "n8",
+      "from_socket": "result",
+      "to_node": "n16",
+      "to_socket": "boundary"
+    },
+    {
+      "id": "l4",
+      "from_node": "n16",
+      "from_socket": "cells",
+      "to_node": "n9",
+      "to_socket": "shapes"
+    },
+    {
+      "id": "l5",
+      "from_node": "n8",
+      "from_socket": "result",
+      "to_node": "n9",
+      "to_socket": "boundary"
+    },
+    {
+      "id": "l6",
+      "from_node": "n9",
+      "from_socket": "mapped",
+      "to_node": "n14",
+      "to_socket": "sketch"
+    },
+    {
+      "id": "l7",
+      "from_node": "n14",
+      "from_socket": "result",
+      "to_node": "n15",
+      "to_socket": "b"
+    },
+    {
+      "id": "l8",
+      "from_node": "n2",
+      "from_socket": "domain",
+      "to_node": "n1",
+      "to_socket": "domain"
+    },
+    {
+      "id": "l9",
+      "from_node": "n1",
+      "from_socket": "result",
+      "to_node": "n3",
+      "to_socket": "value"
+    },
+    {
+      "id": "l10",
+      "from_node": "n3",
+      "from_socket": "value",
+      "to_node": "n11",
+      "to_socket": "z"
+    },
+    {
+      "id": "l11",
+      "from_node": "n11",
+      "from_socket": "point",
+      "to_node": "n12",
+      "to_socket": "origin"
+    },
+    {
+      "id": "l12",
+      "from_node": "n10",
+      "from_socket": "value",
+      "to_node": "n12",
+      "to_socket": "radius"
+    },
+    {
+      "id": "l13",
+      "from_node": "n6",
+      "from_socket": "point",
+      "to_node": "n7",
+      "to_socket": "origin"
+    },
+    {
+      "id": "l14",
+      "from_node": "n11",
+      "from_socket": "point",
+      "to_node": "n4",
+      "to_socket": "points"
+    },
+    {
+      "id": "l15",
+      "from_node": "n12",
+      "from_socket": "result",
+      "to_node": "n18",
+      "to_socket": "sections"
+    },
+    {
+      "id": "l16",
+      "from_node": "n18",
+      "from_socket": "result",
+      "to_node": "n9",
+      "to_socket": "surface"
+    },
+    {
+      "id": "l17",
+      "from_node": "n18",
+      "from_socket": "result",
+      "to_node": "n15",
+      "to_socket": "a"
+    },
+    {
+      "id": "l18",
+      "from_node": "n18",
+      "from_socket": "result",
+      "to_node": "n17",
+      "to_socket": "part"
+    }
+  ]
+}

@@ -33,6 +33,19 @@ _EXAMPLE_DESCRIPTIONS = {
     "flange": "Parametric plate with a bore, exported to STEP (booleans + export).",
     "bolt-flange": "Bolt-circle flange: one hole polar-arrayed and subtracted "
                    "wholesale — Grasshopper-style list fan-out.",
+    "csg-boolean": "CSG basics: a box minus a sphere (Subtract boolean).",
+    "parametric-gear": "Custom node from scratch — a spur gear written in one "
+                       "CodeBlock, driven by #@param knobs.",
+    "gear-row-fanout": "Grasshopper-style fan-out — a Range feeds the gear "
+                       "CodeBlock so it produces a whole row of gears.",
+    "scatter-surface": "DivideSurface + fan-out — a stud scattered on every point "
+                       "of a U×V grid over a sphere.",
+    "voronoi-panel": "Voronoi2D — scattered points become cells, extruded and "
+                     "subtracted from a plate into a perforated panel.",
+    "voronoi-vase": "Advanced combo — Voronoi cells mapped onto a revolved "
+                    "surface, shelled into a thin-walled vase.",
+    "parametric-curves": "Parametric curves — a Spline through points, an "
+                         "ArcCenter and a Line as building blocks for wire geometry.",
 }
 
 # A graph id is a single directory name under the store root. Rejecting
