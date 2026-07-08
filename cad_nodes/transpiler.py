@@ -132,6 +132,7 @@ def _annot(node) -> str:
 
 PREAMBLE = """\
 import math
+import os
 import random
 
 from build123d import *
@@ -140,6 +141,17 @@ from build123d import *
 __panels__ = {}
 __previews__ = {}
 __errors__ = {}
+
+
+def _out(_path):
+    \"\"\"Resolve an Export node's path into the project's exports/ folder.
+    The worker runs with cwd = the project dir, so exports land in
+    projects/<name>/exports/. The path is sandboxed to a basename (any
+    directory components / traversal are stripped) so an Export node can
+    never write outside its own project. Feeds the global file library.\"\"\"
+    _name = os.path.basename(str(_path).strip()) or "output"
+    os.makedirs("exports", exist_ok=True)
+    return os.path.join("exports", _name)
 
 
 def _panel(_id, _value, _text="", _mode="friendly"):
@@ -1739,7 +1751,19 @@ class Transpiler:
         self._guard(lines, body, node)
 
     def _pick_result(self, order: list[str]) -> str | None:
-        used_as_source = {c.from_node for c in self.graph.connections}
+        # A connection into a pure sink (a node with no outputs — every Export
+        # node) does NOT "consume" the shape: the upstream node is still the
+        # meaningful end of the chain. Otherwise wiring geometry into an Export
+        # node hides it from the preview/quick-export, which then falls back to
+        # some dangling node (e.g. an unconnected Import). See feedback
+        # 20260707-231423 ("export step non va piu").
+        def _has_outputs(nid: str) -> bool:
+            try:
+                return bool(catalog.get(self.graph.node(nid).type).outputs)
+            except Exception:
+                return True
+        used_as_source = {c.from_node for c in self.graph.connections
+                          if _has_outputs(c.to_node)}
         geometry_like = {catalog.WIRE_SOLID, catalog.WIRE_SURFACE}
         candidates = []
         for nid in order:

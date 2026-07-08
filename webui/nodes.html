@@ -290,6 +290,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
     <div class="tb-zone">
       <button class="tb-icon" onclick="openPalette()" title="Command palette (Ctrl+K)">⌘K</button>
       <button class="tb-btn" onclick="exportStep()" title="Export the model as STEP">⬇ STEP</button>
+      <a class="tb-icon" href="/library" title="File library — download exports &amp; upload assets">📁</a>
       <button class="tb-icon" id="btn-feedback" style="display:none" onclick="openFeedback()" title="Send feedback / report">🐞</button>
       <div class="menu-wrap" style="position:relative">
         <button class="tb-icon sys" id="btn-system" onclick="toggleSystemMenu(event)" title="System">⚙</button>
@@ -340,6 +341,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
         <div class="vp-tools">
           <button class="tb-icon" onclick="frameView()" title="Fit to view (F · dbl-click)">⛶</button>
           <button class="tb-icon on" id="btn-grid" onclick="toggleGrid()" title="Show / hide grid">▦</button>
+          <button class="tb-icon" id="btn-proj" onclick="toggleProjection()" title="Perspective / Orthographic (O)">⧉</button>
           <button class="tb-icon" id="btn-fast" onclick="toggleFastDrag()" title="Drag Move/Rotate/Scale = instant local preview">✥</button>
           <button class="tb-icon" id="btn-isolate" onclick="toggleIsolate()" title="Isolate selected — show only the selected nodes'/group's shapes (I)">◎</button>
         </div>
@@ -2046,6 +2048,7 @@ document.addEventListener('keydown', (e)=>{
   else if (k === 'escape' && sketchNode){ e.preventDefault(); exitCurveDrawMode(); }
   else if (k === 'f' && !e.ctrlKey && !e.metaKey){ e.preventDefault(); frameView(); }
   else if (k === 'i' && !e.ctrlKey && !e.metaKey){ e.preventDefault(); toggleIsolate(); }
+  else if (k === 'o' && !e.ctrlKey && !e.metaKey){ e.preventDefault(); toggleProjection(); }
 });
 
 // ── floating selection toolbar (anchored above the selection) ──
@@ -2714,6 +2717,13 @@ function initViewer(){
   transformControls.enabled = false;
   transformControls.addEventListener('dragging-changed', e=>{ viewer.controls.enabled = !e.value; });
   transformControls.addEventListener('objectChange', ()=> gizmoDragUpdate());
+  // when the viewer swaps perspective⇄ortho it rebuilds the active camera; the
+  // on-canvas gizmo must follow it, and the toolbar pill reflects the mode.
+  viewer.onProjectionChange = (mode)=>{
+    transformControls.camera = viewer.camera;
+    const b = document.getElementById('btn-proj');
+    if (b){ b.classList.toggle('on', mode==='ortho'); b.title = (mode==='ortho'?'Orthographic':'Perspective')+' — toggle (O)'; }
+  };
 
   // click-to-select: a non-drag click picks the preview under it and selects the
   // owning graph node (the nav ViewHelper + gizmo get first refusal). While a
@@ -2750,7 +2760,7 @@ function initViewer(){
     }
     if (transformControls && transformControls.dragging){ vDown=null; return; }  // gizmo drag
     viewer.viewHelper.center.copy(viewer.controls.target);
-    if (viewer.viewHelper.handleClick(e)){ vDown=null; return; }   // nav gizmo consumed it
+    if (viewer.viewHelper.handleClick(e)){ viewer.requestInspectOnSnap(); vDown=null; return; }   // nav gizmo consumed it → inspect mode
     if (!vDown) return;
     const moved = Math.hypot(e.clientX-vDown[0], e.clientY-vDown[1]); vDown=null;
     if (moved > 5) return;                                          // a drag (orbit), not a pick
@@ -2772,6 +2782,10 @@ window.toggleGrid = function(){
   if(!viewer) return;
   const on = !viewer.grid.visible; viewer.setGrid(on);
   const b = document.getElementById('btn-grid'); if(b) b.classList.toggle('on', on);
+};
+window.toggleProjection = function(){
+  if(!viewer) return;
+  viewer.toggleProjection();   // onProjectionChange updates the pill + rebinds the gizmo
 };
 // "Isolate" (Grasshopper-style solo, simpler): show only the selected node(s)'/
 // group's shapes and hide the rest — INDEPENDENT of each node's preview "eye". A
@@ -3593,7 +3607,9 @@ function paletteCommands(){
     {ic:'⬆',label:'Import model (STEP/STL/SVG/DXF)…', k:'', run:()=>importModel()},
     {ic:'⛶', label:'Fit to view', k:'F', run:()=>frameView()},
     {ic:'▦', label:'Toggle grid', k:'', run:()=>toggleGrid()},
+    {ic:'⧉', label:'Toggle perspective / orthographic', k:'O', run:()=>toggleProjection()},
     {ic:'◎', label:'Isolate selected shapes', k:'I', run:()=>toggleIsolate()},
+    {ic:'📁', label:'Open file library', k:'', run:()=>{ location.href='/library'; }},
     {ic:'⬇', label:'Export STEP', k:'', run:()=>exportStep()},
     {ic:'⛌', label:'Open backend console', k:'', run:()=>openConsole()},
     {ic:'⟳', label:'Restart backend…', k:'', run:()=>confirmRestart()},
