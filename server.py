@@ -388,6 +388,14 @@ async def webui_nodes():
     return HTMLResponse("<h1>noodle</h1><p>Node editor not found</p>", status_code=404)
 
 
+@app.get("/library", response_class=HTMLResponse)
+async def webui_library():
+    page = Path("/app/webui/library.html")
+    if page.exists():
+        return page.read_text()
+    return HTMLResponse("<h1>noodle</h1><p>Library not found</p>", status_code=404)
+
+
 # ---------------------------------------------------------------------------
 # Projects CRUD
 # ---------------------------------------------------------------------------
@@ -745,6 +753,89 @@ async def export_graph_project(name: str, fmt: str):
     except (RuntimeError, ValueError) as e:
         raise HTTPException(400, f"Export failed: {e}") from e
     return FileResponse(out_path, media_type=media, filename=f"{name}.{ext}")
+
+
+# ---------------------------------------------------------------------------
+# File library — global view of every project's exported outputs (exports/)
+# and imported assets (assets/), with download + upload. Backs /library.
+# ---------------------------------------------------------------------------
+# Media types for anything the library serves for download.
+_LIB_MEDIA = {
+    ".step": "model/step", ".stp": "model/step",
+    ".stl": "model/stl",
+    ".3mf": "model/3mf",
+    ".gltf": "model/gltf+json", ".glb": "model/gltf-binary",
+    ".svg": "image/svg+xml",
+    ".dxf": "image/vnd.dxf",
+}
+# The two sandboxed sub-folders the library exposes. Nothing else in a
+# project dir (graph.json, _run.py, output.stl, …) is ever listed or served.
+_LIB_KINDS = ("exports", "assets")
+
+
+def _lib_entries(d: Path, kind: str) -> list[dict]:
+    """List downloadable files in a project's exports/ or assets/ folder."""
+    folder = d / kind
+    out: list[dict] = []
+    if folder.is_dir():
+        for f in sorted(folder.iterdir()):
+            if f.is_file() and f.suffix.lower() in _LIB_MEDIA:
+                st = f.stat()
+                out.append({
+                    "name": f.name,
+                    "kind": kind,
+                    "ext": f.suffix.lower(),
+                    "size": st.st_size,
+                    "mtime": int(st.st_mtime),
+                    "url": f"/api/library/{d.name}/{kind}/{f.name}",
+                })
+    return out
+
+
+@app.get("/api/library")
+async def library_list():
+    """Every downloadable file across all projects, grouped by project.
+    exports/ = files written by Export nodes; assets/ = imported models."""
+    projects = []
+    for d in sorted(PROJECTS_DIR.iterdir()):
+        if not d.is_dir():
+            continue
+        files = _lib_entries(d, "exports") + _lib_entries(d, "assets")
+        projects.append({"project": d.name, "files": files})
+    return {"projects": projects}
+
+
+@app.get("/api/library/{name}/{kind}/{filename}")
+async def library_download(name: str, kind: str, filename: str):
+    """Stream a single library file. `kind` is exports|assets; `filename` is
+    a plain basename (path traversal is rejected by both the guard below and
+    project_dir's validate_graph_id)."""
+    if kind not in _LIB_KINDS:
+        raise HTTPException(404, f"Unknown library folder {kind!r}")
+    if filename != Path(filename).name or filename in ("", ".", ".."):
+        raise HTTPException(400, "Invalid filename")
+    d = require_project(name)
+    f = d / kind / filename
+    if not f.is_file():
+        raise HTTPException(404, "File not found")
+    media = _LIB_MEDIA.get(f.suffix.lower(), "application/octet-stream")
+    return FileResponse(f, media_type=media, filename=filename)
+
+
+@app.delete("/api/library/{name}/{kind}/{filename}")
+async def library_delete(name: str, kind: str, filename: str):
+    """Delete a single library file (exports/ or assets/)."""
+    if kind not in _LIB_KINDS:
+        raise HTTPException(404, f"Unknown library folder {kind!r}")
+    if filename != Path(filename).name or filename in ("", ".", ".."):
+        raise HTTPException(400, "Invalid filename")
+    d = require_project(name)
+    f = d / kind / filename
+    if not f.is_file():
+        raise HTTPException(404, "File not found")
+    f.unlink()
+    logger.info("library file deleted: %s/%s/%s", name, kind, filename)
+    return {"status": "deleted"}
 
 
 # ---------------------------------------------------------------------------
