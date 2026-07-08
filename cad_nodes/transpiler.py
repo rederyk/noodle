@@ -225,51 +225,197 @@ def _panel_parse(_text, _mode="friendly"):
     return _vals[0] if len(_vals) == 1 else _vals
 
 
-def _select_subshapes(_shape, _kind, _indices, _sigs):
+def _subshape_fingerprint(_s, _kind):
+    \"\"\"A pick's identity beyond position: (anchor, size, orient) — mirrors the
+    layout the picker stores in `sig`. size = edge length / face area; orient =
+    edge tangent / face normal (unit). Vertices carry only an anchor.\"\"\"
+    try:
+        if _kind == "edge":
+            _m, _d = _s @ 0.5, _s % 0.5
+            _o = _d if _d.length == 0 else _d.normalized()
+            return ((_m.X, _m.Y, _m.Z), float(_s.length), (_o.X, _o.Y, _o.Z))
+        if _kind == "face":
+            _c = _s.center()
+            _n = _s.normal_at(_c)
+            _o = _n if _n.length == 0 else _n.normalized()
+            return ((_c.X, _c.Y, _c.Z), float(_s.area), (_o.X, _o.Y, _o.Z))
+        return ((_s.X, _s.Y, _s.Z), None, None)
+    except Exception:
+        return None
+
+
+def _select_subshapes(_shape, _kind, _indices, _sigs, _nid=None):
     \"\"\"Resolve a picked sub-shape set against a (possibly recomputed) shape.
 
-    Matching is by nearest anchor point (edge midpoint / face centre / vertex),
-    so a selection survives upstream parameter tweaks even when OCC re-orders
-    the sub-shapes. Falls back to raw indices when no signatures were stored.\"\"\"
+    Matches each stored pick by a FINGERPRINT — position + size (length/area) +
+    orientation (tangent/normal), not position alone — with a confidence gate:
+    if the best candidate is clearly not the same feature (moved far AND changed
+    size/orientation), the pick is left UNRESOLVED and a warning is recorded in
+    __errors__[_nid] ("re-pick") instead of silently grabbing the nearest shape.
+    Survives OCC re-ordering and honest parameter tweaks; flags real breakage.
+    Falls back to raw indices when no signatures were stored.\"\"\"
     if _shape is None:
         return ShapeList([])
     _get = {"edge": getattr(_shape, "edges", None),
             "face": getattr(_shape, "faces", None),
             "vertex": getattr(_shape, "vertices", None)}.get(_kind)
     subs = list(_get()) if _get else []
+    fps = [_subshape_fingerprint(s, _kind) for s in subs]
 
-    def _anchor(s):
-        try:
-            if _kind == "edge":
-                v = s @ 0.5
-            elif _kind == "face":
-                v = s.center()
-            else:
-                v = s
-            return (v.X, v.Y, v.Z)
-        except Exception:
-            return None
+    # part scale, to judge "moved far" relative to the model (not absolute mm)
+    _xs = [fp[0][0] for fp in fps if fp] or [0.0]
+    _ys = [fp[0][1] for fp in fps if fp] or [0.0]
+    _zs = [fp[0][2] for fp in fps if fp] or [0.0]
+    _diag = max(((max(_xs) - min(_xs)) ** 2 + (max(_ys) - min(_ys)) ** 2 +
+                 (max(_zs) - min(_zs)) ** 2) ** 0.5, 1e-6)
+    _THRESH = 0.45                        # accept a match below this combined cost
+    #                                       (margin so honest tweaks don't false-flag)
 
-    anchors = [_anchor(s) for s in subs]
-    chosen, used = [], set()
+    def _cost(fp, want):
+        (ca, cs, co) = fp
+        wa = (want[0], want[1], want[2])
+        dp = ((ca[0] - wa[0]) ** 2 + (ca[1] - wa[1]) ** 2 + (ca[2] - wa[2]) ** 2) ** 0.5 / _diag
+        ss = 0.0
+        if cs is not None and len(want) >= 4 and want[3]:
+            ss = abs(cs - want[3]) / max(abs(want[3]), 1e-6)
+        oo = 0.0
+        if co is not None and len(want) >= 7:
+            _wl = (want[4] ** 2 + want[5] ** 2 + want[6] ** 2) ** 0.5 or 1.0
+            _dot = (co[0] * want[4] + co[1] * want[5] + co[2] * want[6]) / _wl
+            oo = 1.0 - min(abs(_dot), 1.0)         # tangent/normal sign is ambiguous
+        return dp * 1.0 + min(ss, 1.0) * 0.6 + oo * 0.5
+
+    chosen, used, _unresolved = [], set(), 0
     for want in (_sigs or []):
-        wx, wy, wz = want[0], want[1], want[2]
-        best, best_d = None, None
-        for j, a in enumerate(anchors):
-            if j in used or a is None:
+        best, best_c = None, None
+        for j, fp in enumerate(fps):
+            if j in used or fp is None:
                 continue
-            d = (a[0] - wx) ** 2 + (a[1] - wy) ** 2 + (a[2] - wz) ** 2
-            if best_d is None or d < best_d:
-                best_d, best = d, j
-        if best is not None:
+            c = _cost(fp, want)
+            if best_c is None or c < best_c:
+                best_c, best = c, j
+        if best is not None and best_c is not None and best_c <= _THRESH:
             used.add(best)
             chosen.append(subs[best])
+        else:
+            _unresolved += 1
+    if _unresolved and _nid is not None:
+        __errors__[_nid] = (f"selection stale: {_unresolved} of {len(_sigs)} picked "
+                            f"{_kind}(s) no longer match (geometry changed) — re-pick")
     if not _sigs:
         for idx in (_indices or []):
             if 0 <= idx < len(subs) and idx not in used:
                 used.add(idx)
                 chosen.append(subs[idx])
     return ShapeList(chosen)
+
+
+def _faces_by_normal(_shape, _axis="Z", _sign="+", _tol=0.1):
+    \"\"\"PREDICATE selector: faces whose outward normal aligns with a world axis.
+    +Z is 'the top face(s)', -Z the bottom, 'both' either. Re-evaluated against
+    the CURRENT geometry, so it survives parameter changes that move the face —
+    unlike a picked (positional) selection. Returns a ShapeList (fed to a face op
+    or a modifier).\"\"\"
+    if _shape is None:
+        return ShapeList([])
+    _faces = _shape.faces() if hasattr(_shape, "faces") else ShapeList([])
+    _ax = {"X": Vector(1, 0, 0), "Y": Vector(0, 1, 0), "Z": Vector(0, 0, 1)}.get(_axis, Vector(0, 0, 1))
+    _out = []
+    for _f in _faces:
+        try:
+            _d = _f.normal_at().dot(_ax)
+        except Exception:
+            continue
+        if (_sign == "+" and _d > 1 - _tol) or \
+           (_sign == "-" and _d < -(1 - _tol)) or \
+           (_sign == "both" and abs(_d) > 1 - _tol):
+            _out.append(_f)
+    return ShapeList(_out)
+
+
+def _subs(_shape, _kind):
+    \"\"\"The edge/face/vertex sub-shapes of a shape as a ShapeList (empty if none).\"\"\"
+    if _shape is None:
+        return ShapeList([])
+    _g = {"edge": getattr(_shape, "edges", None),
+          "face": getattr(_shape, "faces", None),
+          "vertex": getattr(_shape, "vertices", None)}.get(_kind)
+    try:
+        return _g() if _g else ShapeList([])
+    except Exception:
+        return ShapeList([])
+
+
+def _edges_by_type(_shape, _type="circle"):
+    \"\"\"PREDICATE: edges of a given geometry type — 'circle' picks every hole/round.\"\"\"
+    _gt = {"circle": GeomType.CIRCLE, "line": GeomType.LINE,
+           "ellipse": GeomType.ELLIPSE, "spline": GeomType.BSPLINE}.get(_type, GeomType.CIRCLE)
+    try:
+        return _subs(_shape, "edge").filter_by(_gt)
+    except Exception:
+        return ShapeList([])
+
+
+def _faces_by_type(_shape, _type="plane"):
+    \"\"\"PREDICATE: faces of a given surface type (plane/cylinder/sphere/cone/torus).\"\"\"
+    _gt = {"plane": GeomType.PLANE, "cylinder": GeomType.CYLINDER,
+           "sphere": GeomType.SPHERE, "cone": GeomType.CONE,
+           "torus": GeomType.TORUS}.get(_type, GeomType.PLANE)
+    try:
+        return _subs(_shape, "face").filter_by(_gt)
+    except Exception:
+        return ShapeList([])
+
+
+def _by_size(_shape, _kind="face", _metric="area", _pick="largest", _n=1):
+    \"\"\"PREDICATE: the N biggest/smallest sub-shapes by a metric (area/length/radius).\"\"\"
+    _s = _subs(_shape, _kind)
+    if not _s:
+        return ShapeList([])
+    _sb = {"area": SortBy.AREA, "length": SortBy.LENGTH,
+           "radius": SortBy.RADIUS, "volume": SortBy.VOLUME}.get(_metric, SortBy.AREA)
+    try:
+        _sorted = _s.sort_by(_sb)
+    except Exception:
+        return ShapeList([])
+    _n = max(1, int(_n))
+    _low = _pick in ("smallest", "shortest", "min")
+    return ShapeList(list(_sorted[:_n] if _low else _sorted[-_n:]))
+
+
+def _by_position(_shape, _kind="face", _axis="Z", _pick="max", _n=1):
+    \"\"\"PREDICATE: the N extreme sub-shapes along an axis — 'the topmost face',
+    'the leftmost edges'. Re-derived from position, so stable under param tweaks.\"\"\"
+    _s = _subs(_shape, _kind)
+    if not _s:
+        return ShapeList([])
+    _ax = {"X": Axis.X, "Y": Axis.Y, "Z": Axis.Z}.get(_axis, Axis.Z)
+    try:
+        _sorted = _s.sort_by(_ax)
+    except Exception:
+        return ShapeList([])
+    _n = max(1, int(_n))
+    _low = _pick in ("min", "smallest", "first")
+    return ShapeList(list(_sorted[:_n] if _low else _sorted[-_n:]))
+
+
+def _combine_sel(_a, _b, _mode="or"):
+    \"\"\"Boolean-combine two selections: or (union), and (intersection),
+    subtract (in A, not in B). Sub-shapes are deduped by identity hash.\"\"\"
+    _a = list(_a or [])
+    _b = list(_b or [])
+    if _mode == "or":
+        _seen, _out = set(), []
+        for _x in _a + _b:
+            _h = hash(_x)
+            if _h not in _seen:
+                _seen.add(_h)
+                _out.append(_x)
+        return ShapeList(_out)
+    _bs = {hash(_x) for _x in _b}
+    if _mode == "and":
+        return ShapeList([_x for _x in _a if hash(_x) in _bs])
+    return ShapeList([_x for _x in _a if hash(_x) not in _bs])
 
 
 def _origin_points(_o):
@@ -388,6 +534,20 @@ def _shell(_part, _thickness):
     # open surface: thicken it into a solid wall
     surf = _part if isinstance(_part, (Shell, Face)) else _face(_part)
     return Solid.thicken(surf, _thickness)
+
+
+def _shell_faces(_part, _faces, _thickness):
+    \"\"\"Hollow a solid to a wall of _thickness, leaving the SELECTED faces open.
+    Like _shell but the openings come from a face selector instead of the +Z
+    face — pair with FacesByNormal / FacesByType / CombineSelection. An empty
+    selection makes a fully closed hollow shell.\"\"\"
+    if _part is None or not _thickness:
+        return _part
+    _op = list(_faces) if _faces else []
+    try:
+        return offset(_part, amount=-_thickness, openings=_op)
+    except Exception:
+        return _part
 
 
 def _bbox_plane(_shape, _plane, _t=0.5):
@@ -1560,7 +1720,7 @@ class Transpiler:
         kind = sel.get("kind", default_kind)
         indices = sel.get("indices", []) or []
         sigs = sel.get("sigs", []) or []
-        body = [f"{var} = _select_subshapes({src}, {kind!r}, {indices!r}, {sigs!r}){_annot(node)}"]
+        body = [f"{var} = _select_subshapes({src}, {kind!r}, {indices!r}, {sigs!r}, {node.id!r}){_annot(node)}"]
         self._guard(lines, body, node)
 
     def _emit_codeblock(self, node, lines: list[str]) -> None:
