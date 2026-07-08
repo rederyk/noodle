@@ -1,0 +1,23 @@
+{
+  "name": "predicate-selectors",
+  "nodes": [
+    { "id": "box", "type": "Box", "params": { "width": 40, "height": 30, "depth": 12, "centered": true }, "position": [80, 120] },
+    { "id": "p1", "type": "ConstructPoint", "params": { "x": -12, "y": 0, "z": 0 }, "position": [80, 320] },
+    { "id": "p2", "type": "ConstructPoint", "params": { "x": 12, "y": 0, "z": 0 }, "position": [80, 460] },
+    { "id": "c1", "type": "Cylinder", "params": { "radius": 4, "height": 30, "centered": true }, "position": [320, 320] },
+    { "id": "c2", "type": "Cylinder", "params": { "radius": 4, "height": 30, "centered": true }, "position": [320, 460] },
+    { "id": "sub", "type": "Subtract", "params": {}, "position": [560, 200] },
+    { "id": "sel", "type": "EdgesByType", "params": { "type": "circle" }, "position": [800, 320] },
+    { "id": "fil", "type": "FilletSelectedEdges", "params": { "radius": 1.5 }, "position": [1040, 200], "preview": true }
+  ],
+  "connections": [
+    { "id": "e1", "from_node": "p1", "from_socket": "point", "to_node": "c1", "to_socket": "origin" },
+    { "id": "e2", "from_node": "p2", "from_socket": "point", "to_node": "c2", "to_socket": "origin" },
+    { "id": "e3", "from_node": "box", "from_socket": "result", "to_node": "sub", "to_socket": "a" },
+    { "id": "e4", "from_node": "c1", "from_socket": "result", "to_node": "sub", "to_socket": "b" },
+    { "id": "e5", "from_node": "c2", "from_socket": "result", "to_node": "sub", "to_socket": "b" },
+    { "id": "e6", "from_node": "sub", "from_socket": "result", "to_node": "sel", "to_socket": "geometry" },
+    { "id": "e7", "from_node": "sub", "from_socket": "result", "to_node": "fil", "to_socket": "part" },
+    { "id": "e8", "from_node": "sel", "from_socket": "selection", "to_node": "fil", "to_socket": "edges" }
+  ]
+}
