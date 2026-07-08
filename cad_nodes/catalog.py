@@ -697,6 +697,75 @@ register(NodeDef("SelectVertex", "select", "Select Vertex",
     description="Pick specific vertices of a shape in the 3D picker; outputs the "
                 "selected vertices."))
 
+# --- Predicate (semantic) selectors -----------------------------------------
+# Unlike the pick-by-click Select* nodes (positional anchors that break when a
+# feature moves), these describe the selection by INTENT and re-evaluate against
+# the current geometry, so they survive parameter changes. Ordinary catalog
+# nodes (a PREAMBLE helper does the work) — one atom per criterion, composable.
+def _choice(name, default, options, label=None):
+    """A dropdown param whose string value is emitted as a quoted literal
+    (select falls back to repr(value) when it has no code_map)."""
+    return Param(name, "select", label or name, default, widget="select", options=options)
+
+register(NodeDef("FacesByNormal", "select", "Faces By Normal",
+    inputs=[Socket("geometry", WIRE_SOLID)],
+    params=[_choice("axis", "Z", ["X", "Y", "Z"]),
+            _choice("sign", "+", ["+", "-", "both"]),
+            _f("tol", 0.1, 0.001, 1.0)],
+    outputs=[Socket("selection", WIRE_SELECTION)],
+    code_template={"algebra": "_faces_by_normal({geometry}, {axis}, {sign}, {tol})"},
+    description="Select faces whose normal points along an axis (+Z = the top "
+                "face). Predicate-based: survives parameter changes that move the "
+                "face — unlike a hand-picked selection."))
+
+register(NodeDef("EdgesByType", "select", "Edges By Type",
+    inputs=[Socket("geometry", WIRE_SOLID, accepts=[WIRE_CURVE])],
+    params=[_choice("type", "circle", ["circle", "line", "ellipse", "spline"])],
+    outputs=[Socket("selection", WIRE_SELECTION)],
+    code_template={"algebra": "_edges_by_type({geometry}, {type})"},
+    description="Select all edges of a geometry type — 'circle' grabs every hole / "
+                "round edge (e.g. to fillet them all). Stable under param changes."))
+
+register(NodeDef("FacesByType", "select", "Faces By Type",
+    inputs=[Socket("geometry", WIRE_SOLID)],
+    params=[_choice("type", "plane", ["plane", "cylinder", "sphere", "cone", "torus"])],
+    outputs=[Socket("selection", WIRE_SELECTION)],
+    code_template={"algebra": "_faces_by_type({geometry}, {type})"},
+    description="Select all faces of a surface type — e.g. every cylindrical wall "
+                "(bore/boss). Stable under param changes."))
+
+register(NodeDef("FacesByArea", "select", "Faces By Area",
+    inputs=[Socket("geometry", WIRE_SOLID)],
+    params=[_choice("pick", "largest", ["largest", "smallest"]), _i("n", 1, 1, 100)],
+    outputs=[Socket("selection", WIRE_SELECTION)],
+    code_template={"algebra": "_by_size({geometry}, 'face', 'area', {pick}, {n})"},
+    description="Select the N largest (or smallest) faces by area."))
+
+register(NodeDef("EdgesByLength", "select", "Edges By Length",
+    inputs=[Socket("geometry", WIRE_SOLID, accepts=[WIRE_CURVE])],
+    params=[_choice("pick", "longest", ["longest", "shortest"]), _i("n", 1, 1, 100)],
+    outputs=[Socket("selection", WIRE_SELECTION)],
+    code_template={"algebra": "_by_size({geometry}, 'edge', 'length', {pick}, {n})"},
+    description="Select the N longest (or shortest) edges by length."))
+
+register(NodeDef("SubshapesByPosition", "select", "Subshapes By Position",
+    inputs=[Socket("geometry", WIRE_SOLID, accepts=[WIRE_CURVE])],
+    params=[_choice("kind", "face", ["face", "edge", "vertex"]),
+            _choice("axis", "Z", ["X", "Y", "Z"]),
+            _choice("pick", "max", ["max", "min"]), _i("n", 1, 1, 100)],
+    outputs=[Socket("selection", WIRE_SELECTION)],
+    code_template={"algebra": "_by_position({geometry}, {kind}, {axis}, {pick}, {n})"},
+    description="Select the N extreme sub-shapes along an axis — the topmost face "
+                "(Z/max), the leftmost edges (X/min), and so on."))
+
+register(NodeDef("CombineSelection", "select", "Combine Selection",
+    inputs=[Socket("a", WIRE_SELECTION), Socket("b", WIRE_SELECTION)],
+    params=[_choice("mode", "or", ["or", "and", "subtract"])],
+    outputs=[Socket("selection", WIRE_SELECTION)],
+    code_template={"algebra": "_combine_sel({a}, {b}, {mode})"},
+    description="Boolean-combine two selections: or (union), and (in both), "
+                "subtract (in A but not B). Compose predicate selectors."))
+
 register(NodeDef("FilletSelectedEdges", "modifiers", "Fillet Selected Edges",
     inputs=[Socket("part", WIRE_SOLID), Socket("edges", WIRE_SELECTION)],
     params=[_f("radius", 2, 0.05, 100)],
@@ -728,6 +797,17 @@ register(NodeDef("Shell", "modifiers", "Shell",
     description="Hollow out a solid with the given wall thickness, leaving the top "
                 "(+Z) face open. An open surface (e.g. a non-solid Loft) is thickened "
                 "into a solid wall instead."))
+
+register(NodeDef("ShellByFaces", "modifiers", "Shell By Faces",
+    inputs=[Socket("part", WIRE_SOLID), Socket("faces", WIRE_SELECTION),
+            Socket("thickness", WIRE_DATA, required=False)],
+    params=[_f("thickness", 1, 0.05, 100)],
+    outputs=_geo(),
+    code_template={"algebra": "_shell_faces({part}, {faces}, {thickness})"},
+    description="Hollow a solid to a wall of `thickness`, leaving the SELECTED "
+                "faces open. Unlike Shell (which always opens the top), you choose "
+                "the openings with a face selector — Faces By Normal, Faces By "
+                "Type, or Combine Selection for several."))
 
 register(NodeDef("Offset", "modifiers", "Offset",
     inputs=[Socket("shape", WIRE_SOLID)] + _pin("amount"),
