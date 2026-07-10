@@ -265,6 +265,33 @@ def test_transpile_ref_image_is_editor_only():
     assert rdef.outputs == [] and rdef.inputs == []
 
 
+def test_transpile_center_of_mass_two_outputs():
+    # CenterOfMass is universal (casts from curves/faces/points) and special-cased
+    # into TWO outputs — `center` (a vector) and `volume` (a number) must resolve to
+    # DIFFERENT downstream vars via the per-socket out_var_of map.
+    cdef = catalog.get("CenterOfMass")
+    assert [o.name for o in cdef.outputs] == ["center", "volume"]
+    assert cdef.code_template.get("algebra") == ""
+    assert "curve" in (cdef.inputs[0].accepts or [])   # a circle/curve may feed it
+    g = Graph.from_dict({"nodes": [
+        {"id": "c", "type": "Circle", "params": {"radius": 5}},
+        {"id": "m", "type": "CenterOfMass", "params": {}},
+        {"id": "dc", "type": "Display", "params": {}},
+        {"id": "dv", "type": "Display", "params": {}},
+    ], "connections": [
+        {"id": "l1", "from_node": "c", "from_socket": "result", "to_node": "m", "to_socket": "shape"},
+        {"id": "l2", "from_node": "m", "from_socket": "center", "to_node": "dc", "to_socket": "value"},
+        {"id": "l3", "from_node": "m", "from_socket": "volume", "to_node": "dv", "to_socket": "value"},
+    ]})
+    assert g.validate() == []                          # curve -> center-of-mass casts fine
+    code = transpile(g)
+    assert "_center_of(" in code and "_volume_of(" in code
+    import re
+    cvar = re.search(r"(\w+) = _center_of", code).group(1)
+    assert f"_probe('dc', {cvar})" in code             # center consumer
+    assert f"_probe('dv', {cvar}_vol)" in code         # volume consumer -> distinct var
+
+
 def test_transpile_origin_input_positions_primitive():
     # A point wired into a primitive's optional origin wraps it in _at(...).
     g = Graph.from_dict({
