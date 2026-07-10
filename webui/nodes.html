@@ -296,6 +296,8 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
     <div class="spacer"></div>
     <!-- ZONA SISTEMA / UTILITY -->
     <div class="tb-zone">
+      <button class="tb-icon" id="btn-undo" onclick="undo()" title="Undo (Ctrl+Z)" disabled>↶</button>
+      <button class="tb-icon" id="btn-redo" onclick="redo()" title="Redo (Ctrl+Shift+Z)" disabled>↷</button>
       <button class="tb-icon" onclick="openPalette()" title="Command palette (Ctrl+K)">⌘K</button>
       <button class="tb-btn" onclick="exportStep()" title="Export the model as STEP">⬇ STEP</button>
       <a class="tb-icon" href="/library" title="File library — download exports &amp; upload assets">📁</a>
@@ -1972,6 +1974,86 @@ function toGraphJSON(name){
   return out;
 }
 
+// ── shared node/connection builders (used by graph load AND clipboard paste) ──
+function createNodeFromData(nd){
+  const def = catalog[nd.type]; if(!def){ log('unknown node type '+nd.type,'err'); return null; }
+  const node = LiteGraph.createNode('cad/'+def.category+'/'+nd.type);
+  node.pos = nd.position || [120, 120];
+  node.previewMode = nd.preview === true ? 'on' : nd.preview === false ? 'off' : 'auto';
+  if (nd.bypassed){ node.bypassed = true; node.mode = LiteGraph.NEVER; }
+  if (nd.color) node.previewColor = nd.color;
+  if (nd.wireframe) node.wireframe = true;
+  if (nd.multi) for (const nm of nd.multi) node.multiInputs.add(nm);
+  if (nd.params && nd.params.selection){ node.selectionData = nd.params.selection; updateSelectBtn(node); }
+  if (nd.params && nd.params.trace){ node.traceData = nd.params.trace; updateTraceBtn(node); }
+  if (nd.params && nd.params._ui) node.properties._ui = Object.assign({}, nd.params._ui);   // slider ⚙ config
+  if (node.widgets) for (const w of node.widgets){
+    if (w.cadParam && nd.params && w.cadParam in nd.params){
+      w.value = nd.params[w.cadParam];
+      node.properties[w.cadParam] = w.value;
+    }
+    if (w.isEye) w.name = eyeLabel(node.previewMode);
+  }
+  if (node._noteParam && nd.params && node._noteParam in nd.params)
+    node.properties[node._noteParam] = nd.params[node._noteParam];   // note text (no widget)
+  if (node._noteParam && Array.isArray(nd.size)) node.size = nd.size.slice();   // restore resized note
+  // CodeBlock: seed #@param overrides, then build the dynamic widgets + input
+  // sockets BEFORE connections are restored (so a wired `teeth` socket exists).
+  if (nd.type === 'CodeBlock'){
+    node._cb = Object.assign({}, (nd.params && nd.params._cb) || {});
+    syncCodeblockParams(node);
+  }
+  return node;
+}
+
+// Restore a set of connections, origin/target resolved through `map` (disk-id or
+// clipboard-id -> live node). Litegraph's type gate is bypassed: the wires were
+// already validated (server-side on load, or came from the live graph on paste),
+// and polymorphic outputs still read their STATIC type until refreshAllPolyTypes.
+function restoreConnections(connList, map){
+  const _isValid = LiteGraph.isValidConnection;
+  LiteGraph.isValidConnection = () => true;
+  try {
+    for (const c of (connList||[])){
+      const on = map[c.from_node], tn = map[c.to_node]; if(!on||!tn) continue;
+      const os = on.outputs.findIndex(s=>s.name===c.from_socket);
+      if (os<0) continue;
+      // attach to the next FREE slot of this name; grow one if all are taken so
+      // several connections to the same input round-trip into several slots.
+      let is = tn.inputs.findIndex(s=>(s.cadName||s.name)===c.to_socket && s.link==null);
+      if (is<0){
+        const info = tn.cadInputs && tn.cadInputs[c.to_socket];
+        if (info){ tn.addInput(c.to_socket, info.accepts); is = tn.inputs.length-1; tn.inputs[is].cadName=c.to_socket; }
+        else is = tn.inputs.findIndex(s=>(s.cadName||s.name)===c.to_socket);
+      }
+      if (os>=0 && is>=0) on.connect(os, tn, is);
+    }
+  } finally {
+    LiteGraph.isValidConnection = _isValid;
+  }
+}
+
+// Post-pass on freshly built nodes: rebuild "+" multi-input state, grey wired
+// params, recompute sizes. (refreshAllPolyTypes/Subtypes are run by the caller.)
+function finalizeNodes(nodes){
+  for (const node of nodes){
+    const counts = {};
+    for (const s of (node.inputs||[])) if (s.link!=null){ const nm=s.cadName||s.name; counts[nm]=(counts[nm]||0)+1; }
+    for (const nm in counts) if (counts[nm]>=2) node.multiInputs.add(nm);
+    for (const nm of node.multiInputs){
+      const info = node.cadInputs[nm];
+      if (info && info.grow && !(node.inputs||[]).some(s=>(s.cadName||s.name)===nm && s.link==null)){
+        node.addInput(nm, info.accepts); node.inputs[node.inputs.length-1].cadName = nm;
+      }
+      const w = (node.widgets||[]).find(x => x.cadMultiFor===nm); if (w) w.value = true;
+    }
+    if (node.cadType === 'CodeBlock') updateCbWired(node);   // grey out wired params
+    updateGizmoLockedWidgets(node);                          // grey gizmo binds when locked
+    updateParamSocketWired(node);                             // grey any param whose socket is wired
+    node.size = node.computeSize(); node.size[0] = Math.max(node.size[0], 150);
+  }
+}
+
 // ── rebuild Litegraph from our graph JSON (round-trip, incl. MCP-made graphs) ──
 function fromGraphJSON(data){
   if (gizmoNode) exitGizmoEdit();
@@ -1993,33 +2075,7 @@ function fromGraphJSON(data){
       if (hasIncoming.has(nd.id)){ nd.type = 'Display'; if (nd.params){ delete nd.params.text; delete nd.params.mode; } }
       else nd.type = 'Input';
     }
-    const def = catalog[nd.type]; if(!def){ log('unknown node type '+nd.type,'err'); continue; }
-    const node = LiteGraph.createNode('cad/'+def.category+'/'+nd.type);
-    node.pos = nd.position || [120, 120];
-    node.previewMode = nd.preview === true ? 'on' : nd.preview === false ? 'off' : 'auto';
-    if (nd.bypassed){ node.bypassed = true; node.mode = LiteGraph.NEVER; }
-    if (nd.color) node.previewColor = nd.color;
-    if (nd.wireframe) node.wireframe = true;
-    if (nd.multi) for (const nm of nd.multi) node.multiInputs.add(nm);
-    if (nd.params && nd.params.selection){ node.selectionData = nd.params.selection; updateSelectBtn(node); }
-    if (nd.params && nd.params.trace){ node.traceData = nd.params.trace; updateTraceBtn(node); }
-    if (nd.params && nd.params._ui) node.properties._ui = Object.assign({}, nd.params._ui);   // slider ⚙ config
-    if (node.widgets) for (const w of node.widgets){
-      if (w.cadParam && nd.params && w.cadParam in nd.params){
-        w.value = nd.params[w.cadParam];
-        node.properties[w.cadParam] = w.value;
-      }
-      if (w.isEye) w.name = eyeLabel(node.previewMode);
-    }
-    if (node._noteParam && nd.params && node._noteParam in nd.params)
-      node.properties[node._noteParam] = nd.params[node._noteParam];   // note text (no widget)
-    if (node._noteParam && Array.isArray(nd.size)) node.size = nd.size.slice();   // restore resized note
-    // CodeBlock: seed #@param overrides, then build the dynamic widgets + input
-    // sockets BEFORE connections are restored (so a wired `teeth` socket exists).
-    if (nd.type === 'CodeBlock'){
-      node._cb = Object.assign({}, (nd.params && nd.params._cb) || {});
-      syncCodeblockParams(node);
-    }
+    const node = createNodeFromData(nd); if(!node) continue;
     lgraph.add(node);
     map[nd.id] = node;
   }
@@ -2029,44 +2085,10 @@ function fromGraphJSON(data){
   // during load — refreshAllPolyTypes() hasn't run yet, and onConnectionsChange
   // is short-circuited while loadingGraph. e.g. a Move (static `solid`) feeding a
   // MakeFace `edges` (curve) would be refused, silently losing the wire on reload.
-  const _isValid = LiteGraph.isValidConnection;
-  LiteGraph.isValidConnection = () => true;
-  try {
-    for (const c of (data.connections||[])){
-      const on = map[c.from_node], tn = map[c.to_node]; if(!on||!tn) continue;
-      const os = on.outputs.findIndex(s=>s.name===c.from_socket);
-      if (os<0) continue;
-      // attach to the next FREE slot of this name; grow one if all are taken so
-      // several connections to the same input round-trip into several slots.
-      let is = tn.inputs.findIndex(s=>(s.cadName||s.name)===c.to_socket && s.link==null);
-      if (is<0){
-        const info = tn.cadInputs && tn.cadInputs[c.to_socket];
-        if (info){ tn.addInput(c.to_socket, info.accepts); is = tn.inputs.length-1; tn.inputs[is].cadName=c.to_socket; }
-        else is = tn.inputs.findIndex(s=>(s.cadName||s.name)===c.to_socket);
-      }
-      if (os>=0 && is>=0) on.connect(os, tn, is);
-    }
-  } finally {
-    LiteGraph.isValidConnection = _isValid;
-  }
+  restoreConnections(data.connections, map);
   // restore "+" state: any input that ended up with >=2 connections is multi;
   // every enabled multi input gets a trailing empty spare + its toggle set on.
-  for (const node of lgraph._nodes){
-    const counts = {};
-    for (const s of (node.inputs||[])) if (s.link!=null){ const nm=s.cadName||s.name; counts[nm]=(counts[nm]||0)+1; }
-    for (const nm in counts) if (counts[nm]>=2) node.multiInputs.add(nm);
-    for (const nm of node.multiInputs){
-      const info = node.cadInputs[nm];
-      if (info && info.grow && !(node.inputs||[]).some(s=>(s.cadName||s.name)===nm && s.link==null)){
-        node.addInput(nm, info.accepts); node.inputs[node.inputs.length-1].cadName = nm;
-      }
-      const w = (node.widgets||[]).find(x => x.cadMultiFor===nm); if (w) w.value = true;
-    }
-    if (node.cadType === 'CodeBlock') updateCbWired(node);   // grey out wired params
-    updateGizmoLockedWidgets(node);                          // grey gizmo binds when locked
-    updateParamSocketWired(node);                             // grey any param whose socket is wired
-    node.size = node.computeSize(); node.size[0] = Math.max(node.size[0], 150);
-  }
+  finalizeNodes(lgraph._nodes);
   // Restore group boxes (editor-only clustering). LiteGraph's add() routes an
   // LGraphGroup into lgraph._groups; configure() reads title/bounding/color.
   const GroupCtor = window.LGraphGroup || LiteGraph.LGraphGroup;
@@ -2164,6 +2186,7 @@ window.newGraph = async function(name){
   setCurrentName(name);
   lastSavedJSON = JSON.stringify(toGraphJSON(name));
   clearDraft(name); setDocState('saved');
+  histInit();
   await refreshGraphList();
   setStatus('new graph: '+name,'ok');
 };
@@ -2322,11 +2345,119 @@ function deleteSelected(){
   lcanvas.setDirty(true, true);
 }
 
+/* ============================================================ *
+ *  Undo / redo history  +  clipboard (copy / cut / paste)      *
+ *  Snapshots reuse the exact save serialization (toGraphJSON),  *
+ *  so every custom bit — preview eye, bypass, _cb/_ui, groups,  *
+ *  selections — round-trips. Undo/redo restore via fromGraphJSON.*
+ * ============================================================ */
+let undoStack = [], redoStack = [], histBase = null, histTimer = null, histSuspend = false;
+const HIST_MAX = 80;
+
+function histSnapshot(){ try { return JSON.stringify(toGraphJSON(currentName||'untitled')); } catch(_){ return null; } }
+function histInit(){ undoStack.length = 0; redoStack.length = 0; histBase = histSnapshot(); updateUndoButtons(); }
+function recordHistory(){                 // commit the current state as a new undo step
+  if (histSuspend || loadingGraph) return;
+  const cur = histSnapshot();
+  if (cur == null || cur === histBase) return;      // nothing actually changed
+  if (histBase != null){ undoStack.push(histBase); if (undoStack.length > HIST_MAX) undoStack.shift(); }
+  histBase = cur; redoStack.length = 0;
+  updateUndoButtons();
+}
+function scheduleHistory(){ clearTimeout(histTimer); histTimer = setTimeout(recordHistory, 300); }
+
+function applyHistorySnapshot(json){
+  histSuspend = true;
+  try { fromGraphJSON(JSON.parse(json)); } finally { histSuspend = false; }
+  histBase = json;                        // the restored state is the new baseline
+  updateUndoButtons();
+  scheduleLive();                         // reflect the restored graph (respects Live)
+}
+function undo(){
+  clearTimeout(histTimer);
+  if (!undoStack.length){ toast('info','Nothing to undo'); return; }
+  redoStack.push(histBase);
+  applyHistorySnapshot(undoStack.pop());
+  setStatus('undo','ok');
+}
+function redo(){
+  clearTimeout(histTimer);
+  if (!redoStack.length){ toast('info','Nothing to redo'); return; }
+  undoStack.push(histBase);
+  applyHistorySnapshot(redoStack.pop());
+  setStatus('redo','ok');
+}
+function updateUndoButtons(){
+  const u = document.getElementById('btn-undo'), r = document.getElementById('btn-redo');
+  if (u) u.disabled = !undoStack.length;
+  if (r) r.disabled = !redoStack.length;
+}
+
+// --- clipboard: copy / cut / paste a subgraph (nodes + their internal wires) ---
+let graphClipboard = null, pasteShift = 0;
+const CLIP_KEY = 'noodle:nodeclip';
+
+function copySelected(){
+  const ns = selectedNodes(); if (!ns.length) return;
+  const full = toGraphJSON(currentName || 'clip');
+  const ids = new Set(ns.map(n => 'n'+n.id));
+  const nodes = full.nodes.filter(nd => ids.has(nd.id));
+  const connections = (full.connections||[]).filter(c => ids.has(c.from_node) && ids.has(c.to_node));
+  graphClipboard = {nodes, connections};
+  pasteShift = 0;
+  try { localStorage.setItem(CLIP_KEY, JSON.stringify(graphClipboard)); } catch(_){}
+  toast('success', nodes.length + (nodes.length===1 ? ' node copied' : ' nodes copied'));
+}
+function cutSelected(){
+  const ns = selectedNodes(); if (!ns.length) return;
+  copySelected();
+  deleteSelected();
+  recordHistory();
+}
+function readClipboard(){
+  if (graphClipboard) return graphClipboard;
+  try { return JSON.parse(localStorage.getItem(CLIP_KEY) || 'null'); } catch(_){ return null; }
+}
+function pasteClipboard(){
+  const clip = readClipboard();
+  if (!clip || !clip.nodes || !clip.nodes.length){ toast('info','Clipboard empty'); return; }
+  pasteShift += 36;                        // cascade repeated pastes so they don't stack
+  const off = pasteShift, map = {}, created = [];
+  for (const nd0 of clip.nodes){
+    const nd = JSON.parse(JSON.stringify(nd0));   // clone (fresh litegraph ids on add)
+    nd.position = [(nd.position && nd.position[0] || 0) + off, (nd.position && nd.position[1] || 0) + off];
+    const node = createNodeFromData(nd);
+    if (!node) continue;
+    lgraph.add(node);
+    map[nd.id] = node; created.push(node);
+  }
+  if (!created.length) return;
+  restoreConnections(clip.connections || [], map);
+  finalizeNodes(created);
+  refreshAllPolyTypes(); refreshAllSubtypes();
+  if (lcanvas.selectNodes) lcanvas.selectNodes(created);
+  lgraph.setDirtyCanvas(true, true);
+  recordHistory();
+  scheduleLive();
+  toast('success', created.length + (created.length===1 ? ' node pasted' : ' nodes pasted'));
+}
+
+// expose the toolbar/palette-invoked ones (inline onclick resolves on window)
+window.undo = undo; window.redo = redo;
+window.copySelected = copySelected; window.cutSelected = cutSelected; window.pasteClipboard = pasteClipboard;
+
 // ── keyboard shortcuts (ignored while typing in a field) ──
 document.addEventListener('keydown', (e)=>{
   const t = e.target, tag = (t && t.tagName || '').toLowerCase();
   if (tag === 'input' || tag === 'textarea' || (t && t.isContentEditable)) return;
   const k = (e.key || '').toLowerCase();
+  const mod = e.ctrlKey || e.metaKey;      // Ctrl (win/linux) or ⌘ (mac)
+  if (mod && k === 'z' && !e.shiftKey){ e.preventDefault(); undo(); return; }
+  if ((mod && k === 'y') || (mod && e.shiftKey && k === 'z')){ e.preventDefault(); redo(); return; }
+  if (mod && !e.shiftKey && k === 'c'){ e.preventDefault(); copySelected(); return; }
+  if (mod && !e.shiftKey && k === 'v'){ e.preventDefault(); pasteClipboard(); return; }
+  if (mod && !e.shiftKey && k === 'x'){ e.preventDefault(); cutSelected(); return; }
+  if (mod && !e.shiftKey && k === 'd'){ e.preventDefault(); cloneSelected(); recordHistory(); return; }
   if (e.ctrlKey && !e.shiftKey && k === 'g'){ e.preventDefault(); groupSelected(); }
   else if (e.ctrlKey && !e.shiftKey && k === 'b'){ e.preventDefault(); toggleBypassSelected(); }
   else if ((k === 'delete' || k === 'backspace') && sketchNode && sketchSelIdx!=null){
@@ -2406,6 +2537,7 @@ document.addEventListener('keydown', (e)=>{
 // A param changed on `node`: fast local transform (if enabled & applicable),
 // otherwise/also the debounced exact recompute.
 function onParamChange(node){
+  scheduleHistory();   // param edits become undo steps (debounced across a drag)
   if (node && node.cadType === 'RefImage'){ syncRefImages(); return; }   // editor-only: no re-exec
   if (node && node.cadGated) refreshSubtype(node);   // filter/transform: tag follows mode
   if (fastDrag && applyLocalTransform(node)){
@@ -2737,6 +2869,7 @@ window.openGraph = async function(name){
   setCurrentName(name);
   lastSavedJSON = JSON.stringify(toGraphJSON(name));   // normalized disk baseline
   setDocState('saved');
+  histInit();                                          // fresh undo history for this graph
   localStorage.setItem('noodle:last', name);
   setStatus('opened '+name,'ok');
   maybeRestoreDraft(name);
@@ -3967,9 +4100,13 @@ function initGraph(){
   lcanvas = new LGraphCanvas(canvas, lgraph);
   lcanvas.background_image = null;
   // live triggers on structural changes (guarded while loading a graph)
-  lgraph.onNodeAdded = ()=>scheduleLive();
-  lgraph.onNodeRemoved = ()=>{ syncRefImages(); scheduleLive(); };   // drop a removed ref quad now
-  lgraph.onConnectionChange = ()=>scheduleLive();
+  lgraph.onNodeAdded = ()=>{ scheduleHistory(); scheduleLive(); };
+  lgraph.onNodeRemoved = ()=>{ scheduleHistory(); syncRefImages(); scheduleLive(); };   // drop a removed ref quad now
+  lgraph.onConnectionChange = ()=>{ scheduleHistory(); scheduleLive(); };
+  lcanvas.onNodeMoved = ()=>scheduleHistory();     // a node drag settled -> undo step
+  // group moves/resizes, wire drags: any canvas gesture that ends here is a candidate
+  // snapshot (recordHistory no-ops when nothing actually changed).
+  canvas.addEventListener('pointerup', ()=>scheduleHistory());
   lcanvas.onNodeSelected = (node)=> broadcastReveal(node);   // tell /ui to scroll to it
   lgraph.start();
   initCrossView();
@@ -4184,7 +4321,9 @@ window.openShortcuts = function(){
   closeMenus();
   const rows=[['Ctrl+Enter','Run graph'],['Ctrl+S','Save'],['Ctrl+N','New project'],['Ctrl+K','Command palette'],
     ['F','Fit to view'],['I','Isolate selected shapes'],['Ctrl+G','Group selection'],['Ctrl+B','Bypass'],['Del','Delete'],
-    ['Ctrl+C / Ctrl+V','Copy / paste'],['Esc','Exit edit / close'],['dbl-click','Search nodes'],
+    ['Ctrl+Z','Undo'],['Ctrl+Shift+Z / Ctrl+Y','Redo'],
+    ['Ctrl+C / Ctrl+V','Copy / paste'],['Ctrl+X','Cut'],['Ctrl+D','Duplicate'],
+    ['Esc','Exit edit / close'],['dbl-click','Search nodes'],
     ['dbl-click group title','Rename group']];
   buildModal(`<h3>Keyboard shortcuts</h3><div class="kbd-grid">`+
     rows.map(([k,v])=>`<kbd>${k}</kbd><span>${v}</span>`).join('')+
