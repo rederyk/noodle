@@ -221,6 +221,50 @@ def test_transpile_select_face_defaults_kind_and_pushpull():
     assert "_pushpull(__out_1, __out_2, 8.0)" in code
 
 
+def test_transpile_trace_image_bakes_frozen_contours():
+    # TraceImage has no code_template: the transpiler special-cases it, inlining
+    # the contours + mm/pixel scale FROZEN into params["trace"] (like SelectEdge's
+    # picked sigs) so the graph re-runs from fixed data with no image processing.
+    g = Graph.from_dict({
+        "nodes": [
+            {"id": "t", "type": "TraceImage",
+             "params": {"path": "assets/foo.png",
+                        "trace": {"scale": 0.5, "imgH": 160,
+                                  "contours": [
+                                      {"pts": [[0, 0], [100, 0], [100, 80]],
+                                       "closed": True, "hole": False}]}}},
+        ],
+        "connections": [],
+    })
+    code = transpile(g)
+    assert "def _trace_curves(" in code                 # helper injected
+    assert "_trace_curves([{'pts': [[0, 0], [100, 0], [100, 80]]" in code
+    assert "0.5, 160)" in code                           # scale + image height passed through
+    # the node registers as a curve producer with an empty template
+    tdef = catalog.get("TraceImage")
+    assert tdef.outputs[0].wire_type == "curve"
+    assert tdef.code_template.get("algebra") == ""
+
+
+def test_transpile_ref_image_is_editor_only():
+    # RefImage is a viewport-only reference (like Note): it never appears in the
+    # generated program, and a graph containing one still transpiles cleanly.
+    g = Graph.from_dict({
+        "nodes": [
+            {"id": "b", "type": "Box"},
+            {"id": "r", "type": "RefImage",
+             "params": {"path": "assets/blueprint.png", "plane": "XZ", "width": 200}},
+        ],
+        "connections": [],
+    })
+    code = transpile(g)
+    assert "blueprint.png" not in code       # the reference never leaks into the code
+    assert "(RefImage)" not in code          # the node is never emitted (no @node annotation)
+    assert "Box(" in code                     # the real geometry still transpiles
+    rdef = catalog.get("RefImage")
+    assert rdef.outputs == [] and rdef.inputs == []
+
+
 def test_transpile_origin_input_positions_primitive():
     # A point wired into a primitive's optional origin wraps it in _at(...).
     g = Graph.from_dict({

@@ -105,6 +105,14 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 .picker-count{font-size:12px;color:var(--orange);font-weight:600;}
 .picker-view{flex:1;position:relative;min-height:0;}
 #picker-canvas{width:100%;height:100%;display:block;cursor:crosshair;}
+/* TraceImage editor (PLAN_TRACE_IMAGE.md) — reuses .picker-overlay/.picker-bar */
+.tracer-tools{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.tracer-tools .tb-btn.active{background:var(--accent);color:#0b0e14;border-color:var(--accent);}
+.tracer-slider{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-dim);}
+.tracer-slider input[type=range]{width:78px;}
+.tracer-view{flex:1;position:relative;min-height:0;background:
+  repeating-conic-gradient(#1a1f2b 0% 25%, #141821 0% 50%) 50%/22px 22px;}
+#tracer-canvas{width:100%;height:100%;display:block;cursor:crosshair;touch-action:none;}
 
 /* ============================================================= *
  *  App shell redesign — zones, button taxonomy, status, system  *
@@ -398,6 +406,9 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
   <div class="picker-bar">
     <span class="picker-title" id="picker-title">Select edges</span>
     <span class="picker-hint">click an edge to toggle · drag to orbit · scroll to zoom</span>
+    <label class="picker-hint" id="picker-loop-wrap" title="click one edge to grab its whole same-plane loop"
+           style="display:none;user-select:none;cursor:pointer;">
+      <input type="checkbox" id="picker-loop" style="vertical-align:middle;margin-right:3px;">grab coplanar loop</label>
     <span class="picker-count" id="picker-count">0 selected</span>
     <span style="flex:1"></span>
     <button class="tb-btn" id="picker-clear">Clear</button>
@@ -405,6 +416,34 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
     <button class="tb-btn primary" id="picker-confirm">✓ Confirm</button>
   </div>
   <div class="picker-view"><canvas id="picker-canvas"></canvas></div>
+</div>
+
+<!-- TraceImage raster editor: rembg + magic-wand + pen + 2-point scale, then
+     the traced contours are FROZEN into the node (PLAN_TRACE_IMAGE.md). -->
+<div id="tracer" class="picker-overlay">
+  <div class="picker-bar" style="height:auto;flex-wrap:wrap;padding:8px 14px;">
+    <span class="picker-title" id="tracer-title">Trace image</span>
+    <span class="tracer-tools">
+      <button class="tb-btn" id="trc-wand" title="Flood-fill regions of similar colour into the mask (Alt-click to subtract)">🪄 Wand</button>
+      <button class="tb-btn" id="trc-pen" title="Paint the mask">✏ Pen</button>
+      <button class="tb-btn" id="trc-erase" title="Erase the mask">🧽 Erase</button>
+      <button class="tb-btn" id="trc-calib" title="Click two points, type the real distance in mm (hold Shift to lock the line to 0°/90°)">📏 Scale</button>
+      <button class="tb-btn" id="trc-invert" title="Invert the mask">⇄ Invert</button>
+      <button class="tb-btn" id="trc-rembg" title="Remove background (needs the vision service)">✂ Remove bg</button>
+    </span>
+    <span class="tracer-slider" title="Magic-wand colour tolerance">tol<input type="range" id="trc-tol" min="2" max="120" value="32"></span>
+    <span class="tracer-slider" title="Pen/eraser brush radius (px)">brush<input type="range" id="trc-brush" min="2" max="60" value="14"></span>
+    <span class="tracer-slider" title="Contour simplify tolerance (px)">smooth<input type="range" id="trc-simplify" min="0" max="12" value="2"></span>
+    <span class="tracer-slider" title="Drop contours smaller than this many px²">minA<input type="range" id="trc-minarea" min="0" max="400" value="60"></span>
+    <span style="flex:1"></span>
+    <span class="picker-count" id="tracer-count">0 contours</span>
+    <span class="picker-hint" id="tracer-scale">scale: not set</span>
+    <button class="tb-btn primary" id="trc-trace">✎ Trace</button>
+    <button class="tb-btn" id="tracer-clear">Clear</button>
+    <button class="tb-btn" id="tracer-cancel">Cancel</button>
+    <button class="tb-btn primary" id="tracer-confirm">✓ Confirm</button>
+  </div>
+  <div class="tracer-view"><canvas id="tracer-canvas"></canvas></div>
 </div>
 
 <script type="importmap">
@@ -424,6 +463,11 @@ const API = '';
 const LiteGraph = window.LiteGraph;
 let catalog = {};          // type -> NodeDef
 let lgraph, lcanvas;
+// Debug/headless-test handle: the module scope hides everything, so automated
+// verification (playwright) needs one deliberate peephole. Not used by the app.
+window._noodle = { get lgraph(){ return lgraph; }, get lcanvas(){ return lcanvas; },
+  get viewer(){ return viewer; }, get picker(){ return picker; },
+  togglePick(i){ return togglePick(i); } };
 let currentName = null;
 let lastNodeErrors = {};   // last execution's node_id -> error, for feedback reports
 let nodeIndex = {};        // our graph node-id -> Litegraph node (set on serialize)
@@ -435,6 +479,10 @@ let runAbort = null;       // AbortController for the in-flight run
 let loadingGraph = false;  // suppress live triggers while rebuilding the graph
 let fastDrag = false;      // local JS transform while dragging Move/Rotate/Scale
 let previewMeshes = {};    // graph node-id -> THREE.Mesh currently shown
+// RefImage: editor-only textured quads drawn in the viewport as modelling refs
+const refGroup = new THREE.Group();  // added to viewer.scene lazily in syncRefImages
+const refMeshes = {};                // graph node-id -> THREE.Mesh (reference quad)
+const refTexCache = new Map();        // asset url -> THREE.Texture (avoid reloading)
 let isolateSel = false;    // "isolate": show only the selected nodes'/group's shapes
 let _isoDirty  = false;    // isolate hid some meshes -> restore visibility once when off
 let _isoForced = [];       // nodes whose preview eye isolate forced on (to restore)
@@ -653,11 +701,17 @@ function registerNodes(defs){
       if ((ow && ['solid','surface','curve'].includes(ow.wire_type)) || def.type === 'CodeBlock')
         addEyeWidget(this);
       // sub-shape selector: button opens the 3D picker
-      const SEL_KIND = {SelectEdge:'edge', SelectFace:'face', SelectVertex:'vertex'}[def.type];
+      const SEL_KIND = {SelectEdge:'edge', SelectFace:'face', SelectVertex:'vertex', SelectShape:'shape'}[def.type];
       if (SEL_KIND){
         const sb = this.addWidget('button', `✎ Select ${pluralKind(SEL_KIND)}`, null, ()=> openSelectionPicker(this, SEL_KIND));
         sb.isSelectBtn = true;
         this._selKind = SEL_KIND;
+      }
+      // TraceImage: button opens the raster editor (rembg/wand/pen/scale) that
+      // freezes the traced contours into node.traceData (PLAN_TRACE_IMAGE.md).
+      if (def.type === 'TraceImage'){
+        const tb = this.addWidget('button', '✎ Edit trace', null, ()=> openTraceEditor(this));
+        tb.isTraceBtn = true;
       }
       // on-canvas direct manipulation: a toggle that drives the viewport gizmo
       // (PLAN_NODE_CAD.md §E). Only on nodes that declare a `gizmo` capability.
@@ -764,6 +818,188 @@ function evalNum(raw){
   return parseFloat(s);
 }
 
+// ════════════════════════════════════════════════════════════════════
+// cadslider — a custom litegraph widget replacing the stock 'slider'.
+// Same look, three upgrades over the stock one:
+//  1. the DRAG WINDOW defaults to a sane −10…+10 (clipped to the param's hard
+//     bounds and auto-grown to contain the current value, so a loaded arc=360
+//     doesn't pin — or worse, snap on drag — down to 10) instead of the huge
+//     hard range (often 0.1–500: one pixel = several units).
+//  2. a ⚙ hotspot on the right opens a per-slider min/max/step editor. The
+//     config persists in the node's `_ui` param namespace — editor-only
+//     metadata: the engine resolves params by catalog name and ignores it
+//     (same trick as CodeBlock's `_cb`).
+//  3. dragging snaps to the step (decimals shown follow it).
+// The typed ✎ field stays the source of truth: it clamps only on the
+// catalog's hard min/max, independent of the drag window — existing graphs
+// keep their values untouched.
+// ════════════════════════════════════════════════════════════════════
+const SLIDER_GEAR_W = 18;   // right hotspot; ends before litegraph's x < width-12 dead zone
+
+function niceCap(v){        // smallest 1 / 2.5 / 5 × 10^k ≥ v (min 10)
+  if (!(v > 10)) return 10;
+  const e = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 2.5, 5, 10]) if (m * e >= v - 1e-9) return m * e;
+  return 10 * e;
+}
+function stepDecimals(step){
+  const s = String(step), i = s.indexOf('.');
+  return i < 0 ? 0 : Math.min(4, s.length - i - 1);
+}
+function trimNum(n){ return String(+Number(n).toFixed(4)); }
+
+// Effective drag window + step, resolved lazily (each draw/drag) so a config
+// loaded or edited after widget creation just applies. A user ⚙ config wins;
+// otherwise: ±10 clipped to hard bounds, grown to contain the current value,
+// growth capped at soft_max when set (the anti-blowup guard, e.g. fan-out counts).
+function sliderCfg(node, w){
+  const h = w.hard;
+  const ui = node.properties && node.properties._ui && node.properties._ui[w.uiKey];
+  if (ui){
+    const step = Math.max((+ui.step > 0 ? +ui.step : w.defStep), w.isInt ? 1 : 1e-4);
+    return {lo: Math.max(h.min, +ui.min), hi: Math.min(h.max, +ui.max), step, custom: true};
+  }
+  const v = Number(w.value) || 0;
+  const cap = (w.softMax != null) ? Math.min(w.softMax, h.max) : h.max;
+  const hi = Math.max(Math.min(cap, Math.max(10, niceCap(v))), h.min);
+  const lo = Math.min(Math.max(h.min, v < 0 ? -niceCap(-v) : -10), hi);
+  return {lo, hi, step: w.defStep, custom: false};
+}
+
+function addCadSlider(node, name, init, apply, opts){
+  // opts: {min, max, step, isInt, softMax, uiKey}. `apply` is the shared
+  // param setter (syncs field + properties + onParamChange), like the stock one.
+  const w = node.addWidget('cadslider', name, init, apply, {});
+  w.hard = {min: opts.min, max: opts.max};
+  w.isInt = !!opts.isInt;
+  w.defStep = Math.max((+opts.step > 0 ? +opts.step : (w.isInt ? 1 : 0.5)), w.isInt ? 1 : 1e-4);
+  w.softMax = opts.softMax != null ? opts.softMax : null;
+  w.uiKey = opts.uiKey;
+  w.draw  = (ctx, n, width, y, H) => drawCadSlider(ctx, n, w, width, y, H);
+  w.mouse = (ev, pos, n) => cadSliderMouse(ev, pos, n, w);
+  return w;
+}
+
+function drawCadSlider(ctx, node, w, width, y, H){
+  const margin = 15, gx = width - margin - SLIDER_GEAR_W, tw = gx - margin;
+  const cfg = sliderCfg(node, w);
+  ctx.fillStyle = LiteGraph.WIDGET_BGCOLOR || '#222';
+  ctx.fillRect(margin, y, width - margin * 2, H);
+  let f = (Number(w.value) - cfg.lo) / ((cfg.hi - cfg.lo) || 1);
+  f = f < 0 ? 0 : f > 1 ? 1 : f;
+  ctx.fillStyle = '#678';
+  ctx.fillRect(margin, y, f * tw, H);
+  ctx.strokeStyle = LiteGraph.WIDGET_OUTLINE_COLOR || '#666';
+  if (!w.disabled) ctx.strokeRect(margin, y, width - margin * 2, H);
+  if (lcanvas.ds.scale > 0.5){
+    ctx.textAlign = 'center';
+    ctx.fillStyle = cfg.custom ? '#9ab' : '#667';           // ⚙ lit when customised
+    ctx.fillText('⚙', gx + SLIDER_GEAR_W / 2, y + H * 0.72);
+    const dec  = w.isInt ? 0 : stepDecimals(cfg.step);
+    const plus = cfg.hi < w.hard.max ? '+' : '';            // typed field reaches further
+    ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR || '#DDD';
+    ctx.fillText(`${w.name} (${trimNum(cfg.lo)}–${trimNum(cfg.hi)}${plus})  ${Number(w.value).toFixed(dec)}`,
+                 margin + tw / 2, y + H * 0.7);
+    ctx.textAlign = 'left';
+  }
+}
+
+function cadSliderMouse(ev, pos, node, w){
+  const pm = LiteGraph.pointerevents_method || 'mouse';
+  const down = ev.type === pm + 'down', move = ev.type === pm + 'move', up = ev.type === pm + 'up';
+  const width = node.size[0], margin = 15, gx = width - margin - SLIDER_GEAR_W;
+  if (down && pos[0] >= gx){ w._drag = false; openSliderCfg(node, w, ev); return true; }
+  if (down) w._drag = true;
+  if ((down || move) && w._drag){
+    const cfg = sliderCfg(node, w);
+    let f = (pos[0] - margin) / ((gx - margin) || 1);
+    f = f < 0 ? 0 : f > 1 ? 1 : f;
+    let v = cfg.lo + (cfg.hi - cfg.lo) * f;
+    v = Math.round(v / cfg.step) * cfg.step;
+    v = Math.min(w.hard.max, Math.max(w.hard.min, v));
+    v = w.isInt ? Math.round(v) : +v.toFixed(4);
+    if (v !== Number(w.value)) w.callback(v);
+  }
+  if (up) w._drag = false;
+  return true;
+}
+
+// ⚙ popup: edit one slider's drag window + step. Writes node.properties._ui
+// (saved into params._ui by toGraphJSON); Reset deletes the entry → auto window.
+let sliderCfgEl = null;
+function closeSliderCfg(){ if (sliderCfgEl){ sliderCfgEl.remove(); sliderCfgEl = null; } }
+function openSliderCfg(node, w, ev){
+  closeSliderCfg();
+  const cfg = sliderCfg(node, w);
+  const el = document.createElement('div');
+  el.id = 'slider-cfg';
+  el.style.cssText = 'position:fixed;z-index:260;background:var(--bg-2);border:1px solid var(--border);'+
+    'border-radius:8px;padding:10px 12px;box-shadow:0 12px 40px rgba(0,0,0,.55);font-size:12px;'+
+    'display:flex;flex-direction:column;gap:6px;min-width:180px;color:var(--text-dim)';
+  const row = (lbl, val) => {
+    const r = document.createElement('label');
+    r.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px';
+    const inp = document.createElement('input');
+    inp.value = trimNum(val);
+    inp.style.cssText = 'width:80px;background:var(--bg-1);color:var(--text);border:1px solid var(--border);'+
+      'border-radius:5px;padding:3px 6px;font:inherit;text-align:right';
+    r.append(lbl, inp); el.appendChild(r);
+    return inp;
+  };
+  const title = document.createElement('div');
+  title.textContent = `slider · ${w.name}`;
+  title.style.cssText = 'color:var(--text);font-weight:600;margin-bottom:2px';
+  el.appendChild(title);
+  const iMin = row('min', cfg.lo), iMax = row('max', cfg.hi), iStep = row('step', cfg.step);
+  const hint = document.createElement('div');
+  hint.textContent = `typed values allow ${trimNum(w.hard.min)}…${trimNum(w.hard.max)}`;
+  hint.style.cssText = 'font-size:10.5px;opacity:.7';
+  el.appendChild(hint);
+  const btns = document.createElement('div');
+  btns.style.cssText = 'display:flex;justify-content:flex-end;gap:6px;margin-top:4px';
+  const btn = (lbl) => {
+    const b = document.createElement('button');
+    b.textContent = lbl;
+    b.style.cssText = 'background:var(--bg-1);color:var(--text);border:1px solid var(--border);'+
+      'border-radius:5px;padding:3px 10px;font:inherit;cursor:pointer';
+    btns.appendChild(b); return b;
+  };
+  const bReset = btn('Reset'), bOk = btn('OK');
+  el.appendChild(btns);
+  const done = () => { closeSliderCfg(); lcanvas.setDirty(true, true); };
+  bReset.onclick = () => {
+    if (node.properties._ui){ delete node.properties._ui[w.uiKey];
+      if (!Object.keys(node.properties._ui).length) delete node.properties._ui; }
+    done();
+  };
+  const commit = () => {
+    let lo = evalNum(iMin.value), hi = evalNum(iMax.value), step = evalNum(iStep.value);
+    if (isNaN(lo)) lo = cfg.lo;  if (isNaN(hi)) hi = cfg.hi;  if (!(step > 0)) step = cfg.step;
+    lo = Math.max(w.hard.min, Math.min(lo, hi));
+    hi = Math.min(w.hard.max, Math.max(hi, lo));
+    if (w.isInt) step = Math.max(1, Math.round(step));
+    node.properties._ui = node.properties._ui || {};
+    node.properties._ui[w.uiKey] = {min: lo, max: hi, step};
+    done();
+  };
+  bOk.onclick = commit;
+  el.addEventListener('keydown', e => {
+    if (e.key === 'Enter') commit();
+    if (e.key === 'Escape') closeSliderCfg();
+    e.stopPropagation();
+  });
+  document.body.appendChild(el);
+  const r = el.getBoundingClientRect();
+  el.style.left = Math.min(ev.clientX ?? 200, innerWidth  - r.width  - 8) + 'px';
+  el.style.top  = Math.min(ev.clientY ?? 200, innerHeight - r.height - 8) + 'px';
+  sliderCfgEl = el;
+  iMin.focus(); iMin.select();
+  setTimeout(() => addEventListener('pointerdown', function out(e){
+    if (sliderCfgEl && !sliderCfgEl.contains(e.target)){ closeSliderCfg(); }
+    if (!sliderCfgEl) removeEventListener('pointerdown', out, true);
+  }, true), 0);
+}
+
 function addWidget(node, p){
   if (p.type === 'bool'){
     node.properties[p.name] = !!p.default;
@@ -836,11 +1072,11 @@ function addWidget(node, p){
     onParamChange(node);
   };
   if (hasRange){
-    // soft cap: the slider drags up to soft_max (a sane range), but the typed
-    // field below still reaches the hard max. The '+' hint flags that headroom.
-    const sMax = (p.soft_max != null) ? p.soft_max : p.max;
-    const lbl = (p.soft_max != null && p.soft_max < p.max) ? `${p.min}–${sMax}+` : `${p.min}–${p.max}`;
-    slider = node.addWidget('slider', `${p.name} (${lbl})`, Math.min(init, sMax), apply, {min:p.min, max:sMax});
+    // custom slider: drag window defaults to ±10 (auto-grown to hold the
+    // value), ⚙ edits min/max/step per node. Typed field reaches the hard max.
+    slider = addCadSlider(node, p.name, init, apply, {
+      min: p.min, max: p.max, step: p.step, isInt: p.type === 'int',
+      softMax: p.soft_max, uiKey: p.name});
     slider.cadParam = p.name;
   }
   field = node.addWidget('text', hasRange ? '✎' : p.name, init, apply);
@@ -971,7 +1207,14 @@ function syncCodeblockParams(node){
     let w = (node.widgets||[]).find(x => x.cbParam === d.name);
     const val = (d.name in node._cb) ? node._cb[d.name] : d.default;
     if (!w) makeCbWidget(node, d, val);
-    else { w.cbDefault = d.default; w.cbMeta = d; }
+    else {
+      w.cbDefault = d.default; w.cbMeta = d;
+      if (w.hard && d.min != null && d.max != null){   // cadslider: track edited #@param bounds
+        w.hard = {min: d.min, max: d.max};
+        w.isInt = d.type === 'int';
+        w.defStep = Math.max((+d.step > 0 ? +d.step : (w.isInt ? 1 : 0.5)), w.isInt ? 1 : 1e-4);
+      }
+    }
   }
   node.size = node.computeSize(); node.size[0] = Math.max(node.size[0], 180);
   updateCbWired(node);
@@ -992,7 +1235,9 @@ function makeCbWidget(node, d, val){
     const init = cbClamp(val, d);
     const apply = raw => { const v = cbClamp(evalNum(raw), d); w.value = v; set(v); };
     w = hasRange
-      ? node.addWidget('slider', `◆ ${d.name} (${d.min}–${d.max})`, init, apply, {min:d.min, max:d.max})
+      ? addCadSlider(node, '◆ ' + d.name, init, apply, {
+          min: d.min, max: d.max, step: d.step, isInt: d.type === 'int',
+          uiKey: 'cb.' + d.name})
       : node.addWidget('text', '◆ ' + d.name, init, apply);
   }
   w.cbParam = d.name; w.cbDefault = d.default; w.cbMeta = d;
@@ -1690,7 +1935,11 @@ function toGraphJSON(name){
       for (const w of (n.widgets||[])) if (w.cbParam && !cbEq(w.value, w.cbDefault)) cb[w.cbParam] = w.value;
       if (Object.keys(cb).length) params._cb = cb;
     }
+    // Per-slider drag window/step (⚙ config) — editor-only, the engine ignores it.
+    if (n.properties && n.properties._ui && Object.keys(n.properties._ui).length)
+      params._ui = n.properties._ui;
     if (n.selectionData) params.selection = n.selectionData;   // SelectEdge picks
+    if (n.traceData) params.trace = n.traceData;               // TraceImage frozen contours
     if (n.previewMode === 'on') nd.preview = true;
     else if (n.previewMode === 'off') nd.preview = false;   // 'auto' -> omitted
     if (n.bypassed) nd.bypassed = true;
@@ -1734,6 +1983,11 @@ function fromGraphJSON(data){
   // legacy migration: the old dual-mode Panel is gone. A Panel with an incoming
   // wire was an inspector/router -> Display; otherwise it was a text source -> Input.
   const hasIncoming = new Set((data.connections||[]).map(c=>c.to_node));
+  // legacy migration: Union's two inputs a/b collapsed into a single `shapes`
+  // collector — remap old wires (mirrors the backend Graph.from_dict).
+  const _unionIds = new Set((data.nodes||[]).filter(n=>n.type==='Union').map(n=>n.id));
+  for (const c of (data.connections||[]))
+    if (_unionIds.has(c.to_node) && (c.to_socket==='a' || c.to_socket==='b')) c.to_socket = 'shapes';
   for (const nd of (data.nodes||[])){
     if (nd.type === 'Panel'){
       if (hasIncoming.has(nd.id)){ nd.type = 'Display'; if (nd.params){ delete nd.params.text; delete nd.params.mode; } }
@@ -1748,6 +2002,8 @@ function fromGraphJSON(data){
     if (nd.wireframe) node.wireframe = true;
     if (nd.multi) for (const nm of nd.multi) node.multiInputs.add(nm);
     if (nd.params && nd.params.selection){ node.selectionData = nd.params.selection; updateSelectBtn(node); }
+    if (nd.params && nd.params.trace){ node.traceData = nd.params.trace; updateTraceBtn(node); }
+    if (nd.params && nd.params._ui) node.properties._ui = Object.assign({}, nd.params._ui);   // slider ⚙ config
     if (node.widgets) for (const w of node.widgets){
       if (w.cadParam && nd.params && w.cadParam in nd.params){
         w.value = nd.params[w.cadParam];
@@ -1767,19 +2023,31 @@ function fromGraphJSON(data){
     lgraph.add(node);
     map[nd.id] = node;
   }
-  for (const c of (data.connections||[])){
-    const on = map[c.from_node], tn = map[c.to_node]; if(!on||!tn) continue;
-    const os = on.outputs.findIndex(s=>s.name===c.from_socket);
-    if (os<0) continue;
-    // attach to the next FREE slot of this name; grow one if all are taken so
-    // several connections to the same input round-trip into several slots.
-    let is = tn.inputs.findIndex(s=>(s.cadName||s.name)===c.to_socket && s.link==null);
-    if (is<0){
-      const info = tn.cadInputs && tn.cadInputs[c.to_socket];
-      if (info){ tn.addInput(c.to_socket, info.accepts); is = tn.inputs.length-1; tn.inputs[is].cadName=c.to_socket; }
-      else is = tn.inputs.findIndex(s=>(s.cadName||s.name)===c.to_socket);
+  // Trust disk connections: they were already validated server-side by
+  // Graph.validate(). Litegraph's own type gate would drop some of them here
+  // because polymorphic (output_follows) outputs still carry their STATIC type
+  // during load — refreshAllPolyTypes() hasn't run yet, and onConnectionsChange
+  // is short-circuited while loadingGraph. e.g. a Move (static `solid`) feeding a
+  // MakeFace `edges` (curve) would be refused, silently losing the wire on reload.
+  const _isValid = LiteGraph.isValidConnection;
+  LiteGraph.isValidConnection = () => true;
+  try {
+    for (const c of (data.connections||[])){
+      const on = map[c.from_node], tn = map[c.to_node]; if(!on||!tn) continue;
+      const os = on.outputs.findIndex(s=>s.name===c.from_socket);
+      if (os<0) continue;
+      // attach to the next FREE slot of this name; grow one if all are taken so
+      // several connections to the same input round-trip into several slots.
+      let is = tn.inputs.findIndex(s=>(s.cadName||s.name)===c.to_socket && s.link==null);
+      if (is<0){
+        const info = tn.cadInputs && tn.cadInputs[c.to_socket];
+        if (info){ tn.addInput(c.to_socket, info.accepts); is = tn.inputs.length-1; tn.inputs[is].cadName=c.to_socket; }
+        else is = tn.inputs.findIndex(s=>(s.cadName||s.name)===c.to_socket);
+      }
+      if (os>=0 && is>=0) on.connect(os, tn, is);
     }
-    if (os>=0 && is>=0) on.connect(os, tn, is);
+  } finally {
+    LiteGraph.isValidConnection = _isValid;
   }
   // restore "+" state: any input that ended up with >=2 connections is multi;
   // every enabled multi input gets a trailing empty spare + its toggle set on.
@@ -2109,6 +2377,7 @@ document.addEventListener('keydown', (e)=>{
 // A param changed on `node`: fast local transform (if enabled & applicable),
 // otherwise/also the debounced exact recompute.
 function onParamChange(node){
+  if (node && node.cadType === 'RefImage'){ syncRefImages(); return; }   // editor-only: no re-exec
   if (node && node.cadGated) refreshSubtype(node);   // filter/transform: tag follows mode
   if (fastDrag && applyLocalTransform(node)){
     scheduleLive();   // re-bake exactly once the drag settles
@@ -2443,6 +2712,7 @@ window.openGraph = async function(name){
   setStatus('opened '+name,'ok');
   maybeRestoreDraft(name);
   refreshAssets();   // prime the Import-node asset picker for this project
+  syncRefImages();   // draw any RefImage reference quads now currentName is set
 };
 
 window.showTab = function(t){
@@ -2878,6 +3148,7 @@ function renderPreviews(view){
   });
   previewMeshes = r.meshes;
   applyIsolate();                        // re-hide unselected shapes after a fresh render
+  syncRefImages();                       // draw RefImage reference quads alongside the model
   if(!r.order.length) return;            // onEmpty handled the legend / STL fallback
   const legend = [];
   for(const id of r.order){
@@ -2893,6 +3164,74 @@ function renderPreviews(view){
 
 // instant display-only refresh (colour / wireframe) without re-executing
 function refreshDisplay(){ if(lastView) renderPreviews(lastView); }
+
+// ── RefImage: draw each Reference Image node as a textured quad in the viewport ──
+// Editor-only (never touches the backend/graph program). Reconciles meshes by
+// node id so textures aren't reloaded on every param tweak. The CadViewer's
+// continuous animate loop shows updates on the next frame.
+const _REF_QUAT = {   // reorient the default XY quad (normal +Z) onto XZ / YZ
+  XY: new THREE.Euler(0, 0, 0),
+  XZ: new THREE.Euler(Math.PI/2, 0, 0),
+  YZ: new THREE.Euler(Math.PI/2, 0, Math.PI/2),
+};
+function _applyRefSize(mesh, node, tex){
+  const w = +(node.properties.width) || 100;
+  const iw = (tex.image && tex.image.width) || 1, ih = (tex.image && tex.image.height) || 1;
+  mesh.scale.set(w, w * (ih / iw), 1);   // height from the image aspect ratio
+}
+function syncRefImages(){
+  if (!viewer || !lgraph) return;
+  if (!refGroup.parent) viewer.scene.add(refGroup);
+  const seen = new Set();
+  for (const n of lgraph._nodes){
+    if (n.cadType !== 'RefImage') continue;
+    const p = n.properties || {}, path = p.path;
+    if (!path || path === '(no file)' || !currentName) continue;
+    const id = 'n' + n.id; seen.add(id);
+    let m = refMeshes[id];
+    if (!m){
+      m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
+        new THREE.MeshBasicMaterial({transparent:true, side:THREE.DoubleSide}));
+      refMeshes[id] = m; refGroup.add(m);
+    }
+    const url = `${API}/api/library/${currentName}/assets/${encodeURIComponent(path.split('/').pop())}`;
+    if (m.userData.url !== url){          // (re)bind the texture only when the file changes
+      m.userData.url = url;
+      let tex = refTexCache.get(url);
+      if (!tex){   // re-sync once the image lands so aligned/manual sizing re-applies
+        tex = new THREE.TextureLoader().load(url, t=>{ t.colorSpace = THREE.SRGBColorSpace; syncRefImages(); });
+        refTexCache.set(url, tex);
+      }
+      m.material.map = tex; m.material.needsUpdate = true;
+    }
+    // 1:1 align to a TraceImage of the SAME file: place the quad over the exact
+    // mm rectangle the traced curves live in (matches _trace_curves' imgH origin:
+    // image bottom-left → (0,0), on XY). Overrides manual plane/width/centre.
+    let aligned = false;
+    if (p.align_to_trace !== false){
+      for (const t of lgraph._nodes){
+        if (t.cadType !== 'TraceImage') continue;
+        const td = t.traceData;
+        if (!td || !td.scale || !td.imgW || !td.imgH) continue;
+        if ((t.properties && t.properties.path) !== path) continue;
+        const s = td.scale;
+        m.setRotationFromEuler(_REF_QUAT.XY);
+        m.scale.set(td.imgW * s, td.imgH * s, 1);
+        m.position.set(td.imgW * s / 2, td.imgH * s / 2, 0);
+        aligned = true; break;
+      }
+    }
+    if (!aligned){
+      if (m.material.map && m.material.map.image) _applyRefSize(m, n, m.material.map);
+      m.setRotationFromEuler(_REF_QUAT[p.plane] || _REF_QUAT.XY);
+      m.position.set(+p.x || 0, +p.y || 0, +p.z || 0);
+    }
+    m.material.opacity = (p.opacity == null ? 0.6 : +p.opacity);
+  }
+  for (const id in refMeshes) if (!seen.has(id)){   // drop quads whose node is gone
+    refGroup.remove(refMeshes[id]); refMeshes[id].geometry.dispose(); delete refMeshes[id];
+  }
+}
 
 // ── colour legend (click a row to select+frame that node) ──
 function renderLegend(items){
@@ -3005,12 +3344,45 @@ function ensurePicker(){
   picker.ready = true;
 }
 
-// highlight a pickable per its kind (edge=line, face=mesh, vertex=sphere)
+// highlight a pickable per its kind (edge=line, face=mesh, vertex=sphere).
+// 'shape' pieces render as mesh / line / sphere, tagged in userData.render.
 function setHighlight(obj, on){
   const k = obj.userData.kind;
-  if (k === 'edge')      obj.material = on ? picker.selMat : picker.edgeMat;
-  else if (k === 'face') obj.material = on ? picker.faceSelMat : picker.faceMat;
+  const r = obj.userData.render || k;   // 'shape' items carry their own render type
+  if (k === 'edge' || r === 'line') obj.material = on ? picker.selMat : picker.edgeMat;
+  else if (k === 'face' || r === 'mesh') obj.material = on ? picker.faceSelMat : picker.faceMat;
   else { obj.material = on ? picker.vertSelMat : picker.vertMat; obj.scale.setScalar(on ? 1.7 : 1); }
+}
+
+// highlight EVERY primitive of a picked item (a curve piece has several)
+function highlightIndex(idx, on){
+  for (const o of picker.pickables) if (o.userData.index === idx) setHighlight(o, on);
+}
+
+// toggle one pickable index on/off (sig looked up from the rendered items)
+function setPick(idx, on){
+  if (on) picker.sel.set(idx, picker.sigByIndex.get(idx));
+  else picker.sel.delete(idx);
+  highlightIndex(idx, on);
+}
+
+// edges coplanar-connected to `idx` — the union of every same-plane loop it's
+// part of (a shared/sharp edge can belong to two). Returns [idx] if none.
+function coplanarGroup(idx){
+  const grp = new Set([idx]);
+  for (const L of (picker.loops || [])) if (L.includes(idx)) for (const j of L) grp.add(j);
+  return [...grp];
+}
+
+// toggle a picked index — expanding to its whole coplanar loop when the
+// 'grab coplanar loop' box is on (edges only). Shared by ray-pick and tests.
+function togglePick(idx){
+  const on = !picker.sel.has(idx);                       // toggle target state
+  const loopBox = document.getElementById('picker-loop');
+  const targets = (picker.kind === 'edge' && loopBox && loopBox.checked)
+    ? coplanarGroup(idx) : [idx];
+  for (const j of targets) setPick(j, on);
+  document.getElementById('picker-count').textContent = picker.sel.size + ' selected';
 }
 
 function pickAt(e){
@@ -3021,10 +3393,7 @@ function pickAt(e){
   picker.raycaster.params.Line.threshold = picker.threshold || 0.6;
   const hits = picker.raycaster.intersectObjects(picker.pickables, false);
   if (!hits.length) return;
-  const obj = hits[0].object, idx = obj.userData.index;
-  if (picker.sel.has(idx)){ picker.sel.delete(idx); setHighlight(obj, false); }
-  else { picker.sel.set(idx, obj.userData.sig); setHighlight(obj, true); }
-  document.getElementById('picker-count').textContent = picker.sel.size + ' selected';
+  togglePick(hits[0].object.userData.index);
 }
 
 function clearPickerContent(){
@@ -3036,12 +3405,12 @@ function clearPickerContent(){
 }
 
 window.openSelectionPicker = async function(node, kind){
-  const src = node.getInputNode(0);   // slot 0 = geometry input
-  if (!src){ setStatus('connect geometry into Select Edge first','err'); log('select: no geometry input'); return; }
+  const src = node.getInputNode(0);   // slot 0 = geometry / shapes input
+  if (!src){ setStatus(`connect ${kind==='shape'?'a list of shapes':'geometry'} into this Select node first`,'err'); log('select: no input'); return; }
   await saveGraph();
   if (!currentName) return;
   const srcId = 'n'+src.id;
-  setStatus('loading edges…');
+  setStatus(`loading ${pluralKind(kind)}…`);
   let data;
   try {
     const res = await fetch(`${API}/api/graph/${currentName}/subshapes/${srcId}?kind=${kind}`, {method:'POST'});
@@ -3056,7 +3425,7 @@ window.openSelectionPicker = async function(node, kind){
     `click a ${kind} to toggle · drag to orbit · scroll to zoom`;
   document.getElementById('picker').classList.add('open');
   startPickerLoop();
-  setStatus('picking edges');
+  setStatus(`picking ${pluralKind(kind)}`);
 };
 
 // overall size hint, from the context mesh or the items themselves
@@ -3066,6 +3435,7 @@ function dataMaxDim(data){
   if (data.mesh && data.mesh.vertices) for (const v of data.mesh.vertices) acc(v);
   for (const it of (data.items||[])){
     if (it.polyline) for (const p of it.polyline) acc(p);
+    else if (it.polys) for (const pl of it.polys) for (const p of pl) acc(p);
     else if (it.point) acc(it.point);
     else if (it.mesh && it.mesh.vertices) for (const v of it.mesh.vertices) acc(v);
   }
@@ -3075,35 +3445,55 @@ function dataMaxDim(data){
 function renderPickerData(data, stored){
   clearPickerContent();
   const kind = picker.kind;
+  picker.loops = data.loops || [];      // coplanar edge loops (kind==='edge')
+  const loopWrap = document.getElementById('picker-loop-wrap');
+  loopWrap.style.display = (kind === 'edge' && picker.loops.length) ? '' : 'none';
   const md = dataMaxDim(data);
   picker.threshold = md * 0.012;
   const vr = md * 0.02;   // vertex sphere radius
 
-  // context solid (translucent) for edge/vertex picking; for faces the
-  // per-face meshes themselves form the solid (avoids z-fighting).
-  if (kind !== 'face' && data.mesh && data.mesh.vertices && data.mesh.vertices.length){
+  // context solid (translucent) for edge/vertex picking; for faces/shapes the
+  // per-item meshes themselves form the solid (avoids z-fighting).
+  if (kind !== 'face' && kind !== 'shape' && data.mesh && data.mesh.vertices && data.mesh.vertices.length){
     const m = meshFromData(data.mesh, 0x3a4a5c); m.material = picker.meshMat;
     picker.content.add(m);
   }
 
+  const lineFrom = poly => {   // a THREE.Line from a [[x,y,z],…] polyline
+    const g = new THREE.BufferGeometry();
+    const pts = new Float32Array(poly.length*3);
+    for (let i=0;i<poly.length;i++){ pts[3*i]=poly[i][0]; pts[3*i+1]=poly[i][1]; pts[3*i+2]=poly[i][2]; }
+    g.setAttribute('position', new THREE.BufferAttribute(pts,3));
+    const o = new THREE.Line(g, picker.edgeMat); o.renderOrder = 3; return o;
+  };
+
   for (const it of (data.items||[])){
-    let obj = null;
+    const objs = [];   // one item can render as several primitives (a multi-edge curve)
+    let render = null;
     if (kind === 'edge' && it.polyline){
-      const g = new THREE.BufferGeometry();
-      const pts = new Float32Array(it.polyline.length*3);
-      for (let i=0;i<it.polyline.length;i++){ pts[3*i]=it.polyline[i][0]; pts[3*i+1]=it.polyline[i][1]; pts[3*i+2]=it.polyline[i][2]; }
-      g.setAttribute('position', new THREE.BufferAttribute(pts,3));
-      obj = new THREE.Line(g, picker.edgeMat); obj.renderOrder = 3;
+      objs.push(lineFrom(it.polyline)); render = 'line';
     } else if (kind === 'face' && it.mesh){
-      obj = meshFromData(it.mesh, 0x49596b); obj.material = picker.faceMat;
+      const m = meshFromData(it.mesh, 0x49596b); m.material = picker.faceMat; objs.push(m); render = 'mesh';
     } else if (kind === 'vertex' && it.point){
-      obj = new THREE.Mesh(new THREE.SphereGeometry(vr, 14, 14), picker.vertMat);
-      obj.position.set(it.point[0], it.point[1], it.point[2]);
+      const s = new THREE.Mesh(new THREE.SphereGeometry(vr, 14, 14), picker.vertMat);
+      s.position.set(it.point[0], it.point[1], it.point[2]); objs.push(s); render = 'vertex';
+    } else if (kind === 'shape'){
+      // a whole picked object: mesh (solid/face), polylines (curve) or a point.
+      if (it.mesh){ const m = meshFromData(it.mesh, 0x49596b); m.material = picker.faceMat; objs.push(m); render = 'mesh'; }
+      else if (it.polys && it.polys.length){ for (const pl of it.polys) objs.push(lineFrom(pl)); render = 'line'; }
+      else if (it.point){
+        const s = new THREE.Mesh(new THREE.SphereGeometry(vr, 14, 14), picker.vertMat);
+        s.position.set(it.point[0], it.point[1], it.point[2]); objs.push(s); render = 'vertex';
+      }
     }
-    if (!obj) continue;
-    obj.userData = {index:it.index, sig:it.sig, kind};
-    picker.content.add(obj); picker.pickables.push(obj);
+    for (const obj of objs){                       // all primitives share the item's identity
+      obj.userData = {index:it.index, sig:it.sig, kind, render};
+      picker.content.add(obj); picker.pickables.push(obj);
+    }
   }
+  // index -> sig, so loop expansion can select edges the ray never touched
+  picker.sigByIndex = new Map();
+  for (const o of picker.pickables) picker.sigByIndex.set(o.userData.index, o.userData.sig);
 
   // centre + fit camera
   const box = new THREE.Box3().setFromObject(picker.content);
@@ -3123,7 +3513,7 @@ function renderPickerData(data, stored){
         const dd=(a[0]-sig[0])**2+(a[1]-sig[1])**2+(a[2]-sig[2])**2;
         if (dd<bd){ bd=dd; best=obj; }
       }
-      if (best){ picker.sel.set(best.userData.index, best.userData.sig); setHighlight(best, true); }
+      if (best){ picker.sel.set(best.userData.index, best.userData.sig); highlightIndex(best.userData.index, true); }
     }
   }
   document.getElementById('picker-count').textContent = picker.sel.size + ' selected';
@@ -3158,6 +3548,389 @@ window.closePicker = function(commit){
   if (commit && node) runGraph();
 };
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  TraceImage raster editor (PLAN_TRACE_IMAGE.md, Fase 3)
+//  Illustrator-style: load a PNG/JPG, remove background (rembg, optional),
+//  refine a mask with the magic wand (flood-fill) + pen, quote it (2-point
+//  mm/pixel scale) and TRACE the contours. Wand/pen/trace/scale are pure JS —
+//  they run WITHOUT the vision sidecar; only ✂ Remove bg needs it. On Confirm
+//  the traced contours + scale are FROZEN into node.traceData (→ params.trace),
+//  so the graph re-runs deterministically with no image processing at run time.
+// ═══════════════════════════════════════════════════════════════════════════
+const tracer = { ready:false, node:null, img:null, W:0, H:0, mask:null, srcData:null,
+  maskCanvas:null, maskCtx:null, maskDirty:false, tool:'wand', drawing:false,
+  tol:32, brush:14, simplify:2, minArea:60, contours:[], scale:null, calib:null,
+  calibPts:[], calibHover:null, view:{scale:1, ox:0, oy:0}, canvas:null, ctx:null, _raf:null };
+
+function updateTraceBtn(node){
+  if (!node || !node.widgets) return;
+  const w = node.widgets.find(w=>w.isTraceBtn); if (!w) return;
+  const n = (node.traceData && node.traceData.contours && node.traceData.contours.length) || 0;
+  w.name = n ? `✎ ${n} contour${n>1?'s':''}` : '✎ Edit trace';
+  lcanvas && lcanvas.setDirty(true, true);
+}
+
+function loadImage(url){
+  return new Promise((res, rej)=>{ const im = new Image();
+    im.onload = ()=>res(im); im.onerror = ()=>rej(new Error('image load failed')); im.src = url; });
+}
+
+window.openTraceEditor = async function(node){
+  const path = node.properties && node.properties.path;
+  if (!path || path === '(no file)'){ setStatus('pick a PNG/JPG on the Trace Image node first','err'); return; }
+  if (!currentName){ await saveGraph(); }
+  if (!currentName){ setStatus('save the graph first','err'); return; }
+  ensureTracer();
+  const fname = path.split('/').pop();
+  const url = `${API}/api/library/${currentName}/assets/${encodeURIComponent(fname)}`;
+  setStatus('loading image…');
+  let img;
+  try { img = await loadImage(url); }
+  catch(e){ setStatus('could not load image','err'); log('trace: '+e.message,'err'); return; }
+  tracer.node = node; tracer.img = img;
+  tracer.W = img.naturalWidth; tracer.H = img.naturalHeight;
+  tracer.mask = new Uint8Array(tracer.W * tracer.H);
+  // sample the source pixels once for the magic wand
+  const sc = document.createElement('canvas'); sc.width = tracer.W; sc.height = tracer.H;
+  const sctx = sc.getContext('2d', {willReadFrequently:true}); sctx.drawImage(img, 0, 0);
+  tracer.srcData = sctx.getImageData(0, 0, tracer.W, tracer.H).data;
+  tracer.maskCanvas = document.createElement('canvas');
+  tracer.maskCanvas.width = tracer.W; tracer.maskCanvas.height = tracer.H;
+  tracer.maskCtx = tracer.maskCanvas.getContext('2d');
+  // restore a previous freeze for display (the mask itself isn't stored — re-edit if needed)
+  tracer.contours = (node.traceData && node.traceData.contours) || [];
+  tracer.scale = (node.traceData && node.traceData.scale) || null;
+  tracer.calib = (node.traceData && node.traceData.calib) || null;
+  tracer.calibPts = []; tracer.maskDirty = true;
+  document.getElementById('tracer-title').textContent = 'Trace image — ' + fname;
+  document.getElementById('tracer').classList.add('open');
+  setTracerTool('wand');
+  tracerFit(); drawTracer(); updateTracerHud();
+  setStatus('tracing image');
+};
+
+function ensureTracer(){
+  if (tracer.ready) return;
+  const canvas = document.getElementById('tracer-canvas');
+  tracer.canvas = canvas; tracer.ctx = canvas.getContext('2d');
+  const toImg = e => canvasToImg(e);
+  canvas.addEventListener('pointerdown', e=>{
+    if (!tracer.node) return;
+    const [ix, iy] = toImg(e);
+    if (tracer.tool === 'wand') floodFill(ix, iy, e.altKey);
+    else if (tracer.tool === 'calib') addCalibPoint(ix, iy, e.shiftKey);
+    else { tracer.drawing = true; try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
+           paintBrush(ix, iy, tracer.tool === 'erase'); }
+  });
+  canvas.addEventListener('pointermove', e=>{
+    if (tracer.tool === 'calib' && tracer.calibPts.length === 1){   // live constrained preview
+      tracer.calibHover = _constrainCalib(toImg(e), e.shiftKey); scheduleTracerDraw(); return;
+    }
+    if (!tracer.drawing) return; const [ix, iy] = toImg(e); paintBrush(ix, iy, tracer.tool === 'erase');
+  });
+  canvas.addEventListener('pointerup', ()=>{ tracer.drawing = false; });
+  canvas.addEventListener('pointerleave', ()=>{ tracer.drawing = false; });
+  const T = (id, name)=> document.getElementById(id).addEventListener('click', ()=>setTracerTool(name));
+  T('trc-wand','wand'); T('trc-pen','pen'); T('trc-erase','erase'); T('trc-calib','calib');
+  document.getElementById('trc-invert').addEventListener('click', invertMask);
+  document.getElementById('trc-rembg').addEventListener('click', runRembg);
+  document.getElementById('trc-trace').addEventListener('click', traceContours);
+  const S = (id, key)=>{ const el = document.getElementById(id);
+    el.addEventListener('input', ()=>{ tracer[key] = parseFloat(el.value); }); };
+  S('trc-tol','tol'); S('trc-brush','brush'); S('trc-simplify','simplify'); S('trc-minarea','minArea');
+  document.getElementById('tracer-confirm').addEventListener('click', ()=>closeTracer(true));
+  document.getElementById('tracer-cancel').addEventListener('click', ()=>closeTracer(false));
+  document.getElementById('tracer-clear').addEventListener('click', ()=>{
+    if (tracer.mask) tracer.mask.fill(0); tracer.contours = [];
+    tracer.maskDirty = true; updateTracerHud(); drawTracer();
+  });
+  window.addEventListener('resize', ()=>{
+    if (document.getElementById('tracer').classList.contains('open')){ tracerFit(); drawTracer(); }
+  });
+  tracer.ready = true;
+}
+
+function setTracerTool(name){
+  tracer.tool = name; tracer.calibPts = []; tracer.calibHover = null;
+  const map = {wand:'trc-wand', pen:'trc-pen', erase:'trc-erase', calib:'trc-calib'};
+  for (const k in map) document.getElementById(map[k]).classList.toggle('active', k === name);
+  if (tracer.canvas) tracer.canvas.style.cursor = name === 'wand' ? 'cell' : 'crosshair';
+  drawTracer();
+}
+
+function tracerFit(){
+  const cv = tracer.canvas, r = cv.getBoundingClientRect();
+  cv.width = Math.max(1, Math.floor(r.width)); cv.height = Math.max(1, Math.floor(r.height));
+  const s = Math.min(cv.width / tracer.W, cv.height / tracer.H);
+  tracer.view.scale = s;
+  tracer.view.ox = (cv.width  - tracer.W * s) / 2;
+  tracer.view.oy = (cv.height - tracer.H * s) / 2;
+}
+
+function canvasToImg(e){
+  const r = tracer.canvas.getBoundingClientRect();
+  const cx = e.clientX - r.left, cy = e.clientY - r.top;
+  return [ (cx - tracer.view.ox) / tracer.view.scale, (cy - tracer.view.oy) / tracer.view.scale ];
+}
+
+function scheduleTracerDraw(){
+  if (tracer._raf) return;
+  tracer._raf = requestAnimationFrame(()=>{ tracer._raf = null; drawTracer(); });
+}
+
+function refreshMaskCanvas(){
+  if (!tracer.maskDirty || !tracer.maskCtx) return;
+  const {W, H} = tracer, img = tracer.maskCtx.createImageData(W, H), d = img.data;
+  for (let i = 0; i < W * H; i++) if (tracer.mask[i]){
+    d[i*4] = 90; d[i*4+1] = 170; d[i*4+2] = 255; d[i*4+3] = 120;
+  }
+  tracer.maskCtx.putImageData(img, 0, 0); tracer.maskDirty = false;
+}
+
+function drawTracer(){
+  const ctx = tracer.ctx, cv = tracer.canvas; if (!ctx || !tracer.img) return;
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const {scale:s, ox, oy} = tracer.view, {W, H} = tracer;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(tracer.img, ox, oy, W*s, H*s);
+  refreshMaskCanvas();
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(tracer.maskCanvas, ox, oy, W*s, H*s);   // mask tint
+  ctx.imageSmoothingEnabled = true;
+  // traced contours (green=outer, orange=hole)
+  ctx.lineWidth = 1.5;
+  for (const c of tracer.contours){
+    if (!c.pts || c.pts.length < 2) continue;
+    ctx.beginPath();
+    c.pts.forEach((p, i)=>{ const X = ox + p[0]*s, Y = oy + p[1]*s; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });
+    ctx.closePath();
+    ctx.strokeStyle = c.hole ? '#f59e0b' : '#39d353'; ctx.stroke();
+  }
+  // calibration line + points
+  const cp = (tracer.calib && !tracer.calibPts.length)
+    ? [tracer.calib.p0, tracer.calib.p1] : tracer.calibPts;
+  if (cp && cp.length){
+    ctx.strokeStyle = '#e879f9'; ctx.fillStyle = '#e879f9'; ctx.lineWidth = 2;
+    if (cp.length === 2){
+      ctx.beginPath(); ctx.moveTo(ox+cp[0][0]*s, oy+cp[0][1]*s); ctx.lineTo(ox+cp[1][0]*s, oy+cp[1][1]*s); ctx.stroke();
+    }
+    for (const p of cp){ ctx.beginPath(); ctx.arc(ox+p[0]*s, oy+p[1]*s, 4, 0, 7); ctx.fill(); }
+    if (tracer.calibPts.length === 1 && tracer.calibHover){   // live line to the (constrained) cursor
+      const a = tracer.calibPts[0], h = tracer.calibHover;
+      ctx.setLineDash([5, 4]); ctx.beginPath();
+      ctx.moveTo(ox+a[0]*s, oy+a[1]*s); ctx.lineTo(ox+h[0]*s, oy+h[1]*s); ctx.stroke();
+      ctx.setLineDash([]); ctx.beginPath(); ctx.arc(ox+h[0]*s, oy+h[1]*s, 3, 0, 7); ctx.fill();
+    }
+    if (tracer.calib){
+      const mx = ox + (tracer.calib.p0[0]+tracer.calib.p1[0])/2*s, my = oy + (tracer.calib.p0[1]+tracer.calib.p1[1])/2*s;
+      ctx.fillStyle = '#e879f9'; ctx.font = '12px monospace'; ctx.fillText(tracer.calib.mm + ' mm', mx+6, my-6);
+    }
+  }
+}
+
+// ── mask tools (pure JS, no sidecar) ──
+function floodFill(ix, iy, subtract){
+  const {W, H, srcData} = tracer; const px = Math.round(ix), py = Math.round(iy);
+  if (px < 0 || py < 0 || px >= W || py >= H) return;
+  const seed = (py*W+px)*4, sr = srcData[seed], sg = srcData[seed+1], sb = srcData[seed+2];
+  const tol = tracer.tol, val = subtract ? 0 : 1;
+  const visited = new Uint8Array(W*H), stack = [py*W+px]; visited[py*W+px] = 1;
+  while (stack.length){
+    const p = stack.pop(), q = p*4;
+    if (Math.max(Math.abs(srcData[q]-sr), Math.abs(srcData[q+1]-sg), Math.abs(srcData[q+2]-sb)) > tol) continue;
+    tracer.mask[p] = val;
+    const x = p % W, y = (p / W) | 0;
+    if (x > 0   && !visited[p-1]){ visited[p-1] = 1; stack.push(p-1); }
+    if (x < W-1 && !visited[p+1]){ visited[p+1] = 1; stack.push(p+1); }
+    if (y > 0   && !visited[p-W]){ visited[p-W] = 1; stack.push(p-W); }
+    if (y < H-1 && !visited[p+W]){ visited[p+W] = 1; stack.push(p+W); }
+  }
+  tracer.maskDirty = true; scheduleTracerDraw();
+}
+
+function paintBrush(ix, iy, erase){
+  const {W, H} = tracer, R = tracer.brush, val = erase ? 0 : 1;
+  const x0 = Math.max(0, Math.floor(ix-R)), x1 = Math.min(W-1, Math.ceil(ix+R));
+  const y0 = Math.max(0, Math.floor(iy-R)), y1 = Math.min(H-1, Math.ceil(iy+R));
+  const R2 = R*R;
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++)
+    if ((x-ix)**2 + (y-iy)**2 <= R2) tracer.mask[y*W+x] = val;
+  tracer.maskDirty = true; scheduleTracerDraw();
+}
+
+function invertMask(){
+  if (!tracer.mask) return;
+  for (let i = 0; i < tracer.mask.length; i++) tracer.mask[i] ^= 1;
+  tracer.maskDirty = true; scheduleTracerDraw();
+}
+
+async function runRembg(){
+  if (!currentName || !tracer.node) return;
+  setStatus('removing background…');
+  try {
+    const r = await fetch(`${API}/api/vision/rembg`, {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({project: currentName, path: tracer.node.properties.path})});
+    if (!r.ok) throw new Error('vision ' + r.status);
+    const bmp = await createImageBitmap(await r.blob());
+    const oc = document.createElement('canvas'); oc.width = tracer.W; oc.height = tracer.H;
+    const octx = oc.getContext('2d', {willReadFrequently:true}); octx.drawImage(bmp, 0, 0, tracer.W, tracer.H);
+    const d = octx.getImageData(0, 0, tracer.W, tracer.H).data;
+    for (let i = 0; i < tracer.W*tracer.H; i++) tracer.mask[i] = d[i*4+3] > 16 ? 1 : 0;
+    tracer.maskDirty = true; scheduleTracerDraw(); setStatus('background removed');
+  } catch(e){
+    setStatus('vision service offline — use the magic wand instead','err'); log('rembg: '+e.message);
+  }
+}
+
+// hold Shift to lock the calibration line to horizontal / vertical (0°/90°),
+// snapping the axis with the smaller delta to the first point
+function _constrainCalib(p, shift){
+  if (!shift || !tracer.calibPts.length) return p;
+  const a = tracer.calibPts[0];
+  return Math.abs(p[0]-a[0]) >= Math.abs(p[1]-a[1]) ? [p[0], a[1]] : [a[0], p[1]];
+}
+function addCalibPoint(ix, iy, shift){
+  tracer.calibPts.push(_constrainCalib([ix, iy], shift));
+  if (tracer.calibPts.length === 2){
+    const [p0, p1] = tracer.calibPts, dpx = Math.hypot(p1[0]-p0[0], p1[1]-p0[1]);
+    const mm = parseFloat(prompt('Real distance between the two points (mm):', ''));
+    if (mm > 0 && dpx > 0){ tracer.scale = mm/dpx; tracer.calib = {p0, p1, mm};
+      setStatus('scale set: ' + tracer.scale.toFixed(4) + ' mm/px'); }
+    tracer.calibPts = []; tracer.calibHover = null; updateTracerHud();
+  }
+  drawTracer();
+}
+
+// ── contour extraction: marching squares → stitch loops → simplify ──
+const _MS_TABLE = {0:[],1:[['L','T']],2:[['T','R']],3:[['L','R']],4:[['R','B']],
+  5:[['L','T'],['R','B']],6:[['T','B']],7:[['L','B']],8:[['L','B']],9:[['T','B']],
+  10:[['L','B'],['T','R']],11:[['R','B']],12:[['L','R']],13:[['T','R']],14:[['L','T']],15:[]};
+function _edgePt(edge, x, y){
+  if (edge === 'T') return [x+0.5, y];
+  if (edge === 'R') return [x+1, y+0.5];
+  if (edge === 'B') return [x+0.5, y+1];
+  return [x, y+0.5];   // L
+}
+function marchingSquares(mask, W, H){
+  const at = (x, y)=> (x >= 0 && x < W && y >= 0 && y < H) ? mask[y*W+x] : 0;
+  const key = p => Math.round(p[0]*2) + ',' + Math.round(p[1]*2);
+  const segs = [], pts = new Map(), nbr = new Map();
+  const addPt = (k, xy)=>{ if (!pts.has(k)){ pts.set(k, xy); nbr.set(k, []); } };
+  for (let y = -1; y < H; y++) for (let x = -1; x < W; x++){
+    const a = at(x,y), b = at(x+1,y), c = at(x+1,y+1), d = at(x,y+1);
+    const cs = a | (b<<1) | (c<<2) | (d<<3);
+    const pairs = _MS_TABLE[cs]; if (!pairs.length) continue;
+    for (const pr of pairs){
+      const s0 = _edgePt(pr[0], x, y), s1 = _edgePt(pr[1], x, y);
+      const k0 = key(s0), k1 = key(s1); if (k0 === k1) continue;
+      const ei = segs.length; segs.push([k0, k1]);
+      addPt(k0, s0); addPt(k1, s1);
+      nbr.get(k0).push({ei, to:k1}); nbr.get(k1).push({ei, to:k0});
+    }
+  }
+  const used = new Array(segs.length).fill(false), loops = [];
+  for (let ei = 0; ei < segs.length; ei++){
+    if (used[ei]) continue;
+    const startK = segs[ei][0]; let curK = startK, e = ei, guard = 0;
+    const loop = [pts.get(curK)];
+    while (e != null && guard++ < segs.length + 2){
+      used[e] = true;
+      const nb = nbr.get(curK).find(n => n.ei === e); if (!nb) break;
+      curK = nb.to; loop.push(pts.get(curK));
+      if (curK === startK) break;
+      const cand = nbr.get(curK).find(n => !used[n.ei]); e = cand ? cand.ei : null;
+    }
+    if (loop.length >= 4) loops.push(loop);
+  }
+  return loops;
+}
+function _perp(p, a, b){
+  const dx = b[0]-a[0], dy = b[1]-a[1], L = Math.hypot(dx, dy) || 1e-9;
+  return Math.abs((p[0]-a[0])*dy - (p[1]-a[1])*dx) / L;
+}
+function rdp(points, eps){
+  if (points.length < 3) return points;
+  let dmax = 0, idx = 0; const a = points[0], b = points[points.length-1];
+  for (let i = 1; i < points.length-1; i++){ const d = _perp(points[i], a, b); if (d > dmax){ dmax = d; idx = i; } }
+  if (dmax > eps){
+    const l = rdp(points.slice(0, idx+1), eps), r = rdp(points.slice(idx), eps);
+    return l.slice(0, -1).concat(r);
+  }
+  return [a, b];
+}
+function signedArea(pts){
+  let s = 0; for (let i = 0; i < pts.length; i++){ const j = (i+1) % pts.length;
+    s += pts[i][0]*pts[j][1] - pts[j][0]*pts[i][1]; }
+  return s/2;
+}
+function _pointInPoly(pt, poly){   // ray-cast; winding-independent
+  let inside = false;
+  for (let i = 0, j = poly.length-1; i < poly.length; j = i++){
+    const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+    if (((yi > pt[1]) !== (yj > pt[1])) &&
+        (pt[0] < (xj-xi)*(pt[1]-yi)/((yj-yi) || 1e-9) + xi)) inside = !inside;
+  }
+  return inside;
+}
+function traceContours(){
+  if (!tracer.mask){ return; }
+  const loops = marchingSquares(tracer.mask, tracer.W, tracer.H);
+  const eps = tracer.simplify, minA = tracer.minArea, items = [];
+  for (const loop of loops){
+    let poly = loop.slice();
+    if (poly.length > 1 &&
+        Math.round(poly[0][0]*2) === Math.round(poly[poly.length-1][0]*2) &&
+        Math.round(poly[0][1]*2) === Math.round(poly[poly.length-1][1]*2)) poly.pop();
+    if (poly.length < 3) continue;
+    if (eps > 0) poly = rdp(poly, eps);
+    if (poly.length < 3) continue;
+    const area = signedArea(poly);
+    if (Math.abs(area) < minA) continue;
+    items.push({poly, area});
+  }
+  if (!items.length){ tracer.contours = [];
+    setStatus('no contours — adjust the mask / min-area','err'); updateTracerHud(); drawTracer(); return; }
+  // a contour is a HOLE when it's nested inside an odd number of others (winding
+  // is unreliable — the loop-walk direction is arbitrary; containment parity is).
+  // Test a VERTEX, not the centroid: contours never cross, so one vertex of A
+  // inside B ⇒ all of A is inside B — and a vertex can't fall in A's own hole
+  // the way an annular shape's centroid can.
+  tracer.contours = items.map((it, i)=>{
+    let depth = 0;
+    for (let j = 0; j < items.length; j++)
+      if (j !== i && _pointInPoly(it.poly[0], items[j].poly)) depth++;
+    return { pts: it.poly.map(p => [Math.round(p[0]*100)/100, Math.round(p[1]*100)/100]),
+             closed: true, hole: (depth % 2) === 1 };
+  });
+  setStatus(tracer.contours.length + ' contour(s) traced');
+  updateTracerHud(); drawTracer();
+}
+
+function updateTracerHud(){
+  const n = tracer.contours.length;
+  document.getElementById('tracer-count').textContent = n + ' contour' + (n === 1 ? '' : 's');
+  document.getElementById('tracer-scale').textContent =
+    tracer.scale ? ('scale: ' + tracer.scale.toFixed(4) + ' mm/px') : 'scale: not set (1 mm/px)';
+}
+
+window.closeTracer = function(commit){
+  if (commit && tracer.node){
+    if (!tracer.contours.length){ setStatus('run ✎ Trace before confirming','err'); return; }
+    tracer.node.traceData = {
+      image: tracer.node.properties.path,
+      contours: tracer.contours,
+      scale: tracer.scale != null ? tracer.scale : 1,
+      imgW: tracer.W, imgH: tracer.H,   // image size → stable origin + RefImage 1:1 align
+      calib: tracer.calib || null,
+      params: {tol: tracer.tol, simplify: tracer.simplify, minArea: tracer.minArea},
+    };
+    updateTraceBtn(tracer.node);
+  }
+  document.getElementById('tracer').classList.remove('open');
+  const node = tracer.node; tracer.node = null; tracer.srcData = null;
+  if (commit && node) runGraph();
+};
+
 // ── Litegraph init ──
 function initGraph(){
   lgraph = new LGraph();
@@ -3166,7 +3939,7 @@ function initGraph(){
   lcanvas.background_image = null;
   // live triggers on structural changes (guarded while loading a graph)
   lgraph.onNodeAdded = ()=>scheduleLive();
-  lgraph.onNodeRemoved = ()=>scheduleLive();
+  lgraph.onNodeRemoved = ()=>{ syncRefImages(); scheduleLive(); };   // drop a removed ref quad now
   lgraph.onConnectionChange = ()=>scheduleLive();
   lcanvas.onNodeSelected = (node)=> broadcastReveal(node);   // tell /ui to scroll to it
   lgraph.start();
@@ -3206,6 +3979,10 @@ document.addEventListener('keydown', e=>{   // Esc cancels, Enter confirms the p
   if (!document.getElementById('picker').classList.contains('open')) return;
   if (e.key === 'Escape'){ e.preventDefault(); closePicker(false); }
   else if (e.key === 'Enter'){ e.preventDefault(); closePicker(true); }
+});
+document.addEventListener('keydown', e=>{   // Esc cancels the trace editor
+  if (!document.getElementById('tracer').classList.contains('open')) return;
+  if (e.key === 'Escape'){ e.preventDefault(); closeTracer(false); }
 });
 // copilot input: Enter sends, Shift+Enter newline; auto-grow
 (function(){

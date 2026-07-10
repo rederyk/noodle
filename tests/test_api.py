@@ -17,6 +17,15 @@ def store(tmp_path):
     return GraphStore(tmp_path)
 
 
+def test_agent_help_is_served():
+    text = api.agent_help()
+    # self-contained orientation for a remote agent: must name the key
+    # entry points it teaches, or the guide has drifted from the code
+    for anchor in ("noodle", "/api/graph/", "/api/agent/tags",
+                   "slice_summary", "connections"):
+        assert anchor in text
+
+
 def test_create_and_list_graph(store):
     gid = api.create_graph(store, "part1", "a test part")
     assert gid == "part1"
