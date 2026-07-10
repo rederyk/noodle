@@ -4305,6 +4305,26 @@ function initGraph(){
   // snapshot (recordHistory no-ops when nothing actually changed).
   canvas.addEventListener('pointerup', ()=>scheduleHistory());
   lcanvas.onNodeSelected = (node)=> broadcastReveal(node);   // tell /ui to scroll to it
+  // Brighter selection highlight (feedback 20260709-143832): a vivid glowing
+  // outline around each selected node, drawn in graph space over litegraph's thin
+  // default marker. Screen-constant width/glow (÷ scale). Doesn't recolour the
+  // node, so it never clashes with the error-red or the preview boxcolor dot.
+  const SELECT_HL = '#22d3ee';
+  lcanvas.onDrawForeground = function(ctx){
+    const sel = this.selected_nodes; if (!sel) return;
+    const th = LiteGraph.NODE_TITLE_HEIGHT || 20, s = this.ds.scale || 1;
+    ctx.save();
+    ctx.strokeStyle = SELECT_HL; ctx.shadowColor = SELECT_HL;
+    ctx.lineWidth = 2.2 / s; ctx.shadowBlur = 10 / s;
+    for (const id in sel){
+      const n = sel[id]; if (!n) continue;
+      const x = n.pos[0] - 3, y = n.pos[1] - th - 3, w = n.size[0] + 6, h = n.size[1] + th + 6;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(x, y, w, h, 9); else ctx.rect(x, y, w, h);
+      ctx.stroke();
+    }
+    ctx.restore();
+  };
   lgraph.start();
   initCrossView();
   initGroupRename();      // dbl-click a group title -> rename
