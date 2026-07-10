@@ -46,6 +46,9 @@ _EXAMPLE_DESCRIPTIONS = {
                     "surface, shelled into a thin-walled vase.",
     "parametric-curves": "Parametric curves — a Spline through points, an "
                          "ArcCenter and a Line as building blocks for wire geometry.",
+    "lego-brick": "Array fan-out showcase — one stud becomes a grid via two "
+                  "Linear Arrays, fused with Union and rounded into a "
+                  "recognizable LEGO brick. Grouped into 4 labelled stages.",
 }
 
 # A graph id is a single directory name under the store root. Rejecting
