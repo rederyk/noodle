@@ -2231,6 +2231,27 @@ function toggleBypassSelected(){
   for (const n of ns) setBypass(n, turnOn);
 }
 
+// ── group preview eye: drive the render (view) of the whole selection at once ──
+// Mirrors the per-node eye (auto = terminals only / on = force-show / off = hide),
+// applied to every selected node. The group's shared mode, or 'mixed' if they differ.
+function groupPreviewMode(ns){
+  if (!ns.length) return 'auto';
+  const m0 = ns[0].previewMode || 'auto';
+  return ns.every(n => (n.previewMode||'auto') === m0) ? m0 : 'mixed';
+}
+function cyclePreviewSelected(){
+  const ns = selectedNodes(); if (!ns.length) return;
+  const cur = groupPreviewMode(ns);
+  // uniform -> advance auto → on → off → auto; mixed -> unify to 'on'
+  const next = cur==='auto' ? 'on' : cur==='on' ? 'off' : cur==='off' ? 'auto' : 'on';
+  for (const n of ns){
+    n.previewMode = next;
+    const ew = (n.widgets||[]).find(w=>w.isEye); if (ew) ew.name = eyeLabel(next);
+  }
+  lcanvas.setDirty(true, true);
+  window.runGraph();   // a view command: apply immediately, regardless of Live
+}
+
 // Wrap the selection in a LiteGraph group box (Ctrl+G).
 function groupSelected(){
   const ns = selectedNodes(); if (!ns.length) return;
@@ -2324,6 +2345,8 @@ document.addEventListener('keydown', (e)=>{
   const bar = document.createElement('div'); bar.id = 'sel-toolbar';
   bar.innerHTML =
     '<span class="count"></span>'+
+    '<button data-act="view" title="Group view — cycle the render of the selected nodes: auto (terminals only) → on (force-show) → off (hide)">👁 Auto</button>'+
+    '<span class="sep"></span>'+
     '<button data-act="bypass" title="Toggle bypass (Ctrl+B)">⊘ Bypass</button>'+
     '<button data-act="group"  title="Group selection (Ctrl+G)">▣ Group</button>'+
     '<button data-act="clone"  title="Duplicate">⧉ Clone</button>'+
@@ -2334,12 +2357,14 @@ document.addEventListener('keydown', (e)=>{
   bar.addEventListener('pointerdown', e=> e.stopPropagation());
   bar.addEventListener('click', e=>{
     const act = e.target.closest('button') && e.target.closest('button').dataset.act;
-    if (act === 'bypass') toggleBypassSelected();
+    if (act === 'view') cyclePreviewSelected();
+    else if (act === 'bypass') toggleBypassSelected();
     else if (act === 'group')  groupSelected();
     else if (act === 'clone')  cloneSelected();
     else if (act === 'delete') deleteSelected();
   });
   const countEl = bar.querySelector('.count');
+  const viewBtn = bar.querySelector('[data-act="view"]');
   const bypassBtn = bar.querySelector('[data-act="bypass"]');
   (function loop(){
     requestAnimationFrame(loop);
@@ -2370,6 +2395,10 @@ document.addEventListener('keydown', (e)=>{
     bar.style.top  = cy + 'px';
     const ns = selectedNodes();
     countEl.textContent = ns.length + (ns.length===1 ? ' node' : ' nodes');
+    const gm = groupPreviewMode(ns);   // reflect the selection's shared view state
+    viewBtn.textContent = gm==='on' ? '👁 On' : gm==='off' ? '🚫 Off'
+                        : gm==='mixed' ? '👁 Mixed' : '👁 Auto';
+    viewBtn.classList.toggle('active', gm==='on');
     bypassBtn.classList.toggle('active', ns.length>0 && ns.every(n=>n.bypassed));
   })();
 })();
