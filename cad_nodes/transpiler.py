@@ -732,6 +732,90 @@ def _round(_items, _mode="fillet", _size=1.0):
     return fillet(_items, radius=_size)
 
 
+def _as_point(_p):
+    # a Vector for a point-like value (Vector, Vertex, (x,y,z) tuple), else None
+    if isinstance(_p, Vector):
+        return _p
+    if isinstance(_p, (tuple, list)) and 2 <= len(_p) and all(
+            isinstance(_v, (int, float)) for _v in _p[:3]):
+        return Vector(float(_p[0]), float(_p[1]), float(_p[2]) if len(_p) > 2 else 0.0)
+    if type(_p).__name__ == "Vertex":
+        try:
+            return Vector(_p.X, _p.Y, _p.Z)
+        except Exception:
+            return None
+    return None
+
+
+def _shape_center_weight(_s):
+    # (centre Vector, weight) for one shape; weight = volume else area else length
+    # else 1. build123d .center(MASS): a straight edge's mass centre is its midpoint,
+    # a circle edge's is the circle centre, a face's is its area centroid.
+    try:
+        _c = _s.center(CenterOf.MASS)
+    except Exception:
+        try:
+            _bb = _s.bounding_box()
+            _c = (_bb.min + _bb.max) * 0.5
+        except Exception:
+            return (None, 0.0)
+    _w = 0.0
+    for _a in ("volume", "area", "length"):
+        try:
+            _v = float(getattr(_s, _a))
+            if _v:
+                _w = _v
+                break
+        except Exception:
+            pass
+    return (_c, _w or 1.0)
+
+
+def _center_of(_x):
+    # Universal centre, aggregating whatever is wired in:
+    #   closed solids -> mass-weighted centre of mass (volume via _volume_of)
+    #   faces -> area-weighted centroid; curves -> length-weighted centroid
+    #   (a straight line -> its midpoint, a circle -> its centre)
+    #   a point cloud (points / vertices) -> the mean point
+    # Mixed sets: measure-weighted mean of each piece's own centre. Returns a Vector.
+    _items = [p for p in _flatten([_x]) if p is not None]
+    if not _items:
+        return Vector(0, 0, 0)
+    _pts = [_as_point(p) for p in _items]
+    _shapes = [p for p, q in zip(_items, _pts) if q is None]
+    _points = [q for q in _pts if q is not None]
+    if not _shapes:                       # pure point cloud -> mean point
+        _acc = Vector(0, 0, 0)
+        for q in _points:
+            _acc = _acc + q
+        return _acc / (len(_points) or 1)
+    _tot = 0.0
+    _acc = Vector(0, 0, 0)
+    for _sh in _shapes:
+        _c, _w = _shape_center_weight(_sh)
+        if _c is None:
+            continue
+        _acc = _acc + _c * _w
+        _tot += _w
+    for q in _points:                     # loose points join as unit-weight samples
+        _acc = _acc + q
+        _tot += 1.0
+    return _acc / _tot if _tot else Vector(0, 0, 0)
+
+
+def _volume_of(_x):
+    # total volume of everything closed wired in (0 for open curves / faces / points)
+    _tot = 0.0
+    for p in _flatten([_x]):
+        if p is None:
+            continue
+        try:
+            _tot += float(p.volume)
+        except Exception:
+            pass
+    return _tot
+
+
 def _slice(_lst, _start, _stop, _step):
     _lst = list(_lst or [])
     stop = None if _stop == 0 else _stop
@@ -1689,6 +1773,9 @@ class Transpiler:
     def __init__(self, graph: Graph):
         self.graph = graph
         self.var_of: dict[str, str] = {}
+        # (node_id, output-socket name) -> var, for the rare node that emits
+        # DISTINCT expressions per output (e.g. CenterOfMass: center + volume).
+        self.out_var_of: dict[tuple, str] = {}
         self._counter = 0
         # Source-map instrumentation (off unless run(emit_map=True)).
         self._emit_map = False
@@ -1734,13 +1821,19 @@ class Transpiler:
         self.var_of[node_id] = var
         return var
 
+    def _src_expr(self, fn: str, fs: str) -> str:
+        """Expression for an upstream node's OUTPUT SOCKET. Defaults to the node's
+        single var; a node that emits per-socket vars (e.g. CenterOfMass: center /
+        volume) registers them in out_var_of so each output wire resolves distinctly."""
+        return self.out_var_of.get((fn, fs), self.var_of.get(fn, "None"))
+
     def _input_values(self, node_id: str, ndef: catalog.NodeDef) -> dict[str, str]:
         """Map each input socket -> the source variable expression."""
         feeds = self.graph.inputs_of(node_id)
         out: dict[str, str] = {}
         for sock in ndef.inputs:
             srcs = feeds.get(sock.name, [])
-            vars_ = [self.var_of.get(fn, "None") for (fn, _fs) in srcs]
+            vars_ = [self._src_expr(fn, fs) for (fn, fs) in srcs]
             if sock.multiple:
                 out[sock.name] = ", ".join(vars_)
             else:
@@ -1847,6 +1940,22 @@ class Transpiler:
         body = [f"{var} = _trace_curves({contours!r}, {scale!r}, {imgh!r}){_annot(node)}"]
         self._guard(lines, body, node)
 
+    def _emit_center(self, node, lines: list[str]) -> None:
+        """CenterOfMass: a universal centre + a volume from one shape input, via the
+        injected helpers. Special-cased because a node's two outputs otherwise share
+        one var — here `center` (a vector) and `volume` (a number) need distinct
+        expressions, registered per output socket in out_var_of."""
+        ndef = catalog.get(node.type)
+        var = self._new_var(node.id)                 # var_of[node] = center (the default)
+        src = self._input_values(node.id, ndef).get("shape", "None")
+        volvar = var + "_vol"
+        lines.append(f"{volvar} = None")             # defined even if the guarded body throws
+        body = [f"{var} = _center_of({src}){_annot(node)}",
+                f"{volvar} = _volume_of({src})"]
+        self.out_var_of[(node.id, "center")] = var
+        self.out_var_of[(node.id, "volume")] = volvar
+        self._guard(lines, body, node)
+
     def _emit_codeblock(self, node, lines: list[str]) -> None:
         """A CodeBlock transpiles like TWO connected nodes: a params node and a
         code node. Declared `#@param`s become the function's named ARGUMENTS — so
@@ -1873,7 +1982,7 @@ class Transpiler:
         for d in declared:
             name = d["name"]
             srcs = feeds.get(name, [])
-            vars_ = [self.var_of.get(fid, "None") for (fid, _fs) in srcs]
+            vars_ = [self._src_expr(fid, fs) for (fid, fs) in srcs]
             if vars_:
                 maybe_list = len(vars_) >= 2 or any(
                     fid in self._produces_list for (fid, _fs) in srcs)
@@ -1953,7 +2062,7 @@ class Transpiler:
         fan: dict[str, str] = {}  # input name -> value expr passed to _fanout
         for sock in ndef.inputs:
             srcs = feeds.get(sock.name, [])
-            vars_ = [self.var_of.get(fn, "None") for (fn, _fs) in srcs]
+            vars_ = [self._src_expr(fn, fs) for (fn, fs) in srcs]
             if sock.multiple:                       # collector: whole list
                 subs[sock.name] = ", ".join(vars_)
             elif sock.list_access:                  # consumes the list as-is
@@ -2123,6 +2232,8 @@ class Transpiler:
                 self._emit_select(node, body)
             elif node.type == "TraceImage":
                 self._emit_vectorize(node, body)
+            elif node.type == "CenterOfMass":
+                self._emit_center(node, body)
             else:
                 self._emit_simple(node, body)
 

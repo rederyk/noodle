@@ -1489,11 +1489,19 @@ register(NodeDef("Area", "panel", "Area",
     description="Total surface area of a shape (for a solid: all its faces)."))
 
 register(NodeDef("CenterOfMass", "panel", "Center of Mass",
-    inputs=[Socket("shape", WIRE_SOLID)],
-    outputs=[Socket("point", WIRE_VECTOR)],
-    code_template={"algebra": "{shape}.center(CenterOf.MASS)"},
-    description="The centre of mass of a shape, as a point — wire into Align.ref "
-                "to balance a part on a location, or into a Panel to read it."))
+    # Universal + casts from anything: solids, faces, curves, points/vertices. The
+    # whole input is consumed as one (list_access), so a point cloud / a set of
+    # shapes gives ONE aggregate centre. Special-cased by the transpiler
+    # (_emit_center) into TWO outputs — see out_var_of.
+    inputs=[Socket("shape", WIRE_SOLID, list_access=True,
+                   accepts=[WIRE_SURFACE, WIRE_CURVE, WIRE_VECTOR, WIRE_PLANE, WIRE_SELECTION])],
+    outputs=[Socket("center", WIRE_VECTOR), Socket("volume", WIRE_DATA)],
+    code_template={"algebra": ""},   # handled by the transpiler, not a template
+    description="Centre + volume of whatever you feed it. Closed solids -> centre "
+                "of mass + volume; faces -> area centroid; open/closed curves -> "
+                "curve centroid (a straight line gives its midpoint, a circle its "
+                "centre); a point cloud -> the mean point. `center` is a vector "
+                "(wire into Align.ref / Move.offset); `volume` reads in a Panel."))
 
 # ===========================================================================
 # 11b. Containers / legend — one typed pass-through per wire type. They colour
