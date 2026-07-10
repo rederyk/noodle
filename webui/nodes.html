@@ -105,6 +105,9 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 .picker-count{font-size:12px;color:var(--orange);font-weight:600;}
 .picker-view{flex:1;position:relative;min-height:0;}
 #picker-canvas{width:100%;height:100%;display:block;cursor:crosshair;}
+.tb-btn.tool{padding:5px 9px;}
+.tb-btn.tool.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;}
+#picker-overlay-canvas{position:absolute;inset:0;pointer-events:none;z-index:2;}
 /* TraceImage editor (PLAN_TRACE_IMAGE.md) — reuses .picker-overlay/.picker-bar */
 .tracer-tools{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
 .tracer-tools .tb-btn.active{background:var(--accent);color:#0b0e14;border-color:var(--accent);}
@@ -407,17 +410,23 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 <div id="picker" class="picker-overlay">
   <div class="picker-bar">
     <span class="picker-title" id="picker-title">Select edges</span>
-    <span class="picker-hint">click an edge to toggle · drag to orbit · scroll to zoom</span>
-    <label class="picker-hint" id="picker-loop-wrap" title="click one edge to grab its whole same-plane loop"
+    <span class="picker-hint" id="picker-hint">click an edge to toggle · drag to orbit · scroll to zoom</span>
+    <span id="picker-tools" style="display:flex;gap:4px;">
+      <button class="tb-btn tool on" data-tool="orbit" title="Orbit — drag to rotate the view">🖱 Orbit</button>
+      <button class="tb-btn tool" data-tool="rect" title="Box-select — drag a rectangle to grab everything inside (Shift adds, Alt removes)">▭ Rect</button>
+      <button class="tb-btn tool" data-tool="lasso" title="Lasso — draw a freehand outline (Shift adds, Alt removes)">◌ Lasso</button>
+    </span>
+    <label class="picker-hint" id="picker-loop-wrap" title="click one edge to grab the closed loop it belongs to — repeat-click cycles when it borders several"
            style="display:none;user-select:none;cursor:pointer;">
-      <input type="checkbox" id="picker-loop" style="vertical-align:middle;margin-right:3px;">grab coplanar loop</label>
+      <input type="checkbox" id="picker-loop" style="vertical-align:middle;margin-right:3px;">grab loop</label>
     <span class="picker-count" id="picker-count">0 selected</span>
     <span style="flex:1"></span>
+    <button class="tb-btn" id="picker-invert" title="Select everything NOT currently selected — pick the easy one, invert to grab the rest">⇄ Invert</button>
     <button class="tb-btn" id="picker-clear">Clear</button>
     <button class="tb-btn" id="picker-cancel">Cancel</button>
     <button class="tb-btn primary" id="picker-confirm">✓ Confirm</button>
   </div>
-  <div class="picker-view"><canvas id="picker-canvas"></canvas></div>
+  <div class="picker-view"><canvas id="picker-canvas"></canvas><canvas id="picker-overlay-canvas"></canvas></div>
 </div>
 
 <!-- TraceImage raster editor: rembg + magic-wand + pen + 2-point scale, then
@@ -1023,6 +1032,20 @@ function addWidget(node, p){
       const files = assetCache.filter(a=>!exts.length || exts.includes(a.ext)).map(a=>a.path);
       refreshAssets();                 // keep the list fresh for the next open
       return files.length ? files.concat([ASSET_UPLOAD]) : [ASSET_UPLOAD];
+    }});
+    w.cadParam = p.name; return;
+  }
+  if (p.widget === 'font'){            // pick a system family OR an uploaded custom font
+    node.properties[p.name] = p.default ?? 'Arial';
+    const w = node.addWidget('combo', p.name, node.properties[p.name] || 'Arial', v=>{
+      if (v === FONT_UPLOAD){ w.value = node.properties[p.name] || 'Arial'; uploadFontForNode(node, w); return; }
+      node.properties[p.name] = v; onParamChange(node);
+    }, { values: ()=>{
+      refreshFonts();                  // keep the list fresh for the next open
+      const cur = node.properties[p.name];
+      const custom = (fontCache.custom || []).map(f=>f.name);
+      const all = [...new Set([...(cur ? [cur] : []), ...custom, ...(fontCache.system || [])])];
+      return all.concat([FONT_UPLOAD]);
     }});
     w.cadParam = p.name; return;
   }
@@ -3457,7 +3480,8 @@ function broadcastReveal(node){
 }
 
 // ── sub-shape selection picker (modal 3D viewer) ───────────────────────────
-const picker = { ready:false, node:null, kind:'edge', sel:new Map(), pickables:[], raf:null };
+const picker = { ready:false, node:null, kind:'edge', sel:new Map(), pickables:[], raf:null,
+  tool:'orbit', loopCycle:null };
 
 function pluralKind(kind){ return kind === 'vertex' ? 'vertices' : kind + 's'; }
 
@@ -3494,16 +3518,122 @@ function ensurePicker(){
   picker.faceSelMat = new THREE.MeshStandardMaterial({color:0xf59e0b, transparent:true, opacity:.92, roughness:.45, metalness:.1, side:THREE.DoubleSide, emissive:0x402a00});
   picker.vertMat    = new THREE.MeshStandardMaterial({color:0x9aa6b6, roughness:.5});
   picker.vertSelMat = new THREE.MeshStandardMaterial({color:0xf59e0b, emissive:0x402a00, roughness:.4});
-  // click-to-pick with a drag guard so orbiting doesn't toggle edges
-  let down = null;
-  canvas.addEventListener('pointerdown', e=>{ down = [e.clientX, e.clientY]; });
+  picker.overlay = document.getElementById('picker-overlay-canvas');
+  picker.overlayCtx = picker.overlay.getContext('2d');
+  // click-to-pick with a drag guard so orbiting doesn't toggle edges; in
+  // rect/lasso tool a left-drag draws a marquee instead (orbit moves to RMB).
+  let down = null, marq = null;
+  canvas.addEventListener('pointerdown', e=>{
+    if (e.button === 0 && picker.tool !== 'orbit'){
+      marq = { mode: picker.tool, pts: [[e.clientX, e.clientY]], sub: e.altKey };
+      canvas.setPointerCapture(e.pointerId); e.preventDefault(); return;
+    }
+    down = [e.clientX, e.clientY];
+  });
+  canvas.addEventListener('pointermove', e=>{
+    if (!marq) return;
+    if (marq.mode === 'rect') marq.pts[1] = [e.clientX, e.clientY];
+    else marq.pts.push([e.clientX, e.clientY]);
+    drawMarquee(marq);
+  });
   canvas.addEventListener('pointerup', e=>{
+    if (marq){
+      const enough = marq.mode === 'rect' ? marq.pts.length > 1 : marq.pts.length > 2;
+      if (enough) applyMarquee(marq);
+      marq = null; drawMarquee(null); return;
+    }
     if (!down) return;
     const moved = Math.hypot(e.clientX-down[0], e.clientY-down[1]); down = null;
     if (moved > 5) return;                 // a drag (orbit), not a pick
     pickAt(e);
   });
   picker.ready = true;
+}
+
+// ── selection tool (orbit / rect / lasso) ─────────────────────────────────
+function setPickerTool(tool){
+  picker.tool = tool;
+  document.querySelectorAll('#picker-tools .tool')
+    .forEach(b => b.classList.toggle('on', b.dataset.tool === tool));
+  const canvas = picker.renderer && picker.renderer.domElement;
+  if (canvas) canvas.style.cursor = tool === 'orbit' ? 'crosshair' : 'default';
+  if (picker.controls){                    // free the LMB for the marquee; orbit -> RMB
+    const M = THREE.MOUSE;
+    picker.controls.mouseButtons = tool === 'orbit'
+      ? { LEFT:M.ROTATE, MIDDLE:M.DOLLY, RIGHT:M.PAN }
+      : { LEFT:null, MIDDLE:M.DOLLY, RIGHT:M.ROTATE };
+  }
+  document.getElementById('picker-hint').textContent = tool === 'orbit'
+    ? `click a ${picker.kind} to toggle · drag to orbit · scroll to zoom`
+    : `drag to ${tool}-select · Alt-drag removes · right-drag orbits`;
+}
+
+// project a world point to client (page) pixels, matching pointer coords
+function worldToClient(v){
+  const p = v.clone().project(picker.camera);
+  const r = picker.renderer.domElement.getBoundingClientRect();
+  return { x:(p.x*0.5+0.5)*r.width + r.left, y:(-p.y*0.5+0.5)*r.height + r.top, z:p.z };
+}
+
+// one representative client point per pickable index (bbox centre)
+function repClient(){
+  const out = new Map(), box = new THREE.Box3(), c = new THREE.Vector3();
+  for (const o of picker.pickables){
+    const i = o.userData.index;
+    if (out.has(i)) continue;
+    box.setFromObject(o); box.getCenter(c);
+    out.set(i, worldToClient(c));
+  }
+  return out;
+}
+
+function _inPoly(pt, poly){
+  let inside = false;
+  for (let i=0, j=poly.length-1; i<poly.length; j=i++){
+    const xi=poly[i][0], yi=poly[i][1], xj=poly[j][0], yj=poly[j][1];
+    if (((yi>pt.y)!==(yj>pt.y)) && (pt.x < (xj-xi)*(pt.y-yi)/(yj-yi)+xi)) inside = !inside;
+  }
+  return inside;
+}
+
+// select every sub-shape whose centre falls inside the marquee (Alt removes)
+function applyMarquee(m){
+  let rect = null;
+  if (m.mode === 'rect'){
+    const a=m.pts[0], b=m.pts[m.pts.length-1];
+    rect = { x0:Math.min(a[0],b[0]), x1:Math.max(a[0],b[0]),
+             y0:Math.min(a[1],b[1]), y1:Math.max(a[1],b[1]) };
+  }
+  for (const [idx, pt] of repClient()){
+    if (pt.z > 1) continue;                // behind the camera
+    const hit = m.mode === 'rect'
+      ? (pt.x>=rect.x0 && pt.x<=rect.x1 && pt.y>=rect.y0 && pt.y<=rect.y1)
+      : _inPoly(pt, m.pts);
+    if (hit) setPick(idx, !m.sub);
+  }
+  picker.loopCycle = null;
+  updateCount();
+}
+
+function drawMarquee(m){
+  const cv = picker.overlay, ctx = picker.overlayCtx;
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (!m) return;
+  const r = picker.renderer.domElement.getBoundingClientRect();
+  const L = p => [p[0]-r.left, p[1]-r.top];
+  ctx.lineWidth = 1.5; ctx.strokeStyle = '#f59e0b';
+  ctx.fillStyle = 'rgba(245,158,11,0.12)'; ctx.setLineDash([5,4]);
+  if (m.mode === 'rect'){
+    const a=L(m.pts[0]), b=L(m.pts[m.pts.length-1]);
+    const x=Math.min(a[0],b[0]), y=Math.min(a[1],b[1]);
+    const w=Math.abs(b[0]-a[0]), h=Math.abs(b[1]-a[1]);
+    ctx.fillRect(x,y,w,h); ctx.strokeRect(x,y,w,h);
+  } else {
+    ctx.beginPath();
+    m.pts.forEach((p,i)=>{ const q=L(p); i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]); });
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  ctx.setLineDash([]);
 }
 
 // highlight a pickable per its kind (edge=line, face=mesh, vertex=sphere).
@@ -3528,22 +3658,84 @@ function setPick(idx, on){
   highlightIndex(idx, on);
 }
 
-// edges coplanar-connected to `idx` — the union of every same-plane loop it's
-// part of (a shared/sharp edge can belong to two). Returns [idx] if none.
-function coplanarGroup(idx){
-  const grp = new Set([idx]);
-  for (const L of (picker.loops || [])) if (L.includes(idx)) for (const j of L) grp.add(j);
-  return [...grp];
+function updateCount(){
+  document.getElementById('picker-count').textContent = picker.sel.size + ' selected';
 }
 
-// toggle a picked index — expanding to its whole coplanar loop when the
-// 'grab coplanar loop' box is on (edges only). Shared by ray-pick and tests.
+// A shared/sharp edge can border SEVERAL closed loops (e.g. a box top edge is on
+// both the top rectangle and a vertical side). Old behaviour unioned them all —
+// that's the "grabs things at 90°" bug. Now we grab ONE loop: the one whose plane
+// most faces the current view, and a repeat-click on the same edge cycles to the
+// next. Rotate the view (or click again) to disambiguate, exactly as asked.
+function loopsContaining(idx){
+  return (picker.loops || []).filter(L => L.includes(idx));
+}
+
+// plane normal of a (planar) loop, from a robust 3-point fit of its polyline
+// points — order-independent, so it survives edges gathered out of loop order.
+function loopNormal(loop){
+  const pts = [];
+  for (const o of picker.pickables){
+    if (loop.includes(o.userData.index) && o.geometry && o.geometry.attributes.position){
+      const p = o.geometry.attributes.position;
+      for (let i=0;i<p.count;i++) pts.push(new THREE.Vector3(p.getX(i),p.getY(i),p.getZ(i)));
+    }
+  }
+  if (pts.length < 3) return new THREE.Vector3(0,0,1);
+  const p0 = pts[0];
+  const e1 = new THREE.Vector3(); let best = 0, normal = new THREE.Vector3(0,0,1);
+  let far = pts[1], fd = 0;                                // farthest point from p0
+  for (const p of pts){ const d = p.distanceToSquared(p0); if (d > fd){ fd = d; far = p; } }
+  e1.subVectors(far, p0);
+  for (const p of pts){                                    // most non-collinear -> best normal
+    const cross = new THREE.Vector3().crossVectors(e1, p.clone().sub(p0));
+    const a = cross.lengthSq();
+    if (a > best){ best = a; normal = cross; }
+  }
+  return normal.normalize();
+}
+
+// candidate loops for `idx`, most view-facing first (|normal · camera forward|).
+function orderedLoops(idx){
+  const fwd = new THREE.Vector3(); picker.camera.getWorldDirection(fwd);
+  return loopsContaining(idx)
+    .map(L => { const n = loopNormal(L); return { L, score: Math.abs(n.dot(fwd)) }; })
+    .sort((a,b) => b.score - a.score)
+    .map(o => o.L);
+}
+
+// toggle a picked index — or, with 'grab loop' on (edges only), the single
+// closed loop it belongs to. Shared by ray-pick, marquee and tests.
 function togglePick(idx){
-  const on = !picker.sel.has(idx);                       // toggle target state
   const loopBox = document.getElementById('picker-loop');
-  const targets = (picker.kind === 'edge' && loopBox && loopBox.checked)
-    ? coplanarGroup(idx) : [idx];
-  for (const j of targets) setPick(j, on);
+  if (picker.kind === 'edge' && loopBox && loopBox.checked){
+    const cands = orderedLoops(idx);
+    if (cands.length){
+      const cyc = picker.loopCycle;
+      if (cyc && cyc.idx === idx){                         // repeat-click: cycle loops
+        for (const j of cyc.applied) setPick(j, false);
+        const pos = (cyc.pos + 1) % cands.length, loop = cands[pos];
+        for (const j of loop) setPick(j, true);
+        picker.loopCycle = { idx, pos, applied:[...loop] };
+      } else {                                             // fresh click: best loop
+        const loop = cands[0], already = loop.every(j => picker.sel.has(j));
+        for (const j of loop) setPick(j, !already);
+        picker.loopCycle = already ? null : { idx, pos:0, applied:[...loop] };
+      }
+      updateCount();
+      return;
+    }
+  }
+  picker.loopCycle = null;
+  setPick(idx, !picker.sel.has(idx));
+  updateCount();
+}
+
+// invert the whole selection: every pickable that IS selected becomes
+// deselected and vice-versa. Lets you pick the one easy face/edge and grab
+// its complement (e.g. "delete every face except this one" without hunting).
+function invertPick(){
+  for (const idx of picker.sigByIndex.keys()) setPick(idx, !picker.sel.has(idx));
   document.getElementById('picker-count').textContent = picker.sel.size + ' selected';
 }
 
@@ -3580,7 +3772,8 @@ window.openSelectionPicker = async function(node, kind){
     data = await res.json();
   } catch(e){ setStatus('picker failed','err'); log('picker: '+e.message,'err'); return; }
   ensurePicker();
-  picker.node = node; picker.kind = kind;
+  picker.node = node; picker.kind = kind; picker.loopCycle = null;
+  setPickerTool('orbit');
   renderPickerData(data, node.selectionData);
   document.getElementById('picker-title').textContent = `Select ${pluralKind(kind)} — `+(src.title||src.cadType);
   document.querySelector('.picker-hint').textContent =
@@ -3690,6 +3883,9 @@ function startPickerLoop(){
       picker.renderer.setSize(w, h, false);
       picker.camera.aspect = w/h; picker.camera.updateProjectionMatrix();
     }
+    if (picker.overlay && (picker.overlay.width !== w || picker.overlay.height !== h)){
+      picker.overlay.width = w; picker.overlay.height = h;
+    }
     picker.controls.update();
     picker.renderer.render(picker.scene, picker.camera);
   })();
@@ -3706,6 +3902,7 @@ window.closePicker = function(commit){
   }
   document.getElementById('picker').classList.remove('open');
   if (picker.raf){ cancelAnimationFrame(picker.raf); picker.raf = null; }
+  if (picker.overlayCtx) drawMarquee(null);
   const node = picker.node; picker.node = null;
   if (commit && node) runGraph();
 };
@@ -4137,6 +4334,9 @@ window.addEventListener('resize', ()=>{ resizeGraph(); resizeViewer(); });
 // picker modal controls
 document.getElementById('picker-confirm').addEventListener('click', ()=>closePicker(true));
 document.getElementById('picker-cancel').addEventListener('click', ()=>closePicker(false));
+document.querySelectorAll('#picker-tools .tool').forEach(b=>
+  b.addEventListener('click', ()=> setPickerTool(b.dataset.tool)));
+document.getElementById('picker-invert').addEventListener('click', invertPick);
 document.getElementById('picker-clear').addEventListener('click', ()=>{
   for (const obj of picker.pickables) setHighlight(obj, false);
   picker.sel.clear(); document.getElementById('picker-count').textContent = '0 selected';
@@ -4368,6 +4568,37 @@ function uploadAssetForNode(node, widget, exts){
   });
   inp.click();
 }
+/* ---- Custom font library (shared across projects; drives the Text font picker) ---- */
+let fontCache = { custom: [], system: [] };
+const FONT_UPLOAD = '⬆ Upload font…';       // sentinel option in the font picker
+async function refreshFonts(){
+  try{
+    const r = await fetch(`${API}/api/fonts`, {cache:'no-store'});
+    if(r.ok) fontCache = await r.json();
+  }catch(_){}
+  if(lcanvas) lcanvas.setDirty(true,true);   // repaint combos once the list arrives
+  return fontCache;
+}
+// Upload a .ttf/.otf into the shared library and point THIS Text node at it.
+function uploadFontForNode(node, widget){
+  const inp=document.createElement('input'); inp.type='file';
+  inp.accept='.ttf,.otf,.ttc'; inp.style.display='none'; document.body.appendChild(inp);
+  inp.addEventListener('change', async ()=>{
+    const f=inp.files&&inp.files[0]; const done=()=>inp.remove(); if(!f){ done(); return; }
+    const fd=new FormData(); fd.append('file', f);
+    try{
+      const r=await fetch(`${API}/api/fonts`,{method:'POST',body:fd});
+      if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail||r.statusText);
+      const d=await r.json();
+      await refreshFonts();
+      node.properties[widget.cadParam]=d.name; widget.value=d.name; onParamChange(node);
+      toast(`Added font <code>${d.name}</code> to the library.`,'success');
+    }catch(e){ toast('Font upload failed: '+(e.message||e),'error'); }
+    finally{ done(); }
+  });
+  inp.click();
+}
+
 window.importModel = function(){
   closeMenus();
   if(!currentName){ toast('Open or create a project first, then import.','error'); return; }

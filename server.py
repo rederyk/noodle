@@ -34,6 +34,13 @@ from cad_nodes.copilot import run_chat, copilot_status
 PROJECTS_DIR = Path("/app/projects")
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Shared custom-font library (uploaded .ttf/.otf, reusable across projects). It
+# lives UNDER projects/ (the only writable mount) but is NOT a project — filtered
+# out of project/library listings by name. See cad_nodes/fonts.py.
+from cad_nodes import fonts as fontlib
+FONTS_DIR = PROJECTS_DIR / fontlib.FONTS_DIRNAME
+_RESERVED_PROJECT_DIRS = {fontlib.FONTS_DIRNAME}
+
 # User feedback/report drops (see docs/FEEDBACK_FIX_GUIDE.md). A dedicated rw
 # volume kept out of projects/ so a coding agent can find them at the repo root.
 FEEDBACK_DIR = Path("/app/feedback")
@@ -403,7 +410,7 @@ async def webui_library():
 async def list_projects():
     projects = []
     for d in sorted(PROJECTS_DIR.iterdir()):
-        if d.is_dir():
+        if d.is_dir() and d.name not in _RESERVED_PROJECT_DIRS:
             meta = {}
             meta_path = d / "meta.json"
             if meta_path.exists():
@@ -618,6 +625,61 @@ async def import_model(name: str, file: UploadFile = File(...)):
     return {"status": "imported", "node_id": node_id, **meta, "file": meta["name"]}
 
 
+# --- Custom font library (shared across every project) ------------------------
+@app.get("/api/fonts")
+async def api_list_fonts():
+    """Fonts available to Text nodes: uploaded custom fonts (⬆) + system
+    families. The Text `font` picker reads this."""
+    return fontlib.list_fonts(FONTS_DIR)
+
+
+@app.post("/api/fonts")
+async def api_upload_font(file: UploadFile = File(...)):
+    """Store an uploaded .ttf/.otf/.ttc in the shared library so any Text node
+    can use it WITHOUT installing it in the OS. Returns its family name."""
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in fontlib.FONT_EXTS:
+        raise HTTPException(400, f"Unsupported font '{ext or '?'}'. Use TTF, OTF or TTC.")
+    FONTS_DIR.mkdir(parents=True, exist_ok=True)
+    stem = _slugify(Path(file.filename or "font").stem, "font")
+    dest = FONTS_DIR / f"{stem}{ext}"
+    n = 1
+    while dest.exists():                        # never clobber an existing font
+        dest = FONTS_DIR / f"{stem}-{n}{ext}"
+        n += 1
+    dest.write_bytes(await file.read())
+    fam = fontlib.family_of(dest)
+    logger.info("font stored: %s (family %r)", dest.name, fam)
+    return {"status": "stored", "name": fam, "family": fam, "file": dest.name, "ext": ext}
+
+
+@app.get("/api/fonts/{filename}")
+async def api_download_font(filename: str):
+    """Stream a custom font file (basename only; guarded) — the /library panel
+    loads it via @font-face to render a live preview."""
+    if filename != Path(filename).name or filename in ("", ".", ".."):
+        raise HTTPException(400, "bad filename")
+    p = FONTS_DIR / filename
+    if not p.is_file() or p.suffix.lower() not in fontlib.FONT_EXTS:
+        raise HTTPException(404, "no such font")
+    media = {".ttf": "font/ttf", ".otf": "font/otf",
+             ".ttc": "font/collection"}.get(p.suffix.lower(), "application/octet-stream")
+    return FileResponse(p, media_type=media, filename=filename)
+
+
+@app.delete("/api/fonts/{filename}")
+async def api_delete_font(filename: str):
+    """Remove a custom font from the shared library (basename only; guarded)."""
+    if filename != Path(filename).name or filename in ("", ".", ".."):
+        raise HTTPException(400, "bad filename")
+    p = FONTS_DIR / filename
+    if not p.is_file():
+        raise HTTPException(404, "no such font")
+    p.unlink()
+    logger.info("font deleted: %s", filename)
+    return {"status": "deleted", "file": filename}
+
+
 @app.post("/api/graph/{name}/execute")
 async def execute_graph_project(name: str):
     d = require_project(name)
@@ -809,7 +871,7 @@ async def library_list():
     exports/ = files written by Export nodes; assets/ = imported models."""
     projects = []
     for d in sorted(PROJECTS_DIR.iterdir()):
-        if not d.is_dir():
+        if not d.is_dir() or d.name in _RESERVED_PROJECT_DIRS:
             continue
         files = _lib_entries(d, "exports") + _lib_entries(d, "assets")
         projects.append({"project": d.name, "files": files})

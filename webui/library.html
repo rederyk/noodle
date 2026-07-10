@@ -68,6 +68,27 @@
   .file .acts button.del:hover{border-color:var(--accent);color:var(--accent);}
   .empty{color:var(--text-dim);font-size:14px;padding:40px 0;text-align:center;}
   .empty.sub{padding:6px 0;font-size:12px;text-align:left;}
+  /* fonts panel */
+  .fonts-panel{margin-bottom:30px;}
+  .fonts-panel .proj-head{align-items:center;}
+  .sample-inp{margin-left:auto;background:var(--bg-3);color:var(--text);border:1px solid var(--border);
+    border-radius:8px;padding:7px 10px;font-size:13px;font-family:var(--font);min-width:150px;}
+  .sample-inp:focus{outline:none;border-color:var(--accent);}
+  .font-card{border:1px solid var(--border);border-radius:10px;padding:14px 16px;background:var(--bg-1);
+    display:flex;flex-direction:column;gap:9px;transition:all .15s;}
+  .font-card:hover{border-color:var(--text-dim);background:var(--bg-2);}
+  .font-card .preview{font-size:30px;line-height:1.15;color:var(--text);word-break:break-word;
+    min-height:38px;overflow:hidden;}
+  .font-card .fam{font-size:14px;font-weight:600;word-break:break-all;}
+  .font-card .fmeta{font-size:11px;color:var(--text-dim);font-family:var(--mono);}
+  .font-card .acts{display:flex;gap:8px;margin-top:auto;}
+  .font-card .acts button.del{width:34px;text-align:center;padding:6px 8px;border-radius:7px;font-size:12px;
+    border:1px solid var(--border);background:var(--bg-3);color:var(--text-dim);cursor:pointer;}
+  .font-card .acts button.del:hover{border-color:var(--accent);color:var(--accent);}
+  .font-card .acts a.dl{flex:1;text-align:center;padding:6px 8px;border-radius:7px;font-size:12px;
+    border:1px solid var(--border);background:var(--bg-3);color:var(--text);}
+  .font-card .acts a.dl:hover{border-color:var(--green);color:var(--green);}
+  .fonts-hint{color:var(--text-dim);font-size:12px;margin-top:10px;}
   /* toast */
   #toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:50;
     display:flex;flex-direction:column;gap:8px;align-items:center;}
@@ -97,6 +118,21 @@
       <button class="btn primary" onclick="pickFile()">Choose file…</button>
       <input type="file" id="file-inp" accept=".step,.stp,.stl,.svg,.dxf,.png,.jpg,.jpeg" style="display:none">
     </div>
+
+    <section class="fonts-panel">
+      <div class="proj-head">
+        <h2>Fonts</h2>
+        <span class="count" id="font-count"></span>
+        <input id="font-sample" class="sample-inp" value="Aa Bb Cc 0123" title="Preview text"
+               placeholder="preview text…">
+        <button class="btn primary" onclick="pickFont()">⬆ Upload font…</button>
+        <input type="file" id="font-inp" accept=".ttf,.otf,.ttc" style="display:none">
+      </div>
+      <div id="font-grid" class="grid"></div>
+      <div class="fonts-hint">Custom fonts live in one shared library (<code>projects/_fonts/</code>)
+        and are used by <b>Text</b> nodes across every project — without installing them system-wide.</div>
+      <style id="font-faces"></style>
+    </section>
 
     <div id="list"><div class="empty">Loading…</div></div>
   </main>
@@ -225,7 +261,64 @@ drop.addEventListener('drop', e => {
   if(f) uploadTo(f);
 });
 
+/* ---- fonts management panel ---- */
+let FONTS = [];
+async function loadFonts(){
+  try{
+    const r = await fetch(`${API}/api/fonts`, {cache:'no-store'});
+    if(r.ok) FONTS = (await r.json()).custom || [];
+  }catch(_){ FONTS = []; }
+  renderFonts();
+}
+function renderFonts(){
+  const grid = document.getElementById('font-grid');
+  const cnt = document.getElementById('font-count');
+  cnt.textContent = FONTS.length ? `${FONTS.length} custom` : '';
+  // inject one @font-face per uploaded font, then reference it in the card
+  document.getElementById('font-faces').textContent = FONTS.map((f,i)=>
+    `@font-face{font-family:'nf-${i}';src:url('${API}/api/fonts/${encodeURIComponent(f.file)}');}`).join('\n');
+  const sample = (document.getElementById('font-sample').value || 'Aa Bb Cc 0123');
+  if(!FONTS.length){
+    grid.innerHTML = `<div class="empty sub">No custom fonts yet — upload a .ttf / .otf / .ttc to use it in Text nodes.</div>`;
+    return;
+  }
+  grid.innerHTML = FONTS.map((f,i)=>`<div class="font-card">
+      <div class="preview" style="font-family:'nf-${i}',var(--font)">${esc(sample)}</div>
+      <div class="fam">${esc(f.name)}</div>
+      <div class="fmeta">${esc(f.file)} · ${fmtSize(f.size)}</div>
+      <div class="acts">
+        <a class="dl" href="${API}/api/fonts/${encodeURIComponent(f.file)}" download="${esc(f.file)}" title="Download">⬇</a>
+        <button class="del" title="Delete font" onclick="delFont('${esc(f.file)}')">✕</button>
+      </div>
+    </div>`).join('');
+}
+document.getElementById('font-sample').addEventListener('input', renderFonts);
+function pickFont(){ document.getElementById('font-inp').click(); }
+document.getElementById('font-inp').addEventListener('change', async e=>{
+  const f = e.target.files && e.target.files[0]; e.target.value='';
+  if(!f) return;
+  const fd = new FormData(); fd.append('file', f);
+  try{
+    const r = await fetch(`${API}/api/fonts`, {method:'POST', body:fd});
+    if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText);
+    const d = await r.json();
+    toast(`Added font <code>${esc(d.name)}</code>.`, 'success');
+    loadFonts();
+  }catch(e){ toast('Font upload failed: '+esc(e.message||e), 'error'); }
+});
+async function delFont(file){
+  if(!confirm(`Delete font ${file} from the shared library?`)) return;
+  try{
+    const r = await fetch(`${API}/api/fonts/${encodeURIComponent(file)}`, {method:'DELETE'});
+    if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText);
+    toast(`Deleted <code>${esc(file)}</code>.`, 'success');
+    loadFonts();
+  }catch(e){ toast('Delete failed: '+esc(e.message||e), 'error'); }
+}
+window.pickFont = pickFont; window.delFont = delFont;
+
 load();
+loadFonts();
 </script>
 </body>
 </html>
