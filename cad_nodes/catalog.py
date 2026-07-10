@@ -356,10 +356,10 @@ register(NodeDef("Slot", "primitives_2d", "Slot",
                 "(Make Face) node, then Extrude/Subtract for the classic slot cut."))
 
 register(NodeDef("Text", "primitives_2d", "Text",
-    inputs=_origin_in(),
+    inputs=[Socket("plane", WIRE_PLANE, required=False)] + _origin_in(),
     params=[Param("text", "str", "text", "Hello", widget="input"),
             _f("font_size", 10, 0.1, 500),
-            Param("font", "str", "font", "Arial", widget="input"),
+            Param("font", "str", "font", "Arial", widget="font"),
             Param("style", "select", "style", "regular", widget="select",
                   options=["regular", "bold", "italic", "bolditalic"],
                   code_map={"regular": "FontStyle.REGULAR", "bold": "FontStyle.BOLD",
@@ -368,11 +368,18 @@ register(NodeDef("Text", "primitives_2d", "Text",
                   options=["left", "center", "right"],
                   code_map={"left": "(TextAlign.LEFT, TextAlign.CENTER)",
                             "center": "(TextAlign.CENTER, TextAlign.CENTER)",
-                            "right": "(TextAlign.RIGHT, TextAlign.CENTER)"})],
+                            "right": "(TextAlign.RIGHT, TextAlign.CENTER)"}),
+            Param("plane", "select", "plane", "XY", widget="select",
+                  options=["XY", "XZ", "YZ"],
+                  code_map={"XY": "Plane.XY", "XZ": "Plane.XZ", "YZ": "Plane.YZ"})],
     outputs=_sk(),
-    code_template={"algebra": "Text({text}, font_size={font_size}, font={font}, font_style={style}, text_align={align})"},
-    description="Text as a 2D sketch. Choose the `font`, `style` (bold / italic) "
-                "and horizontal `align`."))
+    code_template={"algebra": "_to_plane(Text({text}, font_size={font_size}, **_font({font}), font_style={style}, text_align={align}), {plane})"},
+    description="Text as a 2D sketch, seated on `plane`: pick XY/XZ/YZ, or wire in "
+                "any Plane — or a flat face (Select Face / Faces By Normal), which "
+                "casts to the plane it lies in — to place AND orient the text on it. "
+                "Wiring `plane` overrides the XY/XZ/YZ picker. `font` picks a system "
+                "family OR a custom font you upload (⬆) — used without installing it "
+                "system-wide. Choose `style` (bold / italic) and horizontal `align`."))
 
 # ===========================================================================
 # 2b. Curves (WIRE_CURVE producers) — lines, arcs, splines along which profiles

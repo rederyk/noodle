@@ -1392,6 +1392,30 @@ def _to_plane(_shape, _plane):
     return pl * _shape
 
 
+def _as_plane(_s):
+    \"\"\"Coerce a planar surface (Face / Sketch) into the Plane it lies in — origin
+    at the face centre, z along its normal — so a picked flat face can drive any
+    plane input (Section, Text-on-plane, …). Passes a Plane / frame through.\"\"\"
+    if _s is None or isinstance(_s, Plane):
+        return _s
+    try:
+        _f = _s if isinstance(_s, Face) else _s.faces()[0]
+        return Plane(_f)
+    except Exception:
+        return _s
+
+
+def _font(_name):
+    \"\"\"Text() font kwargs for a chosen font name. A custom uploaded font (in the
+    shared _fonts library) resolves to font_path=<file> so it renders WITHOUT
+    being installed system-wide; any other name stays a font= family (fontconfig).\"\"\"
+    try:
+        from cad_nodes.fonts import resolve_font
+        return resolve_font(_name)
+    except Exception:
+        return {"font": _name} if _name else {"font": "Arial"}
+
+
 def _domain2d(_region, _w, _h, _pts=None):
     \"\"\"(x0, y0, x1, y1) of a 2D domain: a region face's bounding box if given,
     else the points' extent, else a 0..w x 0..h box.\"\"\"
