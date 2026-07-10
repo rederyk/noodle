@@ -253,6 +253,108 @@ def _preview_of(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict 
     return None
 
 
+def _extract_pieces(shape, linear_frac: float = 0.01, angular: float = 0.3) -> dict:
+    """kind='shape': the pickable units are WHOLE objects from a list (or the
+    children of a Compound), not decomposed sub-shapes. Each piece renders as a
+    mesh (solid/face), polylines (curve) or a point, with a bbox-centre + size
+    signature. Universal — one picker for any shape type."""
+    if isinstance(shape, (list, tuple)) or type(shape).__name__ == "ShapeList":
+        pieces = [s for s in shape if s is not None]
+    elif shape is None:
+        return {"success": False, "error": "no shape"}
+    else:
+        try:
+            pieces = list(shape.children) if getattr(shape, "children", None) else []
+        except Exception:
+            pieces = []
+        pieces = pieces or [shape]
+    out: dict = {"success": True, "kind": "shape", "mesh": None}
+    items: list[dict] = []
+    for i, p in enumerate(pieces):
+        try:
+            bb = p.bounding_box()
+            c = (bb.min + bb.max) * 0.5
+            sz = (_num(lambda: p.volume) or _num(lambda: p.area)
+                  or _num(lambda: p.length) or 0.0)
+            item = {"index": i, "sig": [c.X, c.Y, c.Z, float(sz)]}
+            mesh = None
+            try:
+                fv, ft = p.tessellate(_deflection(p, linear_frac), angular)
+                if ft:
+                    mesh = {"vertices": [[v.X, v.Y, v.Z] for v in fv],
+                            "triangles": [list(t) for t in ft]}
+            except Exception:
+                mesh = None
+            if mesh:
+                item["mesh"] = mesh
+            else:
+                polys = _polylines_of(p)
+                if polys:
+                    item["polys"] = polys
+                else:
+                    item["point"] = [c.X, c.Y, c.Z]
+            items.append(item)
+        except Exception:
+            continue
+    out["items"] = items
+    return out
+
+
+def _coplanar_edge_loops(shape) -> list:
+    """Groups of edge indices that each form a closed loop lying in ONE plane —
+    the boundary wires of every PLANAR face. Indices match enumerate(shape.edges())
+    (the picker's item indices); edges are matched by their midpoint (e @ 0.5) to
+    survive the identity mismatch between face.wires().edges() and shape.edges().
+    Powers the picker's 'grab coplanar loop' expansion (click one edge -> its whole
+    same-plane ring). Returns [] when the shape has no planar faces / on any error."""
+    try:
+        from build123d import GeomType
+        edges = list(shape.edges())
+        faces = list(shape.faces())
+    except Exception:
+        return []
+
+    def _mid(e):
+        try:
+            m = e @ 0.5
+            return (m.X, m.Y, m.Z)
+        except Exception:
+            return None
+
+    mids = [_mid(e) for e in edges]
+
+    def _nearest(pt):
+        # midpoints of the SAME edge coincide (tol 1e-3); -1 if nothing matches.
+        if pt is None:
+            return -1
+        best, bi = 1e-6, -1
+        for i, m in enumerate(mids):
+            if m is None:
+                continue
+            d = (m[0] - pt[0]) ** 2 + (m[1] - pt[1]) ** 2 + (m[2] - pt[2]) ** 2
+            if d < best:
+                best, bi = d, i
+        return bi
+
+    loops: list = []
+    for f in faces:
+        try:
+            if f.geom_type != GeomType.PLANE:
+                continue
+            wires = list(f.wires())
+        except Exception:
+            continue
+        for w in wires:
+            try:
+                grp = sorted({_nearest(_mid(e)) for e in w.edges()})
+            except Exception:
+                continue
+            grp = [g for g in grp if g >= 0]
+            if grp and grp not in loops:
+                loops.append(grp)
+    return loops
+
+
 def extract_subshapes(shape, kind: str = "edge",
                       linear_frac: float = 0.01, angular: float = 0.3) -> dict:
     """For the interactive picker: a context mesh of `shape` plus its sub-shapes
@@ -263,7 +365,10 @@ def extract_subshapes(shape, kind: str = "edge",
       edge   -> [mid.x, mid.y, mid.z, length, dir.x, dir.y, dir.z]
       face   -> [c.x, c.y, c.z, area, n.x, n.y, n.z]
       vertex -> [x, y, z]
+      shape  -> [centre.x, centre.y, centre.z, size]   (whole object from a list)
     """
+    if kind == "shape":
+        return _extract_pieces(shape, linear_frac, angular)
     shape = _as_shape(shape)
     if shape is None:
         return {"success": False, "error": "no shape"}
@@ -289,6 +394,7 @@ def extract_subshapes(shape, kind: str = "edge",
                                       d.X, d.Y, d.Z]})
             except Exception:
                 continue
+        out["loops"] = _coplanar_edge_loops(shape)   # for 'grab coplanar loop'
     elif kind == "face":
         for i, f in enumerate(shape.faces()):
             try:

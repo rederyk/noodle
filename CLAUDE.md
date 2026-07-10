@@ -67,6 +67,11 @@ server.py            FastAPI HTTP API (port 8090). Routes under /api/* :
                        single-param edit; `_cb.<name>` targets a CodeBlock
                        override), /api/graph/{name}/codeblock/{id}/scan,
                        /api/nodes (catalog), /api/copilot/chat|status,
+                       /api/agent/help (self-contained remote-agent guide =
+                       cad_nodes/AGENT_HELP.md, also MCP cad_help/cad://help —
+                       keep it in sync when the API surface changes),
+                       /api/agent/tags (ToAgent provenance index, §7b),
+                       /api/graph/{name}/slice_summary|section_outline (§7b),
                        /api/system/health|logs|restart.
 mcp_server.py        MCP server exposing the same cad_nodes.api operations.
 webui/
@@ -86,8 +91,9 @@ webui/
                        (the code is regenerated; structure stays in nodes.html).
                        See PLAN_CODE_PARAMS.md.
   nodes.html         the node editor + 3D viewer (litegraph-style). Holds
-                       WIRE_COLORS and INPUT_ACCEPTS — a MIRROR of the backend
-                       wire-compatibility table that MUST be kept in sync (§5).
+                       WIRE_COLORS; INPUT_ACCEPTS is fetched at boot from
+                       /api/wiretypes (derived from casts.py, §5 — the inline
+                       literal is only an offline fallback).
                        parseCbParams() mirrors transpiler.parse_codeblock_params:
                        a CodeBlock's `#@param`s become live widgets + dynamic
                        input sockets (overrides in the `_cb` param namespace),
@@ -100,8 +106,10 @@ webui/
 cad_nodes/
   catalog.py         ★ the node registry. Declarative NodeDef per node type:
                        sockets (typed wires), params (widgets+defaults), and a
-                       code_template that the transpiler fills in. Also defines
-                       the wire types and WIRE_COMPATIBLE table. ADD NODES HERE.
+                       code_template that the transpiler fills in. ADD NODES HERE.
+  casts.py           ★ wire types + the cast registry (§5) — the ONE place wire
+                       compatibility is defined; WIRE_COMPATIBLE (backend) and
+                       INPUT_ACCEPTS (frontend, via /api/wiretypes) derive from it.
   transpiler.py      ★ Graph -> build123d source. Flat "algebra" assignments in
                        topo order; group nodes (BuildPart/BuildSketch) emit
                        nested `with` blocks. PREAMBLE injects runtime helpers
@@ -128,6 +136,9 @@ cad_nodes/
   store.py           GraphStore: load/save projects/<name>/{graph,meta,view}.json
                        and output.stl.
   copilot.py         ★ in-app NL copilot (§7). OpenAI-compatible tool loop.
+  slice_summary.py   retro-engineering perception (§7b): slice_summary
+                       (symbolic cross-sections; STEP exact, STL arc-fitted)
+                       + section_outline (one exact section, edge by edge).
   toposort.py        topological sort + cycle detection.
   catalog … examples/  sample graphs used by tests.
 projects/            saved graphs (written as uid 1000 — host-editable).
@@ -162,22 +173,34 @@ rect + colour). They're **editor-only metadata**: the engine never reads them, b
 save/reload and api/copilot round-trips. Serialized/restored in `nodes.html`
 (`toGraphJSON`/`fromGraphJSON`); created with Ctrl+G (`groupSelected`).
 
+`params._ui` is another editor-only namespace (like CodeBlock's `_cb`): per-slider
+drag window + step set via the slider's ⚙ (`{param: {min,max,step}}`). Sliders in
+the editor are a custom `cadslider` widget — the drag window defaults to ±10
+(clipped to catalog hard bounds, auto-grown to contain the value) and drag snaps
+to the step; the typed ✎ field clamps only on the catalog's hard min/max. The
+engine resolves params by catalog name, so it never sees `_ui`.
+
 Execution writes `output.stl` + `view.json` (meshes) alongside it.
 
 ## 5. Wire types
 
-Typed wires gate which output may feed which input. The table lives in TWO places
-that **must stay in sync**:
+Typed wires gate which output may feed which input. The single source of truth
+is **`cad_nodes/casts.py`** (see PLAN_DATA_PROTOCOL.md): a small cast registry
+`CASTS[(src, dst)] -> coercion helper` from which both tables are **derived** —
+`WIRE_COMPATIBLE` (backend, enforced hard by `Graph.validate()`) and
+`INPUT_ACCEPTS` (frontend, fetched at boot from `/api/wiretypes`; the literal in
+`nodes.html` is only a fallback for when the endpoint is absent). They can no
+longer drift — to change compatibility, edit `casts.py` only.
 
-- backend: `cad_nodes/catalog.py` → `WIRE_COMPATIBLE` (`output_type -> {accepted input types}`),
-  enforced hard by `Graph.validate()`.
-- frontend: `webui/nodes.html` → `INPUT_ACCEPTS` (`input_type -> [accepted output types]`,
-  the inverse), which decides whether a wire can be dragged.
-
-Types: `geometry` (solids), `sketch` (2D), `curve`, `plane`, `vector` (points),
-`selection` (picked sub-shapes), `data`, `tree`. `data` is the universal wire
-(accepts anything AND feeds anything). `geometry` and `plane` are interchangeable
-so transforms treat a plane like any geometry.
+Types (constants in `casts.py`): `solid` (3D B-Rep — the old `geometry`),
+`surface` (2D sketch/face — the old `sketch`), `curve`, `plane`, `vector`
+(points), `selection` (picked sub-shapes), `data`, `tree` (declared, unused).
+`data` is the universal bus (any output → a `data` input; a `data` output feeds
+everything except `selection`/`tree`). Registered casts: `surface→solid`,
+`solid↔plane` (transforms treat a plane like geometry), `curve→surface`
+(closed curve → face via `_face`), `selection→vector`. A `Socket` can also
+widen per-socket via `accepts=[…]`, carry an advisory `subtype` (legend only,
+not validation), or set `raw=True` to opt out of automatic boundary casts.
 
 ## 5b. Lists & fan-out (Grasshopper-style)
 
@@ -212,9 +235,9 @@ Frontend multi-connect = dynamic input slots sharing one socket name (see
 
 ```python
 register(NodeDef("MyNode", "category", "My Node",
-    inputs=[Socket("shape", WIRE_GEOMETRY), Socket("plane", WIRE_PLANE, required=False)],
+    inputs=[Socket("shape", WIRE_SOLID), Socket("plane", WIRE_PLANE, required=False)],
     params=[_f("amount", 1.0, 0.0, 100)],          # _f/_i = float/int slider helpers
-    outputs=_geo(),                                 # _geo/_sk = geometry/sketch output
+    outputs=_geo(),                                 # _geo/_sk = solid/surface output
     code_template={"algebra": "my_op({shape}, {amount})"},
     description="..."))
 ```
@@ -222,7 +245,8 @@ register(NodeDef("MyNode", "category", "My Node",
 `{socket}` → the upstream variable; `{param}` → the formatted value. If the node
 needs runtime logic that doesn't fit one expression, add a helper to the
 transpiler **PREAMBLE** and call it from the template (e.g. `_bbox_plane`,
-`_rotate`). If you change wire types, update `INPUT_ACCEPTS` in `nodes.html` too.
+`_rotate`). Wire compatibility changes go in `cad_nodes/casts.py` (§5) — the
+frontend picks them up from `/api/wiretypes`.
 
 **Group nodes** (BuildPart/BuildSketch) use `is_group=True` + a `builder`
 template and emit nested `with` blocks — see existing examples.
@@ -267,6 +291,43 @@ Enforced policy (system prompt + tool layer):
   tracked in `state["created"]`.)
 
 If you extend the copilot, preserve these invariants.
+
+## 7b. Retro-engineering ("retroeng") — STL/STEP → parametric graph
+
+When the user says **"retroeng"** (e.g. *"fai il retroeng dell'STL che ti ho
+passato"* / "reverse-engineer this part"), they mean the `PLAN_RETROENG.md`
+workflow: rebuild an imported mesh/solid as a **parametric graph of catalog
+nodes**. "The file I just passed" resolves through the **ToAgent tag index**:
+in the editor the user tags an ImportSTL/ImportSTEP node with a `ToAgent` node
+(label + auto-stamped save date); `GET /api/agent/tags` (= `api.agent_tags`,
+MCP `cad_agent_tags`) lists every tag across ALL projects with the tagged
+file's project-relative path. Pick the most recent (or label-matching) entry —
+don't ask "which STL?".
+
+The loop (validated on real parts: STEP rebuilt at Δvolume 0.05%, a 59k-tri
+STL at +2.2% — see `projects/retro_nodes` and `projects/retromy`):
+
+1. **Perceive** — `GET /api/graph/{name}/slice_summary?path=<file>&n=10`
+   (`api.slice_summary`): symbolic cross-sections on all 3 axes (`circle r=3
+   @(x,y)`, `rect 40x30`; dedup "z=a…b identical" ⇒ extrusion + its height).
+   STEP sections are exact; STL is arc-fitted. The `text` field is the
+   LLM-facing format. Omit `path` to slice the graph's OWN result.
+2. **Microscope** where the summary is ambiguous —
+   `.../section_outline?axis=z&pos=…`: ONE exact section, edge by edge.
+   Mesh gotcha: a single section can drop loops near tangent surfaces —
+   confirm with nearby sections or with per-section areas.
+3. **Rebuild** with catalog nodes via `cad_nodes.api` (add_node / connect /
+   set_param). Proceduralize, don't trace: constant section → Extrude; N equal
+   circles in a regular layout → ArrayLinear/ArrayPolar with a count slider,
+   not copies; small rounds → a downstream Fillet; overall dims → sliders.
+   The user's stated intent about what to parameterize wins over defaults.
+4. **Verify with the same tool** — execute, re-slice your own result
+   (`slice_summary` without `path`) and diff the two summaries as text;
+   comparing per-section AREAS localizes residuals; bbox + volume checksum
+   is the final seal.
+
+Not yet built (see PLAN_RETROENG.md): vision contact-sheet, gcode stripper,
+numeric `cad_compare`.
 
 ## 8. Tests
 

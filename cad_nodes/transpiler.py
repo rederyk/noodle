@@ -239,6 +239,21 @@ def _subshape_fingerprint(_s, _kind):
             _n = _s.normal_at(_c)
             _o = _n if _n.length == 0 else _n.normalized()
             return ((_c.X, _c.Y, _c.Z), float(_s.area), (_o.X, _o.Y, _o.Z))
+        if _kind == "shape":
+            # a WHOLE object picked from a list: bbox centre + a size metric
+            # (volume, else area, else length) — universal across solids/faces/curves.
+            _bb = _s.bounding_box()
+            _c = (_bb.min + _bb.max) * 0.5
+            _sz = 0.0
+            for _attr in ("volume", "area", "length"):
+                try:
+                    _v = float(getattr(_s, _attr))
+                    if _v:
+                        _sz = _v
+                        break
+                except Exception:
+                    pass
+            return ((_c.X, _c.Y, _c.Z), _sz, None)
         return ((_s.X, _s.Y, _s.Z), None, None)
     except Exception:
         return None
@@ -256,10 +271,35 @@ def _select_subshapes(_shape, _kind, _indices, _sigs, _nid=None):
     Falls back to raw indices when no signatures were stored.\"\"\"
     if _shape is None:
         return ShapeList([])
-    _get = {"edge": getattr(_shape, "edges", None),
-            "face": getattr(_shape, "faces", None),
-            "vertex": getattr(_shape, "vertices", None)}.get(_kind)
-    subs = list(_get()) if _get else []
+    if _kind == "shape":
+        # Pick WHOLE objects from a list: the pickable units are the list items
+        # themselves (a Compound is exploded into its children), NOT decomposed.
+        if _is_seq(_shape):
+            subs = [s for s in _flatten(list(_shape)) if s is not None]
+        else:
+            try:
+                _ch = list(_shape.children) if getattr(_shape, "children", None) else []
+            except Exception:
+                _ch = []
+            subs = _ch or [_shape]
+    else:
+        # Multi-piece input (a list / ShapeList of solids — e.g. from a Geometry
+        # container or a fanned upstream): merge into ONE Compound so faces/edges/
+        # vertices enumerate across ALL pieces, matching the picker's enumeration
+        # (mesh_extractor._as_shape does the same). Without this, `.faces()` on a
+        # bare list is missing and every pick reads as "stale".
+        if _is_seq(_shape):
+            _pieces = [s for s in _flatten(list(_shape)) if s is not None]
+            if not _pieces:
+                return ShapeList([])
+            try:
+                _shape = Compound(children=_pieces)
+            except Exception:
+                _shape = _pieces[0]
+        _get = {"edge": getattr(_shape, "edges", None),
+                "face": getattr(_shape, "faces", None),
+                "vertex": getattr(_shape, "vertices", None)}.get(_kind)
+        subs = list(_get()) if _get else []
     fps = [_subshape_fingerprint(s, _kind) for s in subs]
 
     # part scale, to judge "moved far" relative to the model (not absolute mm)
@@ -668,6 +708,30 @@ def _flatten(_x):
     return out
 
 
+def _union(*_items):
+    \"\"\"Fuse any number of shapes into ONE, dimension-agnostic (build123d '+').
+    Flattens nested lists, drops None; a single shape passes through, nothing
+    -> None. Works for 2D faces/sketches (-> a merged region) and 3D solids
+    (-> one part). Union feeds its whole `shapes` collector in as one arg (a
+    list or single value); BooleanMulti spreads several — both are flattened.\"\"\"
+    parts = [p for p in _flatten(list(_items)) if p is not None]
+    if not parts:
+        return None
+    out = parts[0]
+    for p in parts[1:]:
+        out = out + p
+    return out
+
+
+def _round(_items, _mode="fillet", _size=1.0):
+    \"\"\"Round (fillet) or bevel (chamfer) a set of sub-shapes — edges (3D) or
+    vertices (2D corners). One node, `_mode` picks the operation: build123d uses
+    radius= for fillet and length= for chamfer.\"\"\"
+    if _mode == "chamfer":
+        return chamfer(_items, length=_size)
+    return fillet(_items, radius=_size)
+
+
 def _slice(_lst, _start, _stop, _step):
     _lst = list(_lst or [])
     stop = None if _stop == 0 else _stop
@@ -744,6 +808,42 @@ def _curve_draw(_points, _mode="polyline", _closed=False, _plane=None):
         crv = Polyline(*pts, close=bool(_closed))
     pl = _plane if isinstance(_plane, Plane) else Plane.XY
     return pl * crv
+
+
+def _trace_curves(_contours, _scale=1.0, _imgh=None):
+    \"\"\"Rebuild wires from a TraceImage node's FROZEN artifact (baked in by its
+    ✎ edit-mode: rembg + magic-wand + pen + 2-point scale). Each contour is
+    {pts:[[x,y],...] in PIXELS, closed, hole}. Pixels are scaled by _scale
+    (mm/pixel) and Y is flipped (image Y grows downward, CAD Y upward) so the
+    part comes out upright, not mirrored. The flip uses the IMAGE height _imgh
+    when known — a stable origin (image bottom-left → mm (0,0)) so a RefImage of
+    the same picture aligns 1:1 with the traced curves; it falls back to the
+    contours' own max Y for older artifacts. Closed contours become closed Wires
+    — they fill into faces via _face like any 2D primitive (hole-flagged loops
+    are inner boundaries, nested downstream by Make Face). Deterministic: reads
+    no image at run time. Returns a Wire (single) or a ShapeList of Wires.\"\"\"
+    _cs = [c for c in (_contours or [])
+           if c and len(c.get("pts") or []) >= 2]
+    if not _cs:
+        return None
+    _all_y = [p[1] for c in _cs for p in c["pts"] if p and len(p) >= 2]
+    _h = float(_imgh) if _imgh else (max(_all_y) if _all_y else 0.0)
+    _wires = []
+    for c in _cs:
+        pts = [(float(p[0]) * _scale, (_h - float(p[1])) * _scale, 0.0)
+               for p in c["pts"] if p and len(p) >= 2]
+        # a trailing point equal to the first would zero-length the closing seg
+        if len(pts) >= 2 and pts[0] == pts[-1]:
+            pts = pts[:-1]
+        if len(pts) < 2:
+            continue
+        try:
+            _wires.append(Polyline(*pts, close=bool(c.get("closed", True))))
+        except Exception:
+            continue
+    if not _wires:
+        return None
+    return _wires[0] if len(_wires) == 1 else ShapeList(_wires)
 
 
 def _outline(_s):
@@ -1544,7 +1644,12 @@ _LIST_PRODUCERS = {
     "DivideCurve", "CurveEndpoints", "Deconstruct",
     "DeconstructEdges", "DeconstructFaces",
     "Surface", "Curve", "Point",   # gated containers always emit a list (filter/transform)
-    "Geometry", "Plane",           # (Selection returns one ShapeList, not a fan-out list)
+    "Geometry", "Plane",
+    # Selectors: their `selection` output is consumed whole (list_access inputs),
+    # while their geometry output (edges/faces/points) fans out — so they produce
+    # a list. Pick-based Select* are marked in _emit_select; these run _emit_simple.
+    "FacesByNormal", "FacesByType", "FacesByArea",
+    "EdgesByType", "EdgesByLength", "SubshapesByPosition", "CombineSelection",
     "Series", "DivideDomain",
     "Input",    # source-mode multi-line text -> a list
     "Display",  # pass-through preserves list-ness
@@ -1714,13 +1819,32 @@ class Transpiler:
         against the upstream shape at run time via the injected helper."""
         ndef = catalog.get(node.type)
         var = self._new_var(node.id)
-        src = self._input_values(node.id, ndef).get("geometry", "None")
+        in_name = ndef.inputs[0].name if ndef.inputs else "geometry"
+        src = self._input_values(node.id, ndef).get(in_name, "None")
         sel = node.params.get("selection") or {}
-        default_kind = {"SelectFace": "face", "SelectVertex": "vertex"}.get(node.type, "edge")
+        default_kind = {"SelectFace": "face", "SelectVertex": "vertex",
+                        "SelectShape": "shape"}.get(node.type, "edge")
         kind = sel.get("kind", default_kind)
         indices = sel.get("indices", []) or []
         sigs = sel.get("sigs", []) or []
         body = [f"{var} = _select_subshapes({src}, {kind!r}, {indices!r}, {sigs!r}, {node.id!r}){_annot(node)}"]
+        # The resolved var is a ShapeList of sub-shapes. Its `selection` output is
+        # consumed WHOLE (Fillet/… inputs are list_access); its geometry output
+        # (edges/faces/points) fans out downstream, so mark it a list-producer.
+        self._produces_list.add(node.id)
+        self._guard(lines, body, node)
+
+    def _emit_vectorize(self, node, lines: list[str]) -> None:
+        """TraceImage: rebuild wires from the contour artifact FROZEN into the
+        node by its ✎ edit-mode. Mirrors _emit_select — the contours + mm/pixel
+        scale are inlined as literals and resolved by the injected helper, so no
+        image is read at run time and the graph re-runs from fixed data."""
+        var = self._new_var(node.id)
+        trace = node.params.get("trace") or {}
+        contours = trace.get("contours", []) or []
+        scale = trace.get("scale", 1.0) or 1.0
+        imgh = trace.get("imgH")
+        body = [f"{var} = _trace_curves({contours!r}, {scale!r}, {imgh!r}){_annot(node)}"]
         self._guard(lines, body, node)
 
     def _emit_codeblock(self, node, lines: list[str]) -> None:
@@ -1985,8 +2109,8 @@ class Transpiler:
             node = self.graph.node(nid)
             if node.parent is not None:
                 continue  # emitted inside its group
-            if node.type == "Note":
-                continue  # canvas annotation only — never emitted
+            if node.type in ("Note", "RefImage"):
+                continue  # editor-only (annotation / viewport reference) — never emitted
             if getattr(node, "bypassed", False):
                 self._emit_bypass(node, body)
                 continue
@@ -1995,8 +2119,10 @@ class Transpiler:
                 self._emit_group(node, body)
             elif node.type == "CodeBlock":
                 self._emit_codeblock(node, body)
-            elif node.type in ("SelectEdge", "SelectFace", "SelectVertex"):
+            elif node.type in ("SelectEdge", "SelectFace", "SelectVertex", "SelectShape"):
                 self._emit_select(node, body)
+            elif node.type == "TraceImage":
+                self._emit_vectorize(node, body)
             else:
                 self._emit_simple(node, body)
 

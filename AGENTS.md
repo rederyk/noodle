@@ -10,6 +10,12 @@ noodle exposes the **same** graph engine three ways, all backed by `cad_nodes.ap
 This file covers (1) and (2). Start the app first (`./start.sh`, `start.bat`, or
 `docker compose up -d --build`) so the container `noodle` is running.
 
+> **Agent on another machine?** noodle serves its own orientation guide — the
+> graph model, wire rules, every endpoint/tool, the build and retro-engineering
+> loops. Fetch it as your FIRST call and you need nothing from this repo:
+> `curl -s http://<host>:8090/api/agent/help` (HTTP) or the `cad_help` tool /
+> `cad://help` resource (MCP).
+
 ---
 
 ## 1. MCP (recommended for agents)
@@ -46,6 +52,7 @@ and vice-versa.
 
 | Tool | Purpose |
 |---|---|
+| `cad_help` | **start here** — the self-contained orientation guide |
 | `cad_list_graphs` / `cad_create_graph` / `cad_delete_graph` | graph lifecycle |
 | `cad_get_node_catalog` | list node types (optionally by category) |
 | `cad_add_node` / `cad_connect` / `cad_set_param` / `cad_set_code` | build the graph |
@@ -79,6 +86,9 @@ Base URL: `http://localhost:8090`. No auth (run locally/trusted only — see the
 security note below).
 
 ```bash
+# Orient yourself (markdown guide: model, wires, endpoints, loops)
+curl -s localhost:8090/api/agent/help
+
 # Discover node types
 curl -s localhost:8090/api/nodes
 

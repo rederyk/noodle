@@ -9,6 +9,7 @@ Errors are raised as ValueError/KeyError; transport layers translate them.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Optional
 
 from . import catalog
@@ -18,6 +19,16 @@ from .executor import (execute_graph, export_graph, section_outline_file,
 from .graph import Connection, Graph, Node
 from .store import GraphStore
 from .transpiler import parse_codeblock_params, transpile, transpile_with_map
+
+
+# --- orientation ----------------------------------------------------------
+def agent_help() -> str:
+    """The self-contained remote-agent guide (cad_nodes/AGENT_HELP.md): what
+    noodle is, the graph model, wire rules, the HTTP/MCP surface and the
+    standard build + retro-engineering loops. Served on every surface so an
+    agent on another machine can orient itself with one call."""
+    return (Path(__file__).resolve().parent / "AGENT_HELP.md").read_text(
+        encoding="utf-8")
 
 
 # --- catalog --------------------------------------------------------------

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -552,6 +552,9 @@ _IMPORT_NODE_BY_EXT = {
     ".stl": "ImportSTL",
     ".svg": "ImportSVG",
     ".dxf": "ImportDXF",
+    # raster images feed the TraceImage node (vectorized in its ✎ edit-mode,
+    # PLAN_TRACE_IMAGE.md); the traced contours are frozen into the node.
+    ".png": "TraceImage", ".jpg": "TraceImage", ".jpeg": "TraceImage",
 }
 
 
@@ -563,7 +566,7 @@ async def _store_asset(d: Path, file: UploadFile) -> dict:
     ext = Path(file.filename or "").suffix.lower()
     if ext not in _IMPORT_NODE_BY_EXT:
         raise HTTPException(
-            400, f"Unsupported file type '{ext or '?'}'. Supported: STEP, STL, SVG, DXF.")
+            400, f"Unsupported file type '{ext or '?'}'. Supported: STEP, STL, SVG, DXF, PNG, JPG.")
     assets = d / "assets"
     assets.mkdir(parents=True, exist_ok=True)
     stem = _slugify(Path(file.filename or "model").stem, "model")
@@ -647,6 +650,12 @@ async def execute_graph_project(name: str):
     }
 
 
+@app.get("/api/agent/help")
+async def agent_help_route():
+    """Self-contained orientation guide for a remote agent (markdown text)."""
+    return PlainTextResponse(api.agent_help(), media_type="text/markdown")
+
+
 @app.get("/api/agent/tags")
 async def agent_tags_route():
     """Provenance index of every 'To Agent' tag node across all projects."""
@@ -690,7 +699,7 @@ async def graph_slice_summary(name: str, path: str = "", n: int = 10):
 async def graph_subshapes(name: str, node_id: str, kind: str = "edge"):
     """Pickable sub-shapes (edges/faces/vertices) of a node's output shape,
     for the interactive selection picker."""
-    if kind not in ("edge", "face", "vertex"):
+    if kind not in ("edge", "face", "vertex", "shape"):
         raise HTTPException(400, f"Unknown kind {kind!r}")
     d = require_project(name)
     graph = _load_graph(name)
@@ -767,6 +776,8 @@ _LIB_MEDIA = {
     ".gltf": "model/gltf+json", ".glb": "model/gltf-binary",
     ".svg": "image/svg+xml",
     ".dxf": "image/vnd.dxf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
 }
 # The two sandboxed sub-folders the library exposes. Nothing else in a
 # project dir (graph.json, _run.py, output.stl, …) is ever listed or served.

@@ -47,6 +47,18 @@ def _lean_view(view, keep_mesh: bool = False):
 
 
 # ===========================================================================
+# Tools — orientation
+# ===========================================================================
+@mcp.tool()
+def cad_help() -> str:
+    """START HERE if this is your first noodle call: the full orientation
+    guide (markdown) — what noodle is, the graph model, wire types, list
+    fan-out, all tools/endpoints, and the standard build + retro-engineering
+    loops."""
+    return _safe(api.agent_help)
+
+
+# ===========================================================================
 # Tools — graph lifecycle
 # ===========================================================================
 @mcp.tool()
@@ -193,6 +205,11 @@ def cad_get_node_catalog(filter_category: str = "") -> list:
 # ===========================================================================
 # Resources
 # ===========================================================================
+@mcp.resource("cad://help")
+def res_help() -> str:
+    return api.agent_help()
+
+
 @mcp.resource("cad://nodes")
 def res_nodes() -> str:
     return json.dumps(api.list_catalog(), indent=2)

@@ -225,12 +225,17 @@ class Graph:
 
     @staticmethod
     def from_dict(d: dict) -> "Graph":
-        return Graph(
-            name=d.get("name", "untitled"),
-            nodes=[Node.from_dict(n) for n in d.get("nodes", [])],
-            connections=[Connection.from_dict(c) for c in d.get("connections", [])],
-            groups=list(d.get("groups", [])),
-        )
+        nodes = [Node.from_dict(n) for n in d.get("nodes", [])]
+        conns = [Connection.from_dict(c) for c in d.get("connections", [])]
+        # Legacy migration: Union used to have two inputs `a`/`b`; it now has a
+        # single collector `shapes`. Remap old wires so pre-existing graphs keep
+        # their connections (the frontend loader does the same for the editor).
+        _type = {n.id: n.type for n in nodes}
+        for c in conns:
+            if _type.get(c.to_node) == "Union" and c.to_socket in ("a", "b"):
+                c.to_socket = "shapes"
+        return Graph(name=d.get("name", "untitled"), nodes=nodes,
+                     connections=conns, groups=list(d.get("groups", [])))
 
     # -- validation --------------------------------------------------------
     def validate(self) -> list[str]:

@@ -625,10 +625,20 @@ register(NodeDef("MapToSurface", "operations", "Map To Surface",
 # 4. Booleans (CSG)
 # ===========================================================================
 register(NodeDef("Union", "boolean", "Union",
-    inputs=[Socket("a", WIRE_SOLID), Socket("b", WIRE_SOLID)],
+    # ONE collector input: shift-drag several wires into it, or feed a
+    # list-producing node (e.g. a fanned MakeFace) — every shape flows in and is
+    # fused into ONE result. Works for 2D faces/sketches AND 3D solids. (Legacy
+    # graphs wired `a`/`b` are remapped to `shapes` on load — see graph.py /
+    # fromGraphJSON.)
+    inputs=[Socket("shapes", WIRE_SOLID, multiple=True)],
     outputs=_geo(),
-    code_template={"algebra": "({a} + {b})"},
-    description="Boolean union A + B."))
+    # type-preserving: fusing 2D faces yields a surface (feeds Extrude), fusing
+    # solids yields a solid — so the output mirrors what flows in.
+    output_follows="shapes",
+    code_template={"algebra": "_union({shapes})"},
+    description="Boolean union — fuses everything wired in into one shape. Feed "
+                "a whole list or many wires into the single socket; 2D faces "
+                "fuse into a region, 3D solids into one part."))
 
 register(NodeDef("Subtract", "boolean", "Subtract",
     # `b` is list-access: a LIST of tools (e.g. a fanned set of cutters) is
@@ -645,30 +655,70 @@ register(NodeDef("Intersect", "boolean", "Intersect",
     code_template={"algebra": "({a} & {b})"},
     description="Boolean intersection A & B."))
 
-register(NodeDef("BooleanMulti", "boolean", "Union (N)",
+register(NodeDef("BooleanMulti", "boolean", "Union (legacy)",
+    # Deprecated: folded into Union, which now handles N inputs / lists itself.
+    # Kept (hidden) so older graphs that reference "BooleanMulti" still load & run.
     inputs=[Socket("shapes", WIRE_SOLID, multiple=True)],
     outputs=_geo(),
-    code_template={"algebra": "Part() + _flatten([{shapes}])"},
-    description="Fuse an arbitrary number of shapes. List inputs (e.g. an "
-                "ArrayLinear output) are flattened, so it also collapses a "
-                "list of solids into one part."))
+    code_template={"algebra": "_union({shapes})"},
+    hidden=True,
+    description="Deprecated alias of Union (kept so older graphs load). "
+                "Use Union — it fuses any number of shapes on its own."))
 
 # ===========================================================================
 # 5. Modifiers
 # ===========================================================================
+# A single fillet/chamfer node with a `mode` dropdown, replacing the old
+# separate Fillet + Chamfer (3D edges) and Fillet2D + Chamfer2D (2D corners) —
+# those stay registered but `hidden` so older graphs keep loading & running.
+def _mode_param():
+    return Param("mode", "select", "mode", "fillet",
+                 widget="select", options=["fillet", "chamfer"])
+
+register(NodeDef("FilletChamfer", "modifiers", "Fillet / Chamfer",
+    inputs=[Socket("part", WIRE_SOLID)] + _pin("size"),
+    params=[_mode_param(), _f("size", 2, 0.05, 100)],
+    outputs=_geo(),
+    code_template={"algebra": "_round({part}.edges(), {mode}, {size})"},
+    description="Round (fillet) or bevel (chamfer) ALL edges of a part — pick "
+                "which with `mode`. `size` is the radius / bevel length."))
+
+register(NodeDef("FilletChamferCorners", "modifiers", "Fillet / Chamfer Corners",
+    # The 2D version: rounds/bevels the CORNERS (vertices) of a face/sketch and
+    # returns the OUTLINE curve. A closed curve auto-casts to a face via _face.
+    inputs=[Socket("shape", WIRE_SURFACE, raw=True)] + _pin("size"),
+    params=[_mode_param(), _f("size", 2, 0.05, 100)],
+    outputs=_cv(),
+    code_template={"algebra": "_outline(_round(_face({shape}).vertices(), {mode}, {size}))"},
+    description="Round (fillet) or bevel (chamfer) all corners of a 2D "
+                "face/sketch — `mode` picks which. Feed a closed curve or a Make "
+                "Face result; outputs the rounded outline as a curve (fill it "
+                "with Make Face, or feed straight into Extrude)."))
+
+# Deprecated singles — hidden, kept so older graphs load & run.
 register(NodeDef("Fillet", "modifiers", "Fillet",
     inputs=[Socket("part", WIRE_SOLID)] + _pin("radius"),
-    params=[_f("radius", 2, 0.05, 100)],
-    outputs=_geo(),
+    params=[_f("radius", 2, 0.05, 100)], outputs=_geo(), hidden=True,
     code_template={"algebra": "fillet({part}.edges(), radius={radius})"},
-    description="Round all edges of a part."))
+    description="Deprecated: use Fillet / Chamfer (mode=fillet). Round all edges."))
 
 register(NodeDef("Chamfer", "modifiers", "Chamfer",
     inputs=[Socket("part", WIRE_SOLID)] + _pin("length"),
-    params=[_f("length", 1.5, 0.05, 100)],
-    outputs=_geo(),
+    params=[_f("length", 1.5, 0.05, 100)], outputs=_geo(), hidden=True,
     code_template={"algebra": "chamfer({part}.edges(), length={length})"},
-    description="Bevel all edges of a part."))
+    description="Deprecated: use Fillet / Chamfer (mode=chamfer). Bevel all edges."))
+
+register(NodeDef("Fillet2D", "modifiers", "Fillet Corners",
+    inputs=[Socket("shape", WIRE_SURFACE, raw=True)] + _pin("radius"),
+    params=[_f("radius", 2, 0.05, 100)], outputs=_sk(), hidden=True,
+    code_template={"algebra": "fillet(_face({shape}).vertices(), radius={radius})"},
+    description="Deprecated: use Fillet / Chamfer Corners. Round 2D corners."))
+
+register(NodeDef("Chamfer2D", "modifiers", "Chamfer Corners",
+    inputs=[Socket("shape", WIRE_SURFACE, raw=True)] + _pin("length"),
+    params=[_f("length", 1.5, 0.05, 100)], outputs=_sk(), hidden=True,
+    code_template={"algebra": "chamfer(_face({shape}).vertices(), length={length})"},
+    description="Deprecated: use Fillet / Chamfer Corners. Bevel 2D corners."))
 
 # ===========================================================================
 # 5b. Sub-shape selection (pick edges/faces in the 3D picker, operate on them)
@@ -676,26 +726,43 @@ register(NodeDef("Chamfer", "modifiers", "Chamfer",
 # SelectEdge carries the picked set in params["selection"] = {kind, indices,
 # sigs}; the transpiler special-cases it (see _emit_select) and resolves the
 # set at run time by nearest-anchor matching, so it survives param tweaks.
+# Every selector has TWO outputs: `selection` (drives a targeted op like Fillet /
+# Push-Pull, consumed whole) and a geometry output that materialises the picked
+# sub-shapes as usable geometry — edges→curve, faces→surface, vertices→point —
+# so you can loft the picked edges, extrude a picked face, scatter on vertices,
+# etc. Both resolve to the same ShapeList; the geometry output fans out.
 register(NodeDef("SelectEdge", "select", "Select Edge",
     inputs=[Socket("geometry", WIRE_SOLID, accepts=[WIRE_CURVE])],
-    outputs=[Socket("selection", WIRE_SELECTION)],
+    outputs=[Socket("selection", WIRE_SELECTION), Socket("edges", WIRE_CURVE)],
     code_template={"algebra": ""},  # handled by the transpiler, not a template
-    description="Pick specific edges of a shape in the 3D picker; outputs the "
-                "selected edges for a targeted operation."))
+    description="Pick specific edges of a shape in the 3D picker. `selection` "
+                "drives a targeted op; `edges` gives the picked edges as curves."))
 
 register(NodeDef("SelectFace", "select", "Select Face",
     inputs=[Socket("geometry", WIRE_SOLID, accepts=[WIRE_CURVE])],
-    outputs=[Socket("selection", WIRE_SELECTION)],
+    outputs=[Socket("selection", WIRE_SELECTION), Socket("faces", WIRE_SURFACE)],
     code_template={"algebra": ""},  # handled by the transpiler, not a template
-    description="Pick specific faces of a shape in the 3D picker; outputs the "
-                "selected faces for a targeted operation."))
+    description="Pick specific faces of a shape in the 3D picker. `selection` "
+                "drives a targeted op; `faces` gives the picked faces as surfaces."))
 
 register(NodeDef("SelectVertex", "select", "Select Vertex",
     inputs=[Socket("geometry", WIRE_SOLID, accepts=[WIRE_CURVE])],
-    outputs=[Socket("selection", WIRE_SELECTION)],
+    outputs=[Socket("selection", WIRE_SELECTION), Socket("points", WIRE_VECTOR)],
     code_template={"algebra": ""},  # handled by the transpiler, not a template
-    description="Pick specific vertices of a shape in the 3D picker; outputs the "
-                "selected vertices."))
+    description="Pick specific vertices of a shape in the 3D picker. `selection` "
+                "drives a targeted op; `points` gives the picked vertices as points."))
+
+register(NodeDef("SelectShape", "select", "Select Shape",
+    # Picks WHOLE objects from a LIST (not sub-shapes of one object). Universal:
+    # the input accepts any shape type and the output mirrors it (type-preserving).
+    # Handled by the transpiler (_emit_select) like the other Select* nodes.
+    inputs=[Socket("shapes", WIRE_DATA, list_access=True)],
+    outputs=[Socket("shapes", WIRE_DATA)],
+    output_follows="shapes",
+    code_template={"algebra": ""},
+    description="Pick WHOLE objects from a list in the 3D picker — universal, any "
+                "shape type (solids, faces, curves, Voronoi cells, array copies). "
+                "Outputs the selected objects; they fan out downstream."))
 
 # --- Predicate (semantic) selectors -----------------------------------------
 # Unlike the pick-by-click Select* nodes (positional anchors that break when a
@@ -712,7 +779,7 @@ register(NodeDef("FacesByNormal", "select", "Faces By Normal",
     params=[_choice("axis", "Z", ["X", "Y", "Z"]),
             _choice("sign", "+", ["+", "-", "both"]),
             _f("tol", 0.1, 0.001, 1.0)],
-    outputs=[Socket("selection", WIRE_SELECTION)],
+    outputs=[Socket("selection", WIRE_SELECTION), Socket("faces", WIRE_SURFACE)],
     code_template={"algebra": "_faces_by_normal({geometry}, {axis}, {sign}, {tol})"},
     description="Select faces whose normal points along an axis (+Z = the top "
                 "face). Predicate-based: survives parameter changes that move the "
@@ -721,7 +788,7 @@ register(NodeDef("FacesByNormal", "select", "Faces By Normal",
 register(NodeDef("EdgesByType", "select", "Edges By Type",
     inputs=[Socket("geometry", WIRE_SOLID, accepts=[WIRE_CURVE])],
     params=[_choice("type", "circle", ["circle", "line", "ellipse", "spline"])],
-    outputs=[Socket("selection", WIRE_SELECTION)],
+    outputs=[Socket("selection", WIRE_SELECTION), Socket("edges", WIRE_CURVE)],
     code_template={"algebra": "_edges_by_type({geometry}, {type})"},
     description="Select all edges of a geometry type — 'circle' grabs every hole / "
                 "round edge (e.g. to fillet them all). Stable under param changes."))
@@ -729,7 +796,7 @@ register(NodeDef("EdgesByType", "select", "Edges By Type",
 register(NodeDef("FacesByType", "select", "Faces By Type",
     inputs=[Socket("geometry", WIRE_SOLID)],
     params=[_choice("type", "plane", ["plane", "cylinder", "sphere", "cone", "torus"])],
-    outputs=[Socket("selection", WIRE_SELECTION)],
+    outputs=[Socket("selection", WIRE_SELECTION), Socket("faces", WIRE_SURFACE)],
     code_template={"algebra": "_faces_by_type({geometry}, {type})"},
     description="Select all faces of a surface type — e.g. every cylindrical wall "
                 "(bore/boss). Stable under param changes."))
@@ -737,14 +804,14 @@ register(NodeDef("FacesByType", "select", "Faces By Type",
 register(NodeDef("FacesByArea", "select", "Faces By Area",
     inputs=[Socket("geometry", WIRE_SOLID)],
     params=[_choice("pick", "largest", ["largest", "smallest"]), _i("n", 1, 1, 100)],
-    outputs=[Socket("selection", WIRE_SELECTION)],
+    outputs=[Socket("selection", WIRE_SELECTION), Socket("faces", WIRE_SURFACE)],
     code_template={"algebra": "_by_size({geometry}, 'face', 'area', {pick}, {n})"},
     description="Select the N largest (or smallest) faces by area."))
 
 register(NodeDef("EdgesByLength", "select", "Edges By Length",
     inputs=[Socket("geometry", WIRE_SOLID, accepts=[WIRE_CURVE])],
     params=[_choice("pick", "longest", ["longest", "shortest"]), _i("n", 1, 1, 100)],
-    outputs=[Socket("selection", WIRE_SELECTION)],
+    outputs=[Socket("selection", WIRE_SELECTION), Socket("edges", WIRE_CURVE)],
     code_template={"algebra": "_by_size({geometry}, 'edge', 'length', {pick}, {n})"},
     description="Select the N longest (or shortest) edges by length."))
 
@@ -753,35 +820,45 @@ register(NodeDef("SubshapesByPosition", "select", "Subshapes By Position",
     params=[_choice("kind", "face", ["face", "edge", "vertex"]),
             _choice("axis", "Z", ["X", "Y", "Z"]),
             _choice("pick", "max", ["max", "min"]), _i("n", 1, 1, 100)],
-    outputs=[Socket("selection", WIRE_SELECTION)],
+    outputs=[Socket("selection", WIRE_SELECTION), Socket("shapes", WIRE_DATA)],
     code_template={"algebra": "_by_position({geometry}, {kind}, {axis}, {pick}, {n})"},
     description="Select the N extreme sub-shapes along an axis — the topmost face "
                 "(Z/max), the leftmost edges (X/min), and so on."))
 
 register(NodeDef("CombineSelection", "select", "Combine Selection",
-    inputs=[Socket("a", WIRE_SELECTION), Socket("b", WIRE_SELECTION)],
+    inputs=[Socket("a", WIRE_SELECTION, list_access=True), Socket("b", WIRE_SELECTION, list_access=True)],
     params=[_choice("mode", "or", ["or", "and", "subtract"])],
-    outputs=[Socket("selection", WIRE_SELECTION)],
+    outputs=[Socket("selection", WIRE_SELECTION), Socket("shapes", WIRE_DATA)],
     code_template={"algebra": "_combine_sel({a}, {b}, {mode})"},
     description="Boolean-combine two selections: or (union), and (in both), "
                 "subtract (in A but not B). Compose predicate selectors."))
 
-register(NodeDef("FilletSelectedEdges", "modifiers", "Fillet Selected Edges",
-    inputs=[Socket("part", WIRE_SOLID), Socket("edges", WIRE_SELECTION)],
-    params=[_f("radius", 2, 0.05, 100)],
+register(NodeDef("FilletChamferSelected", "modifiers", "Fillet / Chamfer (selected)",
+    # Applies to whatever the selection holds: edges (3D) OR vertices (2D
+    # corners) — so this also covers "fillet selected corners" via Select Vertex.
+    inputs=[Socket("part", WIRE_SOLID), Socket("selection", WIRE_SELECTION, list_access=True)],
+    params=[_mode_param(), _f("size", 2, 0.05, 100)],
     outputs=_geo(),
+    code_template={"algebra": "_round({selection}, {mode}, {size})"},
+    description="Round (fillet) or bevel (chamfer) only the sub-shapes chosen by "
+                "a Select node — edges (3D) or corners/vertices (2D). `mode` picks "
+                "which, `size` is the radius / bevel length."))
+
+# Deprecated singles — hidden, kept so older graphs load & run.
+register(NodeDef("FilletSelectedEdges", "modifiers", "Fillet Selected Edges",
+    inputs=[Socket("part", WIRE_SOLID), Socket("edges", WIRE_SELECTION, list_access=True)],
+    params=[_f("radius", 2, 0.05, 100)], outputs=_geo(), hidden=True,
     code_template={"algebra": "fillet({edges}, radius={radius})"},
-    description="Round only the edges chosen by a Select Edge node."))
+    description="Deprecated: use Fillet / Chamfer (selected). Round chosen edges."))
 
 register(NodeDef("ChamferSelectedEdges", "modifiers", "Chamfer Selected Edges",
-    inputs=[Socket("part", WIRE_SOLID), Socket("edges", WIRE_SELECTION)],
-    params=[_f("length", 1.5, 0.05, 100)],
-    outputs=_geo(),
+    inputs=[Socket("part", WIRE_SOLID), Socket("edges", WIRE_SELECTION, list_access=True)],
+    params=[_f("length", 1.5, 0.05, 100)], outputs=_geo(), hidden=True,
     code_template={"algebra": "chamfer({edges}, length={length})"},
-    description="Bevel only the edges chosen by a Select Edge node."))
+    description="Deprecated: use Fillet / Chamfer (selected). Bevel chosen edges."))
 
 register(NodeDef("ExtrudeSelectedFace", "modifiers", "Push / Pull Face",
-    inputs=[Socket("part", WIRE_SOLID), Socket("faces", WIRE_SELECTION)],
+    inputs=[Socket("part", WIRE_SOLID), Socket("faces", WIRE_SELECTION, list_access=True)],
     params=[_f("amount", 5, -200, 200)],
     outputs=_geo(),
     code_template={"algebra": "_pushpull({part}, {faces}, {amount})"},
@@ -799,7 +876,7 @@ register(NodeDef("Shell", "modifiers", "Shell",
                 "into a solid wall instead."))
 
 register(NodeDef("ShellByFaces", "modifiers", "Shell By Faces",
-    inputs=[Socket("part", WIRE_SOLID), Socket("faces", WIRE_SELECTION),
+    inputs=[Socket("part", WIRE_SOLID), Socket("faces", WIRE_SELECTION, list_access=True),
             Socket("thickness", WIRE_DATA, required=False)],
     params=[_f("thickness", 1, 0.05, 100)],
     outputs=_geo(),
@@ -1081,8 +1158,11 @@ register(NodeDef("Midpoint", "vector", "Midpoint",
 register(NodeDef("ListCreate", "data", "List",
     inputs=[Socket("items", WIRE_DATA, required=False, multiple=True)],
     outputs=_data(),
-    code_template={"algebra": "[{items}]"},
-    description="Collect inputs into a list."))
+    # Flatten so a MIX of lists and single items merges into ONE flat list
+    # (wire a list + loose pieces → one unified list), like the containers.
+    code_template={"algebra": "_flatten([{items}])"},
+    description="Collect inputs into ONE flat list — mixes lists and single "
+                "items (each wired list is merged in, not nested)."))
 
 register(NodeDef("ListRange", "data", "Range",
     params=[_f("start", 0, widget="input"),
@@ -1542,6 +1622,40 @@ register(NodeDef("ImportDXF", "import", "Import DXF",
     outputs=_cv(),
     code_template={"algebra": "import_dxf({path})"},
     description="Load 2D profiles from a DXF file (wires) to extrude or build on."))
+
+# TraceImage vectorizes a PNG/JPG into curves. Like SelectEdge it has an EMPTY
+# code_template — the transpiler special-cases it (see _emit_vectorize). Its
+# ✎ edit-mode (rembg + magic-wand + pen + 2-point scale) freezes the traced
+# contours + mm/pixel scale into params["trace"], so the graph re-runs from
+# fixed data with no image processing at run time. See PLAN_TRACE_IMAGE.md.
+register(NodeDef("TraceImage", "import", "Trace Image",
+    params=[_asset("path", [".png", ".jpg", ".jpeg"])],
+    outputs=_cv(),
+    code_template={"algebra": ""},   # handled by the transpiler, not a template
+    description="Vectorize a PNG/JPG into curves. Open ✎ Edit to remove the "
+                "background, trace the contours and set a real scale (mm) — the "
+                "traced outline is frozen into the node so the graph re-runs with "
+                "fixed data (no image processing at run time)."))
+
+# A modelling reference: shows an image on a plane in the 3D viewport (a
+# blueprint underlay to trace/align over). Editor-only, like Note — the
+# transpiler skips it and it never becomes geometry; nodes.html draws a textured
+# quad in the shared viewer scene from these params.
+register(NodeDef("RefImage", "import", "Reference Image",
+    inputs=[], outputs=[],
+    params=[_asset("path", [".png", ".jpg", ".jpeg"]),
+            Param("align_to_trace", "bool", "align to trace", True, widget="checkbox"),
+            Param("plane", "select", "plane", "XY", widget="select", options=["XY", "XZ", "YZ"]),
+            _f("width", 100, 1, 2000, label="width"),
+            _f("x", 0, -1000, 1000), _f("y", 0, -1000, 1000), _f("z", 0, -1000, 1000),
+            _f("opacity", 0.6, 0, 1, 0.05, label="opacity")],
+    code_template={"algebra": "None"},   # editor-only — the transpiler skips it (like Note)
+    description="Show an image on a plane in the 3D viewport as a modelling "
+                "reference (blueprint underlay). Editor-only: it draws a textured "
+                "quad and never becomes geometry. With 'align to trace' on (default), "
+                "if a Trace Image node uses the same file the quad snaps to that "
+                "trace's scale/position so the reference and the traced curves match "
+                "1:1; otherwise place it manually via plane, width (mm), centre (x,y,z)."))
 
 # ===========================================================================
 # 13. Export / IO
