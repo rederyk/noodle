@@ -291,8 +291,8 @@ def _extract_pieces(shape, linear_frac: float = 0.01, angular: float = 0.3) -> d
         try:
             bb = p.bounding_box()
             c = (bb.min + bb.max) * 0.5
-            sz = (_num(lambda: p.volume) or _num(lambda: p.area)
-                  or _num(lambda: p.length) or 0.0)
+            sz = (_num(lambda p=p: p.volume) or _num(lambda p=p: p.area)
+                  or _num(lambda p=p: p.length) or 0.0)
             item = {"index": i, "sig": [c.X, c.Y, c.Z, float(sz)]}
             mesh = None
             try:

@@ -27,6 +27,7 @@ from cad_nodes.transpiler import transpile, transpile_with_map
 from cad_nodes.executor import execute_graph, export_graph, extract_subshapes_for_node
 from cad_nodes.store import GraphStore, stamp_agent_tags, validate_graph_id
 from cad_nodes.copilot import run_chat, copilot_status
+from cad_nodes import fonts as fontlib
 
 # ---------------------------------------------------------------------------
 # Config
@@ -37,7 +38,6 @@ PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 # Shared custom-font library (uploaded .ttf/.otf, reusable across projects). It
 # lives UNDER projects/ (the only writable mount) but is NOT a project — filtered
 # out of project/library listings by name. See cad_nodes/fonts.py.
-from cad_nodes import fonts as fontlib
 FONTS_DIR = PROJECTS_DIR / fontlib.FONTS_DIRNAME
 _RESERVED_PROJECT_DIRS = {fontlib.FONTS_DIRNAME}
 
