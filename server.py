@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -205,6 +205,23 @@ async def system_logs(since: int = 0, limit: int = 500):
         items = items[-limit:]
     last = items[-1]["seq"] if items else since
     return {"entries": items, "last": last}
+
+
+@app.get("/api/system/warm")
+async def system_warm_get():
+    """Warm-worker state: whether the persistent build123d process is enabled
+    and currently resident. The UI shows this as a toggle."""
+    from cad_nodes import executor
+    return executor.warm_status()
+
+
+@app.post("/api/system/warm")
+async def system_warm_set(body: dict = Body(default={})):
+    """Toggle the persistent (warm) worker. Off shuts it down to free memory
+    while noodle is idle; on lets the next run spawn it (first run pays the
+    ~2.7s build123d import, later runs skip it)."""
+    from cad_nodes import executor
+    return executor.set_warm(bool(body.get("enabled", True)))
 
 
 @app.post("/api/system/restart")
@@ -452,8 +469,18 @@ async def render_project(name: str):
 async def download_stl(name: str):
     d = require_project(name)
     stl = d / "output.stl"
+    graph_json = d / "graph.json"
+    # Live runs skip the STL export; (re)generate it here on demand when it's
+    # missing or older than the graph, so a download always reflects the graph.
+    stale = (not stl.exists()) or (
+        graph_json.exists() and stl.stat().st_mtime < graph_json.stat().st_mtime)
+    if stale:
+        try:
+            execute_graph(_load_graph(name), d, write_stl=True)
+        except Exception as e:
+            logger.error("download '%s' re-render failed: %s", name, e)
     if not stl.exists():
-        raise HTTPException(404, "No STL rendered yet. Call /render first.")
+        raise HTTPException(404, "No STL could be generated for this graph.")
     return FileResponse(stl, media_type="model/stl", filename=f"{name}.stl")
 
 
@@ -686,7 +713,8 @@ async def execute_graph_project(name: str):
     graph = _load_graph(name)
     logger.info("execute graph '%s' (%d nodes)", name, len(graph.nodes))
     try:
-        result = execute_graph(graph, d)
+        # Live run: skip the STL export (regenerated on demand by /download).
+        result = execute_graph(graph, d, write_stl=False)
     except ValidationError as e:
         logger.error("execute '%s' invalid graph: %s", name, e)
         raise HTTPException(400, str(e)) from e
@@ -708,7 +736,8 @@ async def execute_graph_project(name: str):
         "code": result["code"],
         "warnings": result.get("warnings", []),
         "node_errors": result.get("node_errors", {}),
-        "stl": f"/api/projects/{name}/download" if result.get("stl") else None,
+        # Always offered — /download regenerates the STL on demand if it's stale.
+        "stl": f"/api/projects/{name}/download",
     }
 
 

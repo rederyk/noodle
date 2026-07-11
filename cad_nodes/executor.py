@@ -113,7 +113,7 @@ _EPILOGUE = """
 import sys as _sys
 _sys.path.insert(0, {repo_root!r})
 from cad_nodes.mesh_extractor import extract_and_write
-extract_and_write(__result__, {stl!r}, {view!r}, __panels__, __previews__, {lin}, {ang}, __errors__)
+extract_and_write(__result__, {stl!r}, {view!r}, __panels__, __previews__, {lin}, {ang}, __errors__, __timings__)
 """
 
 # Tessellation level-of-detail: (linear_frac of bbox diagonal, angular tol rad).
@@ -126,11 +126,14 @@ _QUALITY = {
 
 
 def build_script(code: str, stl_path: Path, view_path: Path,
-                 quality: str = "live") -> str:
+                 quality: str = "live", write_stl: bool = True) -> str:
     lin, ang = _QUALITY.get(quality, _QUALITY["live"])
+    # write_stl=False (live runs) skips the STL export in the epilogue — an empty
+    # path makes extract_and_write no-op it. The STL is regenerated on demand by
+    # the download/render routes, saving ~0.9s on every live re-run.
     return code + _EPILOGUE.format(
-        repo_root=_REPO_ROOT, stl=str(stl_path), view=str(view_path),
-        lin=lin, ang=ang,
+        repo_root=_REPO_ROOT, stl=(str(stl_path) if write_stl else ""),
+        view=str(view_path), lin=lin, ang=ang,
     )
 
 
@@ -142,7 +145,10 @@ def build_script(code: str, stl_path: Path, view_path: Path,
 # ---------------------------------------------------------------------------
 _WORKER_PATH = str(Path(__file__).resolve().parent / "worker.py")
 _SENTINEL = "@@CADWORKER@@"
-_USE_WARM = os.environ.get("CAD_WARM_WORKER", "1") != "0"
+# Runtime-mutable: seeded from the env, but toggled live via set_warm() (UI
+# switch). When off, execute uses a cold subprocess per run and NO build123d
+# process stays resident — freeing ~300-500 MB while noodle is idle.
+_warm_enabled = os.environ.get("CAD_WARM_WORKER", "1") != "0"
 
 
 class WarmWorker:
@@ -194,6 +200,12 @@ class WarmWorker:
             self._kill()
             raise RuntimeError("warm worker failed to import build123d")
 
+    def shutdown(self) -> None:
+        """Terminate the resident worker, freeing its build123d memory. The next
+        run() lazily respawns it (if warm mode is still on)."""
+        with self._lock:
+            self._kill()
+
     def run(self, script_path: Path, cwd: Path, timeout: float) -> dict:
         with self._lock:
             if not self._alive():
@@ -214,6 +226,22 @@ class WarmWorker:
 
 
 _WORKER = WarmWorker()
+
+
+def warm_status() -> dict:
+    """Current warm-worker mode + whether a resident process is alive."""
+    return {"enabled": _warm_enabled, "alive": _WORKER._alive()}
+
+
+def set_warm(enabled: bool) -> dict:
+    """Toggle warm-worker mode at runtime. Turning it off also shuts the resident
+    process down immediately (frees its memory); turning it on lets the next run
+    spawn it. Returns the new status."""
+    global _warm_enabled
+    _warm_enabled = bool(enabled)
+    if not _warm_enabled:
+        _WORKER.shutdown()
+    return warm_status()
 
 
 def _timeout_result(code: str, timeout: float) -> dict:
@@ -252,6 +280,7 @@ def _finalize(code: str, script_text: str, stdout: str, stderr,
         "view": view,
         "warnings": [],
         "node_errors": {},
+        "node_timings": (view or {}).get("node_timings") or {},
         "stl": str(stl_path) if stl_path.exists() else None,
     }
 
@@ -297,9 +326,12 @@ def _finalize(code: str, script_text: str, stdout: str, stderr,
 
 
 def execute_code(code: str, workdir: Path, timeout: int = 120,
-                 quality: str = "live") -> dict:
+                 quality: str = "live", write_stl: bool = True) -> dict:
     """Execute already-transpiled code. Uses the warm worker (build123d kept
-    loaded) with a fallback to a cold subprocess. Returns a result dict."""
+    loaded) with a fallback to a cold subprocess. Returns a result dict.
+
+    write_stl=False skips the STL export (live preview runs don't need it — it is
+    regenerated on demand for download/export)."""
     workdir.mkdir(parents=True, exist_ok=True)
     stl_path = workdir / "output.stl"
     view_path = workdir / "view.json"
@@ -308,11 +340,11 @@ def execute_code(code: str, workdir: Path, timeout: int = 120,
     if view_path.exists():
         view_path.unlink()
 
-    script_text = build_script(code, stl_path, view_path, quality)
+    script_text = build_script(code, stl_path, view_path, quality, write_stl)
     script_path.write_text(script_text)
 
     # --- warm path -------------------------------------------------------
-    if _USE_WARM:
+    if _warm_enabled:
         try:
             res = _WORKER.run(script_path, workdir, timeout)
             if res.get("timeout"):
@@ -337,10 +369,11 @@ def execute_code(code: str, workdir: Path, timeout: int = 120,
 
 
 def execute_graph(graph: Graph, workdir: Path, timeout: int = 120,
-                  quality: str = "live") -> dict:
+                  quality: str = "live", write_stl: bool = True) -> dict:
     """Transpile + execute a graph end-to-end."""
     code = transpile(graph)
-    return execute_code(code, workdir, timeout=timeout, quality=quality)
+    return execute_code(code, workdir, timeout=timeout, quality=quality,
+                        write_stl=write_stl)
 
 
 _SUBSHAPE_EPILOGUE = """
@@ -388,7 +421,7 @@ def extract_subshapes_for_node(graph: Graph, node_id: str, kind: str,
                 return None
         return None
 
-    if _USE_WARM:
+    if _warm_enabled:
         try:
             res = _WORKER.run(script_path, workdir, timeout)
             if not res.get("timeout"):
@@ -447,7 +480,7 @@ def _run_slice(code: str, workdir: Path, func: str, kwargs: str,
                 return None
         return None
 
-    if _USE_WARM:
+    if _warm_enabled:
         try:
             res = _WORKER.run(script_path, workdir, timeout)
             if res.get("timeout"):

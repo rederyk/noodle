@@ -51,11 +51,23 @@ def _count(shape, attr):
 
 def _deflection(shape, linear_frac: float) -> float:
     """Linear tessellation deflection scaled to the shape size, so big and
-    small parts get comparable visual quality (and triangle counts)."""
+    small parts get comparable visual quality (and triangle counts). Heavy shapes
+    (many faces — e.g. rounded engraved text) get a coarser deflection so the LIVE
+    preview stays snappy; this only affects the on-screen mesh, never the exported
+    STL/STEP (those tessellate via export_stl/export_step, not this path)."""
     try:
         bb = shape.bounding_box()
         diag = (bb.size.X ** 2 + bb.size.Y ** 2 + bb.size.Z ** 2) ** 0.5
-        return max(diag * linear_frac, 0.05)
+        frac = linear_frac
+        try:
+            nf = len(shape.faces())
+            if nf > 400:
+                frac *= 2.5
+            elif nf > 120:
+                frac *= 1.8
+        except Exception:
+            pass
+        return max(diag * frac, 0.05)
     except Exception:
         return 0.5
 
@@ -113,7 +125,8 @@ def _summarize(value, _depth: int = 0):
         return {"kind": "repr", "type": "unknown", "repr": repr(value)[:200]}
 
 
-def extract_view(shape, linear_frac: float = 0.02, angular: float = 0.4) -> dict:
+def extract_view(shape, linear_frac: float = 0.02, angular: float = 0.4,
+                 with_mesh: bool = True) -> dict:
     shape = _as_shape(shape)
     if shape is None:
         return {"success": False, "error": "no result shape"}
@@ -147,16 +160,20 @@ def extract_view(shape, linear_frac: float = 0.02, angular: float = 0.4) -> dict
         "solids": _count(shape, "solids"),
     }
 
-    # Tessellated mesh (LOD: coarse for live preview, scaled to part size)
-    try:
-        verts, tris = shape.tessellate(_deflection(shape, linear_frac), angular)
-        view["mesh"] = {
-            "vertices": [[v.X, v.Y, v.Z] for v in verts],
-            "triangles": [list(t) for t in tris],
-        }
-    except Exception as e:
-        view["mesh"] = None
-        view["mesh_error"] = str(e)
+    # Tessellated mesh (LOD: coarse for live preview, scaled to part size).
+    # Skipped when per-node previews already carry the render geometry — the UIs
+    # render from view["previews"] (STL fallback when there are none), never from
+    # this, so meshing the terminal result too is pure redundant work.
+    if with_mesh:
+        try:
+            verts, tris = shape.tessellate(_deflection(shape, linear_frac), angular)
+            view["mesh"] = {
+                "vertices": [[v.X, v.Y, v.Z] for v in verts],
+                "triangles": [list(t) for t in tris],
+            }
+        except Exception as e:
+            view["mesh"] = None
+            view["mesh_error"] = str(e)
 
     return view
 
@@ -423,12 +440,15 @@ def extract_subshapes(shape, kind: str = "edge",
 
 def extract_and_write(result, stl_path: str, view_path: str, panels=None,
                       previews=None, linear_frac: float = 0.02,
-                      angular: float = 0.4, errors=None) -> dict:
+                      angular: float = 0.4, errors=None, timings=None) -> dict:
     """Write STL + view.json. Returns the view dict."""
     shape = _as_shape(result)
-    view = extract_view(shape, linear_frac, angular)
+    # When previews carry the render geometry, skip the redundant terminal mesh.
+    view = extract_view(shape, linear_frac, angular, with_mesh=not previews)
     if errors:
         view["node_errors"] = dict(errors)
+    if timings:
+        view["node_timings"] = {k: round(float(v), 4) for k, v in timings.items()}
 
     if shape is not None and stl_path:
         try:
