@@ -51,4 +51,4 @@ ignore = [
 
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI's `File(...)`/`Depends(...)` in defaults is the framework idiom.
-extend-immutable-calls = ["fastapi.File", "fastapi.Depends", "fastapi.Query"]
+extend-immutable-calls = ["fastapi.File", "fastapi.Depends", "fastapi.Query", "fastapi.Body"]
