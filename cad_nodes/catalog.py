@@ -502,16 +502,17 @@ register(NodeDef("CurveLength", "curves", "Curve Length",
 # ===========================================================================
 register(NodeDef("Extrude", "operations", "Extrude",
     inputs=[Socket("sketch", WIRE_SURFACE, raw=True)] + _pin("amount", "taper"),
-    params=[_f("amount", 10, 0.1, 500), _f("taper", 0, -45, 45),
+    params=[_f("amount", 10, -500, 500), _f("taper", 0, -45, 45),
             Param("both", "bool", "both", False, widget="checkbox"),
             Param("solid", "bool", "solid", True, widget="checkbox")],
     outputs=_geo(),
     code_template={"algebra": "_extrude({sketch}, {amount}, {taper}, {both}, {solid})",
                    "builder": "extrude(amount={amount}, taper={taper}, both={both})"},
-    description="Extrude a 2D profile along its normal. `both` extrudes "
-                "symmetrically. `solid` (default) fills the profile for a solid; "
-                "turn it off to extrude just the outline into an open surface "
-                "(wall / ribbon)."))
+    description="Extrude a 2D profile along its normal. A negative `amount` "
+                "extrudes the opposite way. `both` extrudes symmetrically in "
+                "both directions, fusing into a single solid. `solid` (default) "
+                "fills the profile for a solid; turn it off to extrude just the "
+                "outline into an open surface (wall / ribbon)."))
 
 register(NodeDef("Revolve", "operations", "Revolve",
     inputs=[Socket("sketch", WIRE_SURFACE, raw=True)] + _pin("angle"),
@@ -684,17 +685,20 @@ def _mode_param():
 
 register(NodeDef("FilletChamfer", "modifiers", "Fillet / Chamfer",
     inputs=[Socket("part", WIRE_SOLID)] + _pin("size"),
-    params=[_mode_param(), _f("size", 2, 0.05, 100)],
+    params=[_mode_param(), _f("size", 2, 0.01, 100, step=0.05)],
     outputs=_geo(),
-    code_template={"algebra": "_round({part}.edges(), {mode}, {size})"},
+    code_template={"algebra": "_round_all({part}, {mode}, {size})"},
     description="Round (fillet) or bevel (chamfer) ALL edges of a part — pick "
-                "which with `mode`. `size` is the radius / bevel length."))
+                "which with `mode`. `size` is the radius / bevel length. If `size` "
+                "is too big for the geometry (e.g. thin extruded-text strokes) it "
+                "is auto-clamped to the largest that fits, so it never fails "
+                "wholesale on one thin spot."))
 
 register(NodeDef("FilletChamferCorners", "modifiers", "Fillet / Chamfer Corners",
     # The 2D version: rounds/bevels the CORNERS (vertices) of a face/sketch and
     # returns the OUTLINE curve. A closed curve auto-casts to a face via _face.
     inputs=[Socket("shape", WIRE_SURFACE, raw=True)] + _pin("size"),
-    params=[_mode_param(), _f("size", 2, 0.05, 100)],
+    params=[_mode_param(), _f("size", 2, 0.01, 100, step=0.05)],
     outputs=_cv(),
     code_template={"algebra": "_outline(_round(_face({shape}).vertices(), {mode}, {size}))"},
     description="Round (fillet) or bevel (chamfer) all corners of a 2D "
@@ -705,25 +709,25 @@ register(NodeDef("FilletChamferCorners", "modifiers", "Fillet / Chamfer Corners"
 # Deprecated singles — hidden, kept so older graphs load & run.
 register(NodeDef("Fillet", "modifiers", "Fillet",
     inputs=[Socket("part", WIRE_SOLID)] + _pin("radius"),
-    params=[_f("radius", 2, 0.05, 100)], outputs=_geo(), hidden=True,
-    code_template={"algebra": "fillet({part}.edges(), radius={radius})"},
+    params=[_f("radius", 2, 0.01, 100, step=0.05)], outputs=_geo(), hidden=True,
+    code_template={"algebra": "_round_all({part}, 'fillet', {radius})"},
     description="Deprecated: use Fillet / Chamfer (mode=fillet). Round all edges."))
 
 register(NodeDef("Chamfer", "modifiers", "Chamfer",
     inputs=[Socket("part", WIRE_SOLID)] + _pin("length"),
-    params=[_f("length", 1.5, 0.05, 100)], outputs=_geo(), hidden=True,
-    code_template={"algebra": "chamfer({part}.edges(), length={length})"},
+    params=[_f("length", 1.5, 0.01, 100, step=0.05)], outputs=_geo(), hidden=True,
+    code_template={"algebra": "_round_all({part}, 'chamfer', {length})"},
     description="Deprecated: use Fillet / Chamfer (mode=chamfer). Bevel all edges."))
 
 register(NodeDef("Fillet2D", "modifiers", "Fillet Corners",
     inputs=[Socket("shape", WIRE_SURFACE, raw=True)] + _pin("radius"),
-    params=[_f("radius", 2, 0.05, 100)], outputs=_sk(), hidden=True,
+    params=[_f("radius", 2, 0.01, 100, step=0.05)], outputs=_sk(), hidden=True,
     code_template={"algebra": "fillet(_face({shape}).vertices(), radius={radius})"},
     description="Deprecated: use Fillet / Chamfer Corners. Round 2D corners."))
 
 register(NodeDef("Chamfer2D", "modifiers", "Chamfer Corners",
     inputs=[Socket("shape", WIRE_SURFACE, raw=True)] + _pin("length"),
-    params=[_f("length", 1.5, 0.05, 100)], outputs=_sk(), hidden=True,
+    params=[_f("length", 1.5, 0.01, 100, step=0.05)], outputs=_sk(), hidden=True,
     code_template={"algebra": "chamfer(_face({shape}).vertices(), length={length})"},
     description="Deprecated: use Fillet / Chamfer Corners. Bevel 2D corners."))
 
@@ -844,7 +848,7 @@ register(NodeDef("FilletChamferSelected", "modifiers", "Fillet / Chamfer (select
     # Applies to whatever the selection holds: edges (3D) OR vertices (2D
     # corners) — so this also covers "fillet selected corners" via Select Vertex.
     inputs=[Socket("part", WIRE_SOLID), Socket("selection", WIRE_SELECTION, list_access=True)],
-    params=[_mode_param(), _f("size", 2, 0.05, 100)],
+    params=[_mode_param(), _f("size", 2, 0.01, 100, step=0.05)],
     outputs=_geo(),
     code_template={"algebra": "_round({selection}, {mode}, {size})"},
     description="Round (fillet) or bevel (chamfer) only the sub-shapes chosen by "
@@ -854,13 +858,13 @@ register(NodeDef("FilletChamferSelected", "modifiers", "Fillet / Chamfer (select
 # Deprecated singles — hidden, kept so older graphs load & run.
 register(NodeDef("FilletSelectedEdges", "modifiers", "Fillet Selected Edges",
     inputs=[Socket("part", WIRE_SOLID), Socket("edges", WIRE_SELECTION, list_access=True)],
-    params=[_f("radius", 2, 0.05, 100)], outputs=_geo(), hidden=True,
+    params=[_f("radius", 2, 0.01, 100, step=0.05)], outputs=_geo(), hidden=True,
     code_template={"algebra": "fillet({edges}, radius={radius})"},
     description="Deprecated: use Fillet / Chamfer (selected). Round chosen edges."))
 
 register(NodeDef("ChamferSelectedEdges", "modifiers", "Chamfer Selected Edges",
     inputs=[Socket("part", WIRE_SOLID), Socket("edges", WIRE_SELECTION, list_access=True)],
-    params=[_f("length", 1.5, 0.05, 100)], outputs=_geo(), hidden=True,
+    params=[_f("length", 1.5, 0.01, 100, step=0.05)], outputs=_geo(), hidden=True,
     code_template={"algebra": "chamfer({edges}, length={length})"},
     description="Deprecated: use Fillet / Chamfer (selected). Bevel chosen edges."))
 
@@ -1479,8 +1483,11 @@ register(NodeDef("Display", "panel", "Display",
 register(NodeDef("BoundingBox", "panel", "Bounding Box",
     inputs=[Socket("shape", WIRE_SOLID)],
     outputs=[Socket("box", WIRE_SOLID)],
-    code_template={"algebra": "{shape}.bounding_box()"},
-    description="Bounding box of a shape."))
+    code_template={"algebra": "_bbox_solid({shape})"},
+    description="Axis-aligned bounding box of a shape, as a real solid Box you "
+                "can render, subtract or extrude from. A flat 2D input (e.g. "
+                "Text) yields a thin slab (its zero-thickness side gets a tiny "
+                "proportional thickness so it stays a valid solid)."))
 
 register(NodeDef("Volume", "panel", "Volume",
     inputs=[Socket("shape", WIRE_SOLID)],

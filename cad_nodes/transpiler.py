@@ -134,6 +134,7 @@ PREAMBLE = """\
 import math
 import os
 import random
+from time import perf_counter as _perf
 
 from build123d import *
 
@@ -141,6 +142,7 @@ from build123d import *
 __panels__ = {}
 __previews__ = {}
 __errors__ = {}
+__timings__ = {}     # per-node wall-clock seconds, keyed by node id
 
 
 def _out(_path):
@@ -590,6 +592,20 @@ def _shell_faces(_part, _faces, _thickness):
         return _part
 
 
+def _bbox_solid(_shape):
+    \"\"\"The axis-aligned bounding box of _shape as an actual solid Box (not the
+    raw BoundBox data object), seated at the box centre. A flat input (a 2D
+    sketch / face — e.g. Text) has a zero-thickness side; that side is given a
+    tiny proportional thickness so the result is still a valid, renderable solid
+    (a thin slab) instead of failing on a degenerate dimension.\"\"\"
+    if _shape is None:
+        return None
+    bb = _shape.bounding_box()
+    sz, c = bb.size, bb.center()
+    eps = max(sz.X, sz.Y, sz.Z, 1.0) * 1e-3
+    return Box(max(sz.X, eps), max(sz.Y, eps), max(sz.Z, eps)).moved(Pos(c.X, c.Y, c.Z))
+
+
 def _bbox_plane(_shape, _plane, _t=0.5):
     \"\"\"A reusable Plane, parallel to the chosen base plane (XY/XZ/YZ), centred
     on _shape's bounding box and slid along its own normal to the _t position
@@ -708,17 +724,37 @@ def _flatten(_x):
     return out
 
 
+def _union_atoms(_s):
+    \"\"\"The atomic pieces of a shape to feed a union: its solids (3D), else its
+    faces (2D), else the shape itself. Decomposing a Compound this way lets a
+    single multi-piece input actually FUSE internally — e.g. a Text whose glyphs
+    a variable font split into overlapping fragments (a bar + an arc) merge back
+    into one letter, while genuinely separate letters stay separate.\"\"\"
+    for _attr in ("solids", "faces"):
+        try:
+            _lst = list(getattr(_s, _attr)())
+            if _lst:
+                return _lst
+        except Exception:
+            pass
+    return [_s]
+
+
 def _union(*_items):
     \"\"\"Fuse any number of shapes into ONE, dimension-agnostic (build123d '+').
-    Flattens nested lists, drops None; a single shape passes through, nothing
-    -> None. Works for 2D faces/sketches (-> a merged region) and 3D solids
-    (-> one part). Union feeds its whole `shapes` collector in as one arg (a
-    list or single value); BooleanMulti spreads several — both are flattened.\"\"\"
+    Flattens nested lists, drops None; decomposes each shape into its atomic
+    pieces (solids/faces) so overlapping fragments inside a single Compound fuse
+    too — nothing -> None. Works for 2D faces/sketches (-> a merged region) and
+    3D solids (-> one part). Union feeds its whole `shapes` collector in as one
+    arg (a list or single value); BooleanMulti spreads several — both flatten.\"\"\"
     parts = [p for p in _flatten(list(_items)) if p is not None]
     if not parts:
         return None
-    out = parts[0]
-    for p in parts[1:]:
+    atoms = [a for p in parts for a in _union_atoms(p)]
+    if not atoms:
+        return None
+    out = atoms[0]
+    for p in atoms[1:]:
         out = out + p
     return out
 
@@ -730,6 +766,34 @@ def _round(_items, _mode="fillet", _size=1.0):
     if _mode == "chamfer":
         return chamfer(_items, length=_size)
     return fillet(_items, radius=_size)
+
+
+def _round_all(_part, _mode="fillet", _size=1.0):
+    \"\"\"Fillet/chamfer ALL edges of a part in one operation, but RESILIENT: if the
+    requested size is too large for the geometry (very common with extruded text —
+    thin letter strokes, and letters like 'i'/'do' are several disjoint solids),
+    the size is shrunk until it fits so the operation SUCCEEDS instead of failing
+    wholesale on the thinnest part. The common case (size fits) runs at full size
+    on the FIRST try with no extra cost. A geometric shrink-retry is used rather
+    than build123d's max_fillet(), which is an expensive iterative search (seconds
+    on text) — a few cheap fillet attempts converge close to the max far faster.\"\"\"
+    if _part is None:
+        return None
+    try:
+        _edges = _part.edges()
+    except Exception:
+        _edges = _part                       # already a sub-shape list
+    _op = ((lambda _z: chamfer(_edges, length=_z)) if _mode == "chamfer"
+           else (lambda _z: fillet(_edges, radius=_z)))
+    _z = float(_size)
+    for _ in range(7):                       # requested size first, then shrink to fit
+        if _z <= 1e-4:
+            break
+        try:
+            return _op(_z)
+        except Exception:
+            _z *= 0.6                        # ~converges toward the geometric max
+    return _part                             # give up: leave the part unrounded
 
 
 def _as_point(_p):
@@ -1898,10 +1962,13 @@ class Transpiler:
         """Wrap a node's statement(s) in try/except so one node's runtime error
         is recorded in __errors__ and doesn't abort the rest of the workflow."""
         lines.append("try:")
+        lines.append("    _t0 = _perf()")
         for bl in body:
             if bl:
                 lines.append("    " + bl)
+        lines.append(f"    __timings__[{node.id!r}] = _perf() - _t0")
         lines.append("except Exception as _e:")
+        lines.append(f"    __timings__[{node.id!r}] = _perf() - _t0")
         var = self.var_of.get(node.id)
         if var:
             lines.append(f"    {var} = None")
