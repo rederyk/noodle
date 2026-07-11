@@ -1,0 +1,203 @@
+{
+  "name": "lego-brick",
+  "nodes": [
+    {
+      "id": "title",
+      "type": "Note",
+      "params": {
+        "text": "\ud83e\uddf1 Parametric LEGO brick\n\nTWO lanes merge:  a base plate  +  a stud grid built by fan-out,\nfused into one part, then every edge is rounded.\n\nMake any N\u00d7M brick: set 'count' on the two Linear Arrays (now 4 \u00d7 2)\nand match the Box width / height (stud pitch = 8 mm)."
+      },
+      "position": [
+        80,
+        30
+      ]
+    },
+    {
+      "id": "box",
+      "type": "Box",
+      "params": {
+        "width": 32,
+        "height": 16,
+        "depth": 9.6,
+        "centered": false
+      },
+      "position": [
+        80,
+        230
+      ]
+    },
+    {
+      "id": "stud",
+      "type": "Cylinder",
+      "params": {
+        "radius": 2.4,
+        "height": 1.8,
+        "centered": true
+      },
+      "position": [
+        80,
+        700
+      ]
+    },
+    {
+      "id": "place",
+      "type": "Move",
+      "params": {
+        "x": 4,
+        "y": 4,
+        "z": 10.5
+      },
+      "position": [
+        360,
+        700
+      ]
+    },
+    {
+      "id": "rowx",
+      "type": "ArrayLinear",
+      "params": {
+        "count": 4,
+        "dx": 8,
+        "dy": 0,
+        "dz": 0
+      },
+      "position": [
+        660,
+        700
+      ]
+    },
+    {
+      "id": "grid",
+      "type": "ArrayLinear",
+      "params": {
+        "count": 2,
+        "dx": 0,
+        "dy": 8,
+        "dz": 0
+      },
+      "position": [
+        940,
+        700
+      ]
+    },
+    {
+      "id": "gridnote",
+      "type": "Note",
+      "params": {
+        "text": "\u2726 Fan-out\nArray #1 repeats the stud along X  (a row);\nArray #2 repeats that whole row along Y.\nOne node builds the entire grid \u2014 no copy-paste."
+      },
+      "position": [
+        660,
+        1050
+      ]
+    },
+    {
+      "id": "fuse",
+      "type": "Union",
+      "params": {},
+      "position": [
+        1260,
+        470
+      ]
+    },
+    {
+      "id": "finish",
+      "type": "FilletChamfer",
+      "params": {
+        "mode": "fillet",
+        "size": 0.5
+      },
+      "position": [
+        1540,
+        470
+      ],
+      "preview": true
+    }
+  ],
+  "connections": [
+    {
+      "id": "l1",
+      "from_node": "stud",
+      "from_socket": "result",
+      "to_node": "place",
+      "to_socket": "shape"
+    },
+    {
+      "id": "l2",
+      "from_node": "place",
+      "from_socket": "result",
+      "to_node": "rowx",
+      "to_socket": "shape"
+    },
+    {
+      "id": "l3",
+      "from_node": "rowx",
+      "from_socket": "result",
+      "to_node": "grid",
+      "to_socket": "shape"
+    },
+    {
+      "id": "l4",
+      "from_node": "box",
+      "from_socket": "result",
+      "to_node": "fuse",
+      "to_socket": "shapes"
+    },
+    {
+      "id": "l5",
+      "from_node": "grid",
+      "from_socket": "result",
+      "to_node": "fuse",
+      "to_socket": "shapes"
+    },
+    {
+      "id": "l6",
+      "from_node": "fuse",
+      "from_socket": "result",
+      "to_node": "finish",
+      "to_socket": "part"
+    }
+  ],
+  "groups": [
+    {
+      "title": "\u2460 Base plate",
+      "bounding": [
+        62,
+        182,
+        246,
+        448
+      ],
+      "color": "#3f589e"
+    },
+    {
+      "title": "\u2461 One stud, placed on top",
+      "bounding": [
+        62,
+        652,
+        526,
+        404
+      ],
+      "color": "#2f7d7a"
+    },
+    {
+      "title": "\u2462 Studs \u2014 array fan-out \u2726",
+      "bounding": [
+        642,
+        652,
+        526,
+        546
+      ],
+      "color": "#3f7a4e"
+    },
+    {
+      "title": "\u2463 Fuse into one part + round the edges",
+      "bounding": [
+        1242,
+        422,
+        526,
+        264
+      ],
+      "color": "#6a4f9e"
+    }
+  ]
+}

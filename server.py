@@ -15,8 +15,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import Body, FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -27,12 +27,19 @@ from cad_nodes.transpiler import transpile, transpile_with_map
 from cad_nodes.executor import execute_graph, export_graph, extract_subshapes_for_node
 from cad_nodes.store import GraphStore, stamp_agent_tags, validate_graph_id
 from cad_nodes.copilot import run_chat, copilot_status
+from cad_nodes import fonts as fontlib
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 PROJECTS_DIR = Path("/app/projects")
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Shared custom-font library (uploaded .ttf/.otf, reusable across projects). It
+# lives UNDER projects/ (the only writable mount) but is NOT a project — filtered
+# out of project/library listings by name. See cad_nodes/fonts.py.
+FONTS_DIR = PROJECTS_DIR / fontlib.FONTS_DIRNAME
+_RESERVED_PROJECT_DIRS = {fontlib.FONTS_DIRNAME}
 
 # User feedback/report drops (see docs/FEEDBACK_FIX_GUIDE.md). A dedicated rw
 # volume kept out of projects/ so a coding agent can find them at the repo root.
@@ -198,6 +205,23 @@ async def system_logs(since: int = 0, limit: int = 500):
         items = items[-limit:]
     last = items[-1]["seq"] if items else since
     return {"entries": items, "last": last}
+
+
+@app.get("/api/system/warm")
+async def system_warm_get():
+    """Warm-worker state: whether the persistent build123d process is enabled
+    and currently resident. The UI shows this as a toggle."""
+    from cad_nodes import executor
+    return executor.warm_status()
+
+
+@app.post("/api/system/warm")
+async def system_warm_set(body: dict = Body(default={})):
+    """Toggle the persistent (warm) worker. Off shuts it down to free memory
+    while noodle is idle; on lets the next run spawn it (first run pays the
+    ~2.7s build123d import, later runs skip it)."""
+    from cad_nodes import executor
+    return executor.set_warm(bool(body.get("enabled", True)))
 
 
 @app.post("/api/system/restart")
@@ -388,6 +412,14 @@ async def webui_nodes():
     return HTMLResponse("<h1>noodle</h1><p>Node editor not found</p>", status_code=404)
 
 
+@app.get("/library", response_class=HTMLResponse)
+async def webui_library():
+    page = Path("/app/webui/library.html")
+    if page.exists():
+        return page.read_text()
+    return HTMLResponse("<h1>noodle</h1><p>Library not found</p>", status_code=404)
+
+
 # ---------------------------------------------------------------------------
 # Projects CRUD
 # ---------------------------------------------------------------------------
@@ -395,7 +427,7 @@ async def webui_nodes():
 async def list_projects():
     projects = []
     for d in sorted(PROJECTS_DIR.iterdir()):
-        if d.is_dir():
+        if d.is_dir() and d.name not in _RESERVED_PROJECT_DIRS:
             meta = {}
             meta_path = d / "meta.json"
             if meta_path.exists():
@@ -437,8 +469,18 @@ async def render_project(name: str):
 async def download_stl(name: str):
     d = require_project(name)
     stl = d / "output.stl"
+    graph_json = d / "graph.json"
+    # Live runs skip the STL export; (re)generate it here on demand when it's
+    # missing or older than the graph, so a download always reflects the graph.
+    stale = (not stl.exists()) or (
+        graph_json.exists() and stl.stat().st_mtime < graph_json.stat().st_mtime)
+    if stale:
+        try:
+            execute_graph(_load_graph(name), d, write_stl=True)
+        except Exception as e:
+            logger.error("download '%s' re-render failed: %s", name, e)
     if not stl.exists():
-        raise HTTPException(404, "No STL rendered yet. Call /render first.")
+        raise HTTPException(404, "No STL could be generated for this graph.")
     return FileResponse(stl, media_type="model/stl", filename=f"{name}.stl")
 
 
@@ -544,6 +586,9 @@ _IMPORT_NODE_BY_EXT = {
     ".stl": "ImportSTL",
     ".svg": "ImportSVG",
     ".dxf": "ImportDXF",
+    # raster images feed the TraceImage node (vectorized in its ✎ edit-mode,
+    # PLAN_TRACE_IMAGE.md); the traced contours are frozen into the node.
+    ".png": "TraceImage", ".jpg": "TraceImage", ".jpeg": "TraceImage",
 }
 
 
@@ -555,7 +600,7 @@ async def _store_asset(d: Path, file: UploadFile) -> dict:
     ext = Path(file.filename or "").suffix.lower()
     if ext not in _IMPORT_NODE_BY_EXT:
         raise HTTPException(
-            400, f"Unsupported file type '{ext or '?'}'. Supported: STEP, STL, SVG, DXF.")
+            400, f"Unsupported file type '{ext or '?'}'. Supported: STEP, STL, SVG, DXF, PNG, JPG.")
     assets = d / "assets"
     assets.mkdir(parents=True, exist_ok=True)
     stem = _slugify(Path(file.filename or "model").stem, "model")
@@ -607,13 +652,69 @@ async def import_model(name: str, file: UploadFile = File(...)):
     return {"status": "imported", "node_id": node_id, **meta, "file": meta["name"]}
 
 
+# --- Custom font library (shared across every project) ------------------------
+@app.get("/api/fonts")
+async def api_list_fonts():
+    """Fonts available to Text nodes: uploaded custom fonts (⬆) + system
+    families. The Text `font` picker reads this."""
+    return fontlib.list_fonts(FONTS_DIR)
+
+
+@app.post("/api/fonts")
+async def api_upload_font(file: UploadFile = File(...)):
+    """Store an uploaded .ttf/.otf/.ttc in the shared library so any Text node
+    can use it WITHOUT installing it in the OS. Returns its family name."""
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in fontlib.FONT_EXTS:
+        raise HTTPException(400, f"Unsupported font '{ext or '?'}'. Use TTF, OTF or TTC.")
+    FONTS_DIR.mkdir(parents=True, exist_ok=True)
+    stem = _slugify(Path(file.filename or "font").stem, "font")
+    dest = FONTS_DIR / f"{stem}{ext}"
+    n = 1
+    while dest.exists():                        # never clobber an existing font
+        dest = FONTS_DIR / f"{stem}-{n}{ext}"
+        n += 1
+    dest.write_bytes(await file.read())
+    fam = fontlib.family_of(dest)
+    logger.info("font stored: %s (family %r)", dest.name, fam)
+    return {"status": "stored", "name": fam, "family": fam, "file": dest.name, "ext": ext}
+
+
+@app.get("/api/fonts/{filename}")
+async def api_download_font(filename: str):
+    """Stream a custom font file (basename only; guarded) — the /library panel
+    loads it via @font-face to render a live preview."""
+    if filename != Path(filename).name or filename in ("", ".", ".."):
+        raise HTTPException(400, "bad filename")
+    p = FONTS_DIR / filename
+    if not p.is_file() or p.suffix.lower() not in fontlib.FONT_EXTS:
+        raise HTTPException(404, "no such font")
+    media = {".ttf": "font/ttf", ".otf": "font/otf",
+             ".ttc": "font/collection"}.get(p.suffix.lower(), "application/octet-stream")
+    return FileResponse(p, media_type=media, filename=filename)
+
+
+@app.delete("/api/fonts/{filename}")
+async def api_delete_font(filename: str):
+    """Remove a custom font from the shared library (basename only; guarded)."""
+    if filename != Path(filename).name or filename in ("", ".", ".."):
+        raise HTTPException(400, "bad filename")
+    p = FONTS_DIR / filename
+    if not p.is_file():
+        raise HTTPException(404, "no such font")
+    p.unlink()
+    logger.info("font deleted: %s", filename)
+    return {"status": "deleted", "file": filename}
+
+
 @app.post("/api/graph/{name}/execute")
 async def execute_graph_project(name: str):
     d = require_project(name)
     graph = _load_graph(name)
     logger.info("execute graph '%s' (%d nodes)", name, len(graph.nodes))
     try:
-        result = execute_graph(graph, d)
+        # Live run: skip the STL export (regenerated on demand by /download).
+        result = execute_graph(graph, d, write_stl=False)
     except ValidationError as e:
         logger.error("execute '%s' invalid graph: %s", name, e)
         raise HTTPException(400, str(e)) from e
@@ -635,8 +736,15 @@ async def execute_graph_project(name: str):
         "code": result["code"],
         "warnings": result.get("warnings", []),
         "node_errors": result.get("node_errors", {}),
-        "stl": f"/api/projects/{name}/download" if result.get("stl") else None,
+        # Always offered — /download regenerates the STL on demand if it's stale.
+        "stl": f"/api/projects/{name}/download",
     }
+
+
+@app.get("/api/agent/help")
+async def agent_help_route():
+    """Self-contained orientation guide for a remote agent (markdown text)."""
+    return PlainTextResponse(api.agent_help(), media_type="text/markdown")
 
 
 @app.get("/api/agent/tags")
@@ -682,7 +790,7 @@ async def graph_slice_summary(name: str, path: str = "", n: int = 10):
 async def graph_subshapes(name: str, node_id: str, kind: str = "edge"):
     """Pickable sub-shapes (edges/faces/vertices) of a node's output shape,
     for the interactive selection picker."""
-    if kind not in ("edge", "face", "vertex"):
+    if kind not in ("edge", "face", "vertex", "shape"):
         raise HTTPException(400, f"Unknown kind {kind!r}")
     d = require_project(name)
     graph = _load_graph(name)
@@ -745,6 +853,91 @@ async def export_graph_project(name: str, fmt: str):
     except (RuntimeError, ValueError) as e:
         raise HTTPException(400, f"Export failed: {e}") from e
     return FileResponse(out_path, media_type=media, filename=f"{name}.{ext}")
+
+
+# ---------------------------------------------------------------------------
+# File library — global view of every project's exported outputs (exports/)
+# and imported assets (assets/), with download + upload. Backs /library.
+# ---------------------------------------------------------------------------
+# Media types for anything the library serves for download.
+_LIB_MEDIA = {
+    ".step": "model/step", ".stp": "model/step",
+    ".stl": "model/stl",
+    ".3mf": "model/3mf",
+    ".gltf": "model/gltf+json", ".glb": "model/gltf-binary",
+    ".svg": "image/svg+xml",
+    ".dxf": "image/vnd.dxf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+}
+# The two sandboxed sub-folders the library exposes. Nothing else in a
+# project dir (graph.json, _run.py, output.stl, …) is ever listed or served.
+_LIB_KINDS = ("exports", "assets")
+
+
+def _lib_entries(d: Path, kind: str) -> list[dict]:
+    """List downloadable files in a project's exports/ or assets/ folder."""
+    folder = d / kind
+    out: list[dict] = []
+    if folder.is_dir():
+        for f in sorted(folder.iterdir()):
+            if f.is_file() and f.suffix.lower() in _LIB_MEDIA:
+                st = f.stat()
+                out.append({
+                    "name": f.name,
+                    "kind": kind,
+                    "ext": f.suffix.lower(),
+                    "size": st.st_size,
+                    "mtime": int(st.st_mtime),
+                    "url": f"/api/library/{d.name}/{kind}/{f.name}",
+                })
+    return out
+
+
+@app.get("/api/library")
+async def library_list():
+    """Every downloadable file across all projects, grouped by project.
+    exports/ = files written by Export nodes; assets/ = imported models."""
+    projects = []
+    for d in sorted(PROJECTS_DIR.iterdir()):
+        if not d.is_dir() or d.name in _RESERVED_PROJECT_DIRS:
+            continue
+        files = _lib_entries(d, "exports") + _lib_entries(d, "assets")
+        projects.append({"project": d.name, "files": files})
+    return {"projects": projects}
+
+
+@app.get("/api/library/{name}/{kind}/{filename}")
+async def library_download(name: str, kind: str, filename: str):
+    """Stream a single library file. `kind` is exports|assets; `filename` is
+    a plain basename (path traversal is rejected by both the guard below and
+    project_dir's validate_graph_id)."""
+    if kind not in _LIB_KINDS:
+        raise HTTPException(404, f"Unknown library folder {kind!r}")
+    if filename != Path(filename).name or filename in ("", ".", ".."):
+        raise HTTPException(400, "Invalid filename")
+    d = require_project(name)
+    f = d / kind / filename
+    if not f.is_file():
+        raise HTTPException(404, "File not found")
+    media = _LIB_MEDIA.get(f.suffix.lower(), "application/octet-stream")
+    return FileResponse(f, media_type=media, filename=filename)
+
+
+@app.delete("/api/library/{name}/{kind}/{filename}")
+async def library_delete(name: str, kind: str, filename: str):
+    """Delete a single library file (exports/ or assets/)."""
+    if kind not in _LIB_KINDS:
+        raise HTTPException(404, f"Unknown library folder {kind!r}")
+    if filename != Path(filename).name or filename in ("", ".", ".."):
+        raise HTTPException(400, "Invalid filename")
+    d = require_project(name)
+    f = d / kind / filename
+    if not f.is_file():
+        raise HTTPException(404, "File not found")
+    f.unlink()
+    logger.info("library file deleted: %s/%s/%s", name, kind, filename)
+    return {"status": "deleted"}
 
 
 # ---------------------------------------------------------------------------

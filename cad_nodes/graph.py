@@ -123,6 +123,10 @@ class Graph:
     name: str = "untitled"
     nodes: list[Node] = field(default_factory=list)
     connections: list[Connection] = field(default_factory=list)
+    # Opaque editor-only metadata: LiteGraph group boxes (title/bounding/color)
+    # that visually cluster nodes. The engine never reads them; they are carried
+    # through so logical grouping survives save/reload and api/copilot edits.
+    groups: list[dict] = field(default_factory=list)
 
     # -- lookups -----------------------------------------------------------
     def node(self, node_id: str) -> Node:
@@ -210,19 +214,28 @@ class Graph:
 
     # -- serialisation -----------------------------------------------------
     def to_dict(self) -> dict:
-        return {
+        d = {
             "name": self.name,
             "nodes": [n.to_dict() for n in self.nodes],
             "connections": [c.to_dict() for c in self.connections],
         }
+        if self.groups:            # only serialise when present
+            d["groups"] = self.groups
+        return d
 
     @staticmethod
     def from_dict(d: dict) -> "Graph":
-        return Graph(
-            name=d.get("name", "untitled"),
-            nodes=[Node.from_dict(n) for n in d.get("nodes", [])],
-            connections=[Connection.from_dict(c) for c in d.get("connections", [])],
-        )
+        nodes = [Node.from_dict(n) for n in d.get("nodes", [])]
+        conns = [Connection.from_dict(c) for c in d.get("connections", [])]
+        # Legacy migration: Union used to have two inputs `a`/`b`; it now has a
+        # single collector `shapes`. Remap old wires so pre-existing graphs keep
+        # their connections (the frontend loader does the same for the editor).
+        _type = {n.id: n.type for n in nodes}
+        for c in conns:
+            if _type.get(c.to_node) == "Union" and c.to_socket in ("a", "b"):
+                c.to_socket = "shapes"
+        return Graph(name=d.get("name", "untitled"), nodes=nodes,
+                     connections=conns, groups=list(d.get("groups", [])))
 
     # -- validation --------------------------------------------------------
     def validate(self) -> list[str]:

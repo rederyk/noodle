@@ -48,6 +48,7 @@ WIRE_TYPES: list[str] = [
 # exactly (verified), now with the coercion each edge implies made explicit.
 CASTS: dict[tuple[str, str], str | None] = {
     (WIRE_SURFACE, WIRE_SOLID): None,          # a face IS a (degenerate) solid/brep
+    (WIRE_SURFACE, WIRE_PLANE): "_as_plane",      # a planar face -> the plane it lies in
     (WIRE_CURVE, WIRE_SURFACE): "_face",          # closed curve -> filled face
     (WIRE_SOLID, WIRE_PLANE): None,           # transforms treat a plane as geometry…
     (WIRE_PLANE, WIRE_SOLID): None,           # …and a transformed plane flows back
