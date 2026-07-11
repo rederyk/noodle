@@ -132,7 +132,9 @@ def _annot(node) -> str:
 
 PREAMBLE = """\
 import math
+import os
 import random
+from time import perf_counter as _perf
 
 from build123d import *
 
@@ -140,6 +142,18 @@ from build123d import *
 __panels__ = {}
 __previews__ = {}
 __errors__ = {}
+__timings__ = {}     # per-node wall-clock seconds, keyed by node id
+
+
+def _out(_path):
+    \"\"\"Resolve an Export node's path into the project's exports/ folder.
+    The worker runs with cwd = the project dir, so exports land in
+    projects/<name>/exports/. The path is sandboxed to a basename (any
+    directory components / traversal are stripped) so an Export node can
+    never write outside its own project. Feeds the global file library.\"\"\"
+    _name = os.path.basename(str(_path).strip()) or "output"
+    os.makedirs("exports", exist_ok=True)
+    return os.path.join("exports", _name)
 
 
 def _panel(_id, _value, _text="", _mode="friendly"):
@@ -213,51 +227,237 @@ def _panel_parse(_text, _mode="friendly"):
     return _vals[0] if len(_vals) == 1 else _vals
 
 
-def _select_subshapes(_shape, _kind, _indices, _sigs):
+def _subshape_fingerprint(_s, _kind):
+    \"\"\"A pick's identity beyond position: (anchor, size, orient) — mirrors the
+    layout the picker stores in `sig`. size = edge length / face area; orient =
+    edge tangent / face normal (unit). Vertices carry only an anchor.\"\"\"
+    try:
+        if _kind == "edge":
+            _m, _d = _s @ 0.5, _s % 0.5
+            _o = _d if _d.length == 0 else _d.normalized()
+            return ((_m.X, _m.Y, _m.Z), float(_s.length), (_o.X, _o.Y, _o.Z))
+        if _kind == "face":
+            _c = _s.center()
+            _n = _s.normal_at(_c)
+            _o = _n if _n.length == 0 else _n.normalized()
+            return ((_c.X, _c.Y, _c.Z), float(_s.area), (_o.X, _o.Y, _o.Z))
+        if _kind == "shape":
+            # a WHOLE object picked from a list: bbox centre + a size metric
+            # (volume, else area, else length) — universal across solids/faces/curves.
+            _bb = _s.bounding_box()
+            _c = (_bb.min + _bb.max) * 0.5
+            _sz = 0.0
+            for _attr in ("volume", "area", "length"):
+                try:
+                    _v = float(getattr(_s, _attr))
+                    if _v:
+                        _sz = _v
+                        break
+                except Exception:
+                    pass
+            return ((_c.X, _c.Y, _c.Z), _sz, None)
+        return ((_s.X, _s.Y, _s.Z), None, None)
+    except Exception:
+        return None
+
+
+def _select_subshapes(_shape, _kind, _indices, _sigs, _nid=None):
     \"\"\"Resolve a picked sub-shape set against a (possibly recomputed) shape.
 
-    Matching is by nearest anchor point (edge midpoint / face centre / vertex),
-    so a selection survives upstream parameter tweaks even when OCC re-orders
-    the sub-shapes. Falls back to raw indices when no signatures were stored.\"\"\"
+    Matches each stored pick by a FINGERPRINT — position + size (length/area) +
+    orientation (tangent/normal), not position alone — with a confidence gate:
+    if the best candidate is clearly not the same feature (moved far AND changed
+    size/orientation), the pick is left UNRESOLVED and a warning is recorded in
+    __errors__[_nid] ("re-pick") instead of silently grabbing the nearest shape.
+    Survives OCC re-ordering and honest parameter tweaks; flags real breakage.
+    Falls back to raw indices when no signatures were stored.\"\"\"
     if _shape is None:
         return ShapeList([])
-    _get = {"edge": getattr(_shape, "edges", None),
-            "face": getattr(_shape, "faces", None),
-            "vertex": getattr(_shape, "vertices", None)}.get(_kind)
-    subs = list(_get()) if _get else []
+    if _kind == "shape":
+        # Pick WHOLE objects from a list: the pickable units are the list items
+        # themselves (a Compound is exploded into its children), NOT decomposed.
+        if _is_seq(_shape):
+            subs = [s for s in _flatten(list(_shape)) if s is not None]
+        else:
+            try:
+                _ch = list(_shape.children) if getattr(_shape, "children", None) else []
+            except Exception:
+                _ch = []
+            subs = _ch or [_shape]
+    else:
+        # Multi-piece input (a list / ShapeList of solids — e.g. from a Geometry
+        # container or a fanned upstream): merge into ONE Compound so faces/edges/
+        # vertices enumerate across ALL pieces, matching the picker's enumeration
+        # (mesh_extractor._as_shape does the same). Without this, `.faces()` on a
+        # bare list is missing and every pick reads as "stale".
+        if _is_seq(_shape):
+            _pieces = [s for s in _flatten(list(_shape)) if s is not None]
+            if not _pieces:
+                return ShapeList([])
+            try:
+                _shape = Compound(children=_pieces)
+            except Exception:
+                _shape = _pieces[0]
+        _get = {"edge": getattr(_shape, "edges", None),
+                "face": getattr(_shape, "faces", None),
+                "vertex": getattr(_shape, "vertices", None)}.get(_kind)
+        subs = list(_get()) if _get else []
+    fps = [_subshape_fingerprint(s, _kind) for s in subs]
 
-    def _anchor(s):
-        try:
-            if _kind == "edge":
-                v = s @ 0.5
-            elif _kind == "face":
-                v = s.center()
-            else:
-                v = s
-            return (v.X, v.Y, v.Z)
-        except Exception:
-            return None
+    # part scale, to judge "moved far" relative to the model (not absolute mm)
+    _xs = [fp[0][0] for fp in fps if fp] or [0.0]
+    _ys = [fp[0][1] for fp in fps if fp] or [0.0]
+    _zs = [fp[0][2] for fp in fps if fp] or [0.0]
+    _diag = max(((max(_xs) - min(_xs)) ** 2 + (max(_ys) - min(_ys)) ** 2 +
+                 (max(_zs) - min(_zs)) ** 2) ** 0.5, 1e-6)
+    _THRESH = 0.45                        # accept a match below this combined cost
+    #                                       (margin so honest tweaks don't false-flag)
 
-    anchors = [_anchor(s) for s in subs]
-    chosen, used = [], set()
+    def _cost(fp, want):
+        (ca, cs, co) = fp
+        wa = (want[0], want[1], want[2])
+        dp = ((ca[0] - wa[0]) ** 2 + (ca[1] - wa[1]) ** 2 + (ca[2] - wa[2]) ** 2) ** 0.5 / _diag
+        ss = 0.0
+        if cs is not None and len(want) >= 4 and want[3]:
+            ss = abs(cs - want[3]) / max(abs(want[3]), 1e-6)
+        oo = 0.0
+        if co is not None and len(want) >= 7:
+            _wl = (want[4] ** 2 + want[5] ** 2 + want[6] ** 2) ** 0.5 or 1.0
+            _dot = (co[0] * want[4] + co[1] * want[5] + co[2] * want[6]) / _wl
+            oo = 1.0 - min(abs(_dot), 1.0)         # tangent/normal sign is ambiguous
+        return dp * 1.0 + min(ss, 1.0) * 0.6 + oo * 0.5
+
+    chosen, used, _unresolved = [], set(), 0
     for want in (_sigs or []):
-        wx, wy, wz = want[0], want[1], want[2]
-        best, best_d = None, None
-        for j, a in enumerate(anchors):
-            if j in used or a is None:
+        best, best_c = None, None
+        for j, fp in enumerate(fps):
+            if j in used or fp is None:
                 continue
-            d = (a[0] - wx) ** 2 + (a[1] - wy) ** 2 + (a[2] - wz) ** 2
-            if best_d is None or d < best_d:
-                best_d, best = d, j
-        if best is not None:
+            c = _cost(fp, want)
+            if best_c is None or c < best_c:
+                best_c, best = c, j
+        if best is not None and best_c is not None and best_c <= _THRESH:
             used.add(best)
             chosen.append(subs[best])
+        else:
+            _unresolved += 1
+    if _unresolved and _nid is not None:
+        __errors__[_nid] = (f"selection stale: {_unresolved} of {len(_sigs)} picked "
+                            f"{_kind}(s) no longer match (geometry changed) — re-pick")
     if not _sigs:
         for idx in (_indices or []):
             if 0 <= idx < len(subs) and idx not in used:
                 used.add(idx)
                 chosen.append(subs[idx])
     return ShapeList(chosen)
+
+
+def _faces_by_normal(_shape, _axis="Z", _sign="+", _tol=0.1):
+    \"\"\"PREDICATE selector: faces whose outward normal aligns with a world axis.
+    +Z is 'the top face(s)', -Z the bottom, 'both' either. Re-evaluated against
+    the CURRENT geometry, so it survives parameter changes that move the face —
+    unlike a picked (positional) selection. Returns a ShapeList (fed to a face op
+    or a modifier).\"\"\"
+    if _shape is None:
+        return ShapeList([])
+    _faces = _shape.faces() if hasattr(_shape, "faces") else ShapeList([])
+    _ax = {"X": Vector(1, 0, 0), "Y": Vector(0, 1, 0), "Z": Vector(0, 0, 1)}.get(_axis, Vector(0, 0, 1))
+    _out = []
+    for _f in _faces:
+        try:
+            _d = _f.normal_at().dot(_ax)
+        except Exception:
+            continue
+        if (_sign == "+" and _d > 1 - _tol) or \
+           (_sign == "-" and _d < -(1 - _tol)) or \
+           (_sign == "both" and abs(_d) > 1 - _tol):
+            _out.append(_f)
+    return ShapeList(_out)
+
+
+def _subs(_shape, _kind):
+    \"\"\"The edge/face/vertex sub-shapes of a shape as a ShapeList (empty if none).\"\"\"
+    if _shape is None:
+        return ShapeList([])
+    _g = {"edge": getattr(_shape, "edges", None),
+          "face": getattr(_shape, "faces", None),
+          "vertex": getattr(_shape, "vertices", None)}.get(_kind)
+    try:
+        return _g() if _g else ShapeList([])
+    except Exception:
+        return ShapeList([])
+
+
+def _edges_by_type(_shape, _type="circle"):
+    \"\"\"PREDICATE: edges of a given geometry type — 'circle' picks every hole/round.\"\"\"
+    _gt = {"circle": GeomType.CIRCLE, "line": GeomType.LINE,
+           "ellipse": GeomType.ELLIPSE, "spline": GeomType.BSPLINE}.get(_type, GeomType.CIRCLE)
+    try:
+        return _subs(_shape, "edge").filter_by(_gt)
+    except Exception:
+        return ShapeList([])
+
+
+def _faces_by_type(_shape, _type="plane"):
+    \"\"\"PREDICATE: faces of a given surface type (plane/cylinder/sphere/cone/torus).\"\"\"
+    _gt = {"plane": GeomType.PLANE, "cylinder": GeomType.CYLINDER,
+           "sphere": GeomType.SPHERE, "cone": GeomType.CONE,
+           "torus": GeomType.TORUS}.get(_type, GeomType.PLANE)
+    try:
+        return _subs(_shape, "face").filter_by(_gt)
+    except Exception:
+        return ShapeList([])
+
+
+def _by_size(_shape, _kind="face", _metric="area", _pick="largest", _n=1):
+    \"\"\"PREDICATE: the N biggest/smallest sub-shapes by a metric (area/length/radius).\"\"\"
+    _s = _subs(_shape, _kind)
+    if not _s:
+        return ShapeList([])
+    _sb = {"area": SortBy.AREA, "length": SortBy.LENGTH,
+           "radius": SortBy.RADIUS, "volume": SortBy.VOLUME}.get(_metric, SortBy.AREA)
+    try:
+        _sorted = _s.sort_by(_sb)
+    except Exception:
+        return ShapeList([])
+    _n = max(1, int(_n))
+    _low = _pick in ("smallest", "shortest", "min")
+    return ShapeList(list(_sorted[:_n] if _low else _sorted[-_n:]))
+
+
+def _by_position(_shape, _kind="face", _axis="Z", _pick="max", _n=1):
+    \"\"\"PREDICATE: the N extreme sub-shapes along an axis — 'the topmost face',
+    'the leftmost edges'. Re-derived from position, so stable under param tweaks.\"\"\"
+    _s = _subs(_shape, _kind)
+    if not _s:
+        return ShapeList([])
+    _ax = {"X": Axis.X, "Y": Axis.Y, "Z": Axis.Z}.get(_axis, Axis.Z)
+    try:
+        _sorted = _s.sort_by(_ax)
+    except Exception:
+        return ShapeList([])
+    _n = max(1, int(_n))
+    _low = _pick in ("min", "smallest", "first")
+    return ShapeList(list(_sorted[:_n] if _low else _sorted[-_n:]))
+
+
+def _combine_sel(_a, _b, _mode="or"):
+    \"\"\"Boolean-combine two selections: or (union), and (intersection),
+    subtract (in A, not in B). Sub-shapes are deduped by identity hash.\"\"\"
+    _a = list(_a or [])
+    _b = list(_b or [])
+    if _mode == "or":
+        _seen, _out = set(), []
+        for _x in _a + _b:
+            _h = hash(_x)
+            if _h not in _seen:
+                _seen.add(_h)
+                _out.append(_x)
+        return ShapeList(_out)
+    _bs = {hash(_x) for _x in _b}
+    if _mode == "and":
+        return ShapeList([_x for _x in _a if hash(_x) in _bs])
+    return ShapeList([_x for _x in _a if hash(_x) not in _bs])
 
 
 def _origin_points(_o):
@@ -378,6 +578,34 @@ def _shell(_part, _thickness):
     return Solid.thicken(surf, _thickness)
 
 
+def _shell_faces(_part, _faces, _thickness):
+    \"\"\"Hollow a solid to a wall of _thickness, leaving the SELECTED faces open.
+    Like _shell but the openings come from a face selector instead of the +Z
+    face — pair with FacesByNormal / FacesByType / CombineSelection. An empty
+    selection makes a fully closed hollow shell.\"\"\"
+    if _part is None or not _thickness:
+        return _part
+    _op = list(_faces) if _faces else []
+    try:
+        return offset(_part, amount=-_thickness, openings=_op)
+    except Exception:
+        return _part
+
+
+def _bbox_solid(_shape):
+    \"\"\"The axis-aligned bounding box of _shape as an actual solid Box (not the
+    raw BoundBox data object), seated at the box centre. A flat input (a 2D
+    sketch / face — e.g. Text) has a zero-thickness side; that side is given a
+    tiny proportional thickness so the result is still a valid, renderable solid
+    (a thin slab) instead of failing on a degenerate dimension.\"\"\"
+    if _shape is None:
+        return None
+    bb = _shape.bounding_box()
+    sz, c = bb.size, bb.center()
+    eps = max(sz.X, sz.Y, sz.Z, 1.0) * 1e-3
+    return Box(max(sz.X, eps), max(sz.Y, eps), max(sz.Z, eps)).moved(Pos(c.X, c.Y, c.Z))
+
+
 def _bbox_plane(_shape, _plane, _t=0.5):
     \"\"\"A reusable Plane, parallel to the chosen base plane (XY/XZ/YZ), centred
     on _shape's bounding box and slid along its own normal to the _t position
@@ -496,6 +724,162 @@ def _flatten(_x):
     return out
 
 
+def _union_atoms(_s):
+    \"\"\"The atomic pieces of a shape to feed a union: its solids (3D), else its
+    faces (2D), else the shape itself. Decomposing a Compound this way lets a
+    single multi-piece input actually FUSE internally — e.g. a Text whose glyphs
+    a variable font split into overlapping fragments (a bar + an arc) merge back
+    into one letter, while genuinely separate letters stay separate.\"\"\"
+    for _attr in ("solids", "faces"):
+        try:
+            _lst = list(getattr(_s, _attr)())
+            if _lst:
+                return _lst
+        except Exception:
+            pass
+    return [_s]
+
+
+def _union(*_items):
+    \"\"\"Fuse any number of shapes into ONE, dimension-agnostic (build123d '+').
+    Flattens nested lists, drops None; decomposes each shape into its atomic
+    pieces (solids/faces) so overlapping fragments inside a single Compound fuse
+    too — nothing -> None. Works for 2D faces/sketches (-> a merged region) and
+    3D solids (-> one part). Union feeds its whole `shapes` collector in as one
+    arg (a list or single value); BooleanMulti spreads several — both flatten.\"\"\"
+    parts = [p for p in _flatten(list(_items)) if p is not None]
+    if not parts:
+        return None
+    atoms = [a for p in parts for a in _union_atoms(p)]
+    if not atoms:
+        return None
+    out = atoms[0]
+    for p in atoms[1:]:
+        out = out + p
+    return out
+
+
+def _round(_items, _mode="fillet", _size=1.0):
+    \"\"\"Round (fillet) or bevel (chamfer) a set of sub-shapes — edges (3D) or
+    vertices (2D corners). One node, `_mode` picks the operation: build123d uses
+    radius= for fillet and length= for chamfer.\"\"\"
+    if _mode == "chamfer":
+        return chamfer(_items, length=_size)
+    return fillet(_items, radius=_size)
+
+
+def _round_all(_part, _mode="fillet", _size=1.0):
+    \"\"\"Fillet/chamfer ALL edges of a part in one operation, but RESILIENT: if the
+    requested size is too large for the geometry (very common with extruded text —
+    thin letter strokes, and letters like 'i'/'do' are several disjoint solids),
+    the size is shrunk until it fits so the operation SUCCEEDS instead of failing
+    wholesale on the thinnest part. The common case (size fits) runs at full size
+    on the FIRST try with no extra cost. A geometric shrink-retry is used rather
+    than build123d's max_fillet(), which is an expensive iterative search (seconds
+    on text) — a few cheap fillet attempts converge close to the max far faster.\"\"\"
+    if _part is None:
+        return None
+    try:
+        _edges = _part.edges()
+    except Exception:
+        _edges = _part                       # already a sub-shape list
+    _op = ((lambda _z: chamfer(_edges, length=_z)) if _mode == "chamfer"
+           else (lambda _z: fillet(_edges, radius=_z)))
+    _z = float(_size)
+    for _ in range(7):                       # requested size first, then shrink to fit
+        if _z <= 1e-4:
+            break
+        try:
+            return _op(_z)
+        except Exception:
+            _z *= 0.6                        # ~converges toward the geometric max
+    return _part                             # give up: leave the part unrounded
+
+
+def _as_point(_p):
+    # a Vector for a point-like value (Vector, Vertex, (x,y,z) tuple), else None
+    if isinstance(_p, Vector):
+        return _p
+    if isinstance(_p, (tuple, list)) and 2 <= len(_p) and all(
+            isinstance(_v, (int, float)) for _v in _p[:3]):
+        return Vector(float(_p[0]), float(_p[1]), float(_p[2]) if len(_p) > 2 else 0.0)
+    if type(_p).__name__ == "Vertex":
+        try:
+            return Vector(_p.X, _p.Y, _p.Z)
+        except Exception:
+            return None
+    return None
+
+
+def _shape_center_weight(_s):
+    # (centre Vector, weight) for one shape; weight = volume else area else length
+    # else 1. build123d .center(MASS): a straight edge's mass centre is its midpoint,
+    # a circle edge's is the circle centre, a face's is its area centroid.
+    try:
+        _c = _s.center(CenterOf.MASS)
+    except Exception:
+        try:
+            _bb = _s.bounding_box()
+            _c = (_bb.min + _bb.max) * 0.5
+        except Exception:
+            return (None, 0.0)
+    _w = 0.0
+    for _a in ("volume", "area", "length"):
+        try:
+            _v = float(getattr(_s, _a))
+            if _v:
+                _w = _v
+                break
+        except Exception:
+            pass
+    return (_c, _w or 1.0)
+
+
+def _center_of(_x):
+    # Universal centre, aggregating whatever is wired in:
+    #   closed solids -> mass-weighted centre of mass (volume via _volume_of)
+    #   faces -> area-weighted centroid; curves -> length-weighted centroid
+    #   (a straight line -> its midpoint, a circle -> its centre)
+    #   a point cloud (points / vertices) -> the mean point
+    # Mixed sets: measure-weighted mean of each piece's own centre. Returns a Vector.
+    _items = [p for p in _flatten([_x]) if p is not None]
+    if not _items:
+        return Vector(0, 0, 0)
+    _pts = [_as_point(p) for p in _items]
+    _shapes = [p for p, q in zip(_items, _pts) if q is None]
+    _points = [q for q in _pts if q is not None]
+    if not _shapes:                       # pure point cloud -> mean point
+        _acc = Vector(0, 0, 0)
+        for q in _points:
+            _acc = _acc + q
+        return _acc / (len(_points) or 1)
+    _tot = 0.0
+    _acc = Vector(0, 0, 0)
+    for _sh in _shapes:
+        _c, _w = _shape_center_weight(_sh)
+        if _c is None:
+            continue
+        _acc = _acc + _c * _w
+        _tot += _w
+    for q in _points:                     # loose points join as unit-weight samples
+        _acc = _acc + q
+        _tot += 1.0
+    return _acc / _tot if _tot else Vector(0, 0, 0)
+
+
+def _volume_of(_x):
+    # total volume of everything closed wired in (0 for open curves / faces / points)
+    _tot = 0.0
+    for p in _flatten([_x]):
+        if p is None:
+            continue
+        try:
+            _tot += float(p.volume)
+        except Exception:
+            pass
+    return _tot
+
+
 def _slice(_lst, _start, _stop, _step):
     _lst = list(_lst or [])
     stop = None if _stop == 0 else _stop
@@ -572,6 +956,42 @@ def _curve_draw(_points, _mode="polyline", _closed=False, _plane=None):
         crv = Polyline(*pts, close=bool(_closed))
     pl = _plane if isinstance(_plane, Plane) else Plane.XY
     return pl * crv
+
+
+def _trace_curves(_contours, _scale=1.0, _imgh=None):
+    \"\"\"Rebuild wires from a TraceImage node's FROZEN artifact (baked in by its
+    ✎ edit-mode: rembg + magic-wand + pen + 2-point scale). Each contour is
+    {pts:[[x,y],...] in PIXELS, closed, hole}. Pixels are scaled by _scale
+    (mm/pixel) and Y is flipped (image Y grows downward, CAD Y upward) so the
+    part comes out upright, not mirrored. The flip uses the IMAGE height _imgh
+    when known — a stable origin (image bottom-left → mm (0,0)) so a RefImage of
+    the same picture aligns 1:1 with the traced curves; it falls back to the
+    contours' own max Y for older artifacts. Closed contours become closed Wires
+    — they fill into faces via _face like any 2D primitive (hole-flagged loops
+    are inner boundaries, nested downstream by Make Face). Deterministic: reads
+    no image at run time. Returns a Wire (single) or a ShapeList of Wires.\"\"\"
+    _cs = [c for c in (_contours or [])
+           if c and len(c.get("pts") or []) >= 2]
+    if not _cs:
+        return None
+    _all_y = [p[1] for c in _cs for p in c["pts"] if p and len(p) >= 2]
+    _h = float(_imgh) if _imgh else (max(_all_y) if _all_y else 0.0)
+    _wires = []
+    for c in _cs:
+        pts = [(float(p[0]) * _scale, (_h - float(p[1])) * _scale, 0.0)
+               for p in c["pts"] if p and len(p) >= 2]
+        # a trailing point equal to the first would zero-length the closing seg
+        if len(pts) >= 2 and pts[0] == pts[-1]:
+            pts = pts[:-1]
+        if len(pts) < 2:
+            continue
+        try:
+            _wires.append(Polyline(*pts, close=bool(c.get("closed", True))))
+        except Exception:
+            continue
+    if not _wires:
+        return None
+    return _wires[0] if len(_wires) == 1 else ShapeList(_wires)
 
 
 def _outline(_s):
@@ -1036,6 +1456,30 @@ def _to_plane(_shape, _plane):
     return pl * _shape
 
 
+def _as_plane(_s):
+    \"\"\"Coerce a planar surface (Face / Sketch) into the Plane it lies in — origin
+    at the face centre, z along its normal — so a picked flat face can drive any
+    plane input (Section, Text-on-plane, …). Passes a Plane / frame through.\"\"\"
+    if _s is None or isinstance(_s, Plane):
+        return _s
+    try:
+        _f = _s if isinstance(_s, Face) else _s.faces()[0]
+        return Plane(_f)
+    except Exception:
+        return _s
+
+
+def _font(_name):
+    \"\"\"Text() font kwargs for a chosen font name. A custom uploaded font (in the
+    shared _fonts library) resolves to font_path=<file> so it renders WITHOUT
+    being installed system-wide; any other name stays a font= family (fontconfig).\"\"\"
+    try:
+        from cad_nodes.fonts import resolve_font
+        return resolve_font(_name)
+    except Exception:
+        return {"font": _name} if _name else {"font": "Arial"}
+
+
 def _domain2d(_region, _w, _h, _pts=None):
     \"\"\"(x0, y0, x1, y1) of a 2D domain: a region face's bounding box if given,
     else the points' extent, else a 0..w x 0..h box.\"\"\"
@@ -1372,7 +1816,12 @@ _LIST_PRODUCERS = {
     "DivideCurve", "CurveEndpoints", "Deconstruct",
     "DeconstructEdges", "DeconstructFaces",
     "Surface", "Curve", "Point",   # gated containers always emit a list (filter/transform)
-    "Geometry", "Plane",           # (Selection returns one ShapeList, not a fan-out list)
+    "Geometry", "Plane",
+    # Selectors: their `selection` output is consumed whole (list_access inputs),
+    # while their geometry output (edges/faces/points) fans out — so they produce
+    # a list. Pick-based Select* are marked in _emit_select; these run _emit_simple.
+    "FacesByNormal", "FacesByType", "FacesByArea",
+    "EdgesByType", "EdgesByLength", "SubshapesByPosition", "CombineSelection",
     "Series", "DivideDomain",
     "Input",    # source-mode multi-line text -> a list
     "Display",  # pass-through preserves list-ness
@@ -1412,6 +1861,9 @@ class Transpiler:
     def __init__(self, graph: Graph):
         self.graph = graph
         self.var_of: dict[str, str] = {}
+        # (node_id, output-socket name) -> var, for the rare node that emits
+        # DISTINCT expressions per output (e.g. CenterOfMass: center + volume).
+        self.out_var_of: dict[tuple, str] = {}
         self._counter = 0
         # Source-map instrumentation (off unless run(emit_map=True)).
         self._emit_map = False
@@ -1457,13 +1909,19 @@ class Transpiler:
         self.var_of[node_id] = var
         return var
 
+    def _src_expr(self, fn: str, fs: str) -> str:
+        """Expression for an upstream node's OUTPUT SOCKET. Defaults to the node's
+        single var; a node that emits per-socket vars (e.g. CenterOfMass: center /
+        volume) registers them in out_var_of so each output wire resolves distinctly."""
+        return self.out_var_of.get((fn, fs), self.var_of.get(fn, "None"))
+
     def _input_values(self, node_id: str, ndef: catalog.NodeDef) -> dict[str, str]:
         """Map each input socket -> the source variable expression."""
         feeds = self.graph.inputs_of(node_id)
         out: dict[str, str] = {}
         for sock in ndef.inputs:
             srcs = feeds.get(sock.name, [])
-            vars_ = [self.var_of.get(fn, "None") for (fn, _fs) in srcs]
+            vars_ = [self._src_expr(fn, fs) for (fn, fs) in srcs]
             if sock.multiple:
                 out[sock.name] = ", ".join(vars_)
             else:
@@ -1504,10 +1962,13 @@ class Transpiler:
         """Wrap a node's statement(s) in try/except so one node's runtime error
         is recorded in __errors__ and doesn't abort the rest of the workflow."""
         lines.append("try:")
+        lines.append("    _t0 = _perf()")
         for bl in body:
             if bl:
                 lines.append("    " + bl)
+        lines.append(f"    __timings__[{node.id!r}] = _perf() - _t0")
         lines.append("except Exception as _e:")
+        lines.append(f"    __timings__[{node.id!r}] = _perf() - _t0")
         var = self.var_of.get(node.id)
         if var:
             lines.append(f"    {var} = None")
@@ -1542,13 +2003,48 @@ class Transpiler:
         against the upstream shape at run time via the injected helper."""
         ndef = catalog.get(node.type)
         var = self._new_var(node.id)
-        src = self._input_values(node.id, ndef).get("geometry", "None")
+        in_name = ndef.inputs[0].name if ndef.inputs else "geometry"
+        src = self._input_values(node.id, ndef).get(in_name, "None")
         sel = node.params.get("selection") or {}
-        default_kind = {"SelectFace": "face", "SelectVertex": "vertex"}.get(node.type, "edge")
+        default_kind = {"SelectFace": "face", "SelectVertex": "vertex",
+                        "SelectShape": "shape"}.get(node.type, "edge")
         kind = sel.get("kind", default_kind)
         indices = sel.get("indices", []) or []
         sigs = sel.get("sigs", []) or []
-        body = [f"{var} = _select_subshapes({src}, {kind!r}, {indices!r}, {sigs!r}){_annot(node)}"]
+        body = [f"{var} = _select_subshapes({src}, {kind!r}, {indices!r}, {sigs!r}, {node.id!r}){_annot(node)}"]
+        # The resolved var is a ShapeList of sub-shapes. Its `selection` output is
+        # consumed WHOLE (Fillet/… inputs are list_access); its geometry output
+        # (edges/faces/points) fans out downstream, so mark it a list-producer.
+        self._produces_list.add(node.id)
+        self._guard(lines, body, node)
+
+    def _emit_vectorize(self, node, lines: list[str]) -> None:
+        """TraceImage: rebuild wires from the contour artifact FROZEN into the
+        node by its ✎ edit-mode. Mirrors _emit_select — the contours + mm/pixel
+        scale are inlined as literals and resolved by the injected helper, so no
+        image is read at run time and the graph re-runs from fixed data."""
+        var = self._new_var(node.id)
+        trace = node.params.get("trace") or {}
+        contours = trace.get("contours", []) or []
+        scale = trace.get("scale", 1.0) or 1.0
+        imgh = trace.get("imgH")
+        body = [f"{var} = _trace_curves({contours!r}, {scale!r}, {imgh!r}){_annot(node)}"]
+        self._guard(lines, body, node)
+
+    def _emit_center(self, node, lines: list[str]) -> None:
+        """CenterOfMass: a universal centre + a volume from one shape input, via the
+        injected helpers. Special-cased because a node's two outputs otherwise share
+        one var — here `center` (a vector) and `volume` (a number) need distinct
+        expressions, registered per output socket in out_var_of."""
+        ndef = catalog.get(node.type)
+        var = self._new_var(node.id)                 # var_of[node] = center (the default)
+        src = self._input_values(node.id, ndef).get("shape", "None")
+        volvar = var + "_vol"
+        lines.append(f"{volvar} = None")             # defined even if the guarded body throws
+        body = [f"{var} = _center_of({src}){_annot(node)}",
+                f"{volvar} = _volume_of({src})"]
+        self.out_var_of[(node.id, "center")] = var
+        self.out_var_of[(node.id, "volume")] = volvar
         self._guard(lines, body, node)
 
     def _emit_codeblock(self, node, lines: list[str]) -> None:
@@ -1577,7 +2073,7 @@ class Transpiler:
         for d in declared:
             name = d["name"]
             srcs = feeds.get(name, [])
-            vars_ = [self.var_of.get(fid, "None") for (fid, _fs) in srcs]
+            vars_ = [self._src_expr(fid, fs) for (fid, fs) in srcs]
             if vars_:
                 maybe_list = len(vars_) >= 2 or any(
                     fid in self._produces_list for (fid, _fs) in srcs)
@@ -1657,7 +2153,7 @@ class Transpiler:
         fan: dict[str, str] = {}  # input name -> value expr passed to _fanout
         for sock in ndef.inputs:
             srcs = feeds.get(sock.name, [])
-            vars_ = [self.var_of.get(fn, "None") for (fn, _fs) in srcs]
+            vars_ = [self._src_expr(fn, fs) for (fn, fs) in srcs]
             if sock.multiple:                       # collector: whole list
                 subs[sock.name] = ", ".join(vars_)
             elif sock.list_access:                  # consumes the list as-is
@@ -1739,7 +2235,19 @@ class Transpiler:
         self._guard(lines, body, node)
 
     def _pick_result(self, order: list[str]) -> str | None:
-        used_as_source = {c.from_node for c in self.graph.connections}
+        # A connection into a pure sink (a node with no outputs — every Export
+        # node) does NOT "consume" the shape: the upstream node is still the
+        # meaningful end of the chain. Otherwise wiring geometry into an Export
+        # node hides it from the preview/quick-export, which then falls back to
+        # some dangling node (e.g. an unconnected Import). See feedback
+        # 20260707-231423 ("export step non va piu").
+        def _has_outputs(nid: str) -> bool:
+            try:
+                return bool(catalog.get(self.graph.node(nid).type).outputs)
+            except Exception:
+                return True
+        used_as_source = {c.from_node for c in self.graph.connections
+                          if _has_outputs(c.to_node)}
         geometry_like = {catalog.WIRE_SOLID, catalog.WIRE_SURFACE}
         candidates = []
         for nid in order:
@@ -1801,8 +2309,8 @@ class Transpiler:
             node = self.graph.node(nid)
             if node.parent is not None:
                 continue  # emitted inside its group
-            if node.type == "Note":
-                continue  # canvas annotation only — never emitted
+            if node.type in ("Note", "RefImage"):
+                continue  # editor-only (annotation / viewport reference) — never emitted
             if getattr(node, "bypassed", False):
                 self._emit_bypass(node, body)
                 continue
@@ -1811,8 +2319,12 @@ class Transpiler:
                 self._emit_group(node, body)
             elif node.type == "CodeBlock":
                 self._emit_codeblock(node, body)
-            elif node.type in ("SelectEdge", "SelectFace", "SelectVertex"):
+            elif node.type in ("SelectEdge", "SelectFace", "SelectVertex", "SelectShape"):
                 self._emit_select(node, body)
+            elif node.type == "TraceImage":
+                self._emit_vectorize(node, body)
+            elif node.type == "CenterOfMass":
+                self._emit_center(node, body)
             else:
                 self._emit_simple(node, body)
 

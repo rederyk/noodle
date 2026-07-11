@@ -96,7 +96,7 @@ def test_transpile_flange_golden():
     assert "__out_1 = _outline(Circle(20.0))" in code
     assert "_extrude(__out_1, 10.0, 0.0, False, True)" in code
     assert "(__out_2 - __out_4)" in code
-    assert "export_step(__out_5, 'flange.step')" in code
+    assert "export_step(__out_5, _out('flange.step'))" in code  # exports/ sandbox
     assert "__result__ = __out_5" in code
 
 
@@ -164,6 +164,19 @@ def test_bypass_flag_round_trips():
     assert "bypassed" not in g2.node("b").to_dict()
 
 
+def test_group_boxes_round_trip():
+    # Editor-only group metadata is carried through unchanged so logical
+    # clustering survives save/reload and api/copilot round-trips.
+    groups = [{"title": "Corpo base", "bounding": [0, 0, 200, 120], "color": "#3f589e"}]
+    g = Graph.from_dict({"nodes": [{"id": "b", "type": "Box"}],
+                         "connections": [], "groups": groups})
+    assert g.groups == groups
+    assert g.to_dict()["groups"] == groups
+    # absent key when there are no groups (no empty clutter on disk)
+    g2 = Graph.from_dict({"nodes": [{"id": "b", "type": "Box"}], "connections": []})
+    assert "groups" not in g2.to_dict()
+
+
 def test_transpile_select_edge_and_targeted_fillet():
     # SelectEdge resolves its picked set at run time; FilletSelectedEdges rounds
     # only those edges (vs Fillet which rounds all).
@@ -206,6 +219,77 @@ def test_transpile_select_face_defaults_kind_and_pushpull():
     code = transpile(g)
     assert "_select_subshapes(__out_1, 'face'" in code     # kind inferred from node type
     assert "_pushpull(__out_1, __out_2, 8.0)" in code
+
+
+def test_transpile_trace_image_bakes_frozen_contours():
+    # TraceImage has no code_template: the transpiler special-cases it, inlining
+    # the contours + mm/pixel scale FROZEN into params["trace"] (like SelectEdge's
+    # picked sigs) so the graph re-runs from fixed data with no image processing.
+    g = Graph.from_dict({
+        "nodes": [
+            {"id": "t", "type": "TraceImage",
+             "params": {"path": "assets/foo.png",
+                        "trace": {"scale": 0.5, "imgH": 160,
+                                  "contours": [
+                                      {"pts": [[0, 0], [100, 0], [100, 80]],
+                                       "closed": True, "hole": False}]}}},
+        ],
+        "connections": [],
+    })
+    code = transpile(g)
+    assert "def _trace_curves(" in code                 # helper injected
+    assert "_trace_curves([{'pts': [[0, 0], [100, 0], [100, 80]]" in code
+    assert "0.5, 160)" in code                           # scale + image height passed through
+    # the node registers as a curve producer with an empty template
+    tdef = catalog.get("TraceImage")
+    assert tdef.outputs[0].wire_type == "curve"
+    assert tdef.code_template.get("algebra") == ""
+
+
+def test_transpile_ref_image_is_editor_only():
+    # RefImage is a viewport-only reference (like Note): it never appears in the
+    # generated program, and a graph containing one still transpiles cleanly.
+    g = Graph.from_dict({
+        "nodes": [
+            {"id": "b", "type": "Box"},
+            {"id": "r", "type": "RefImage",
+             "params": {"path": "assets/blueprint.png", "plane": "XZ", "width": 200}},
+        ],
+        "connections": [],
+    })
+    code = transpile(g)
+    assert "blueprint.png" not in code       # the reference never leaks into the code
+    assert "(RefImage)" not in code          # the node is never emitted (no @node annotation)
+    assert "Box(" in code                     # the real geometry still transpiles
+    rdef = catalog.get("RefImage")
+    assert rdef.outputs == [] and rdef.inputs == []
+
+
+def test_transpile_center_of_mass_two_outputs():
+    # CenterOfMass is universal (casts from curves/faces/points) and special-cased
+    # into TWO outputs — `center` (a vector) and `volume` (a number) must resolve to
+    # DIFFERENT downstream vars via the per-socket out_var_of map.
+    cdef = catalog.get("CenterOfMass")
+    assert [o.name for o in cdef.outputs] == ["center", "volume"]
+    assert cdef.code_template.get("algebra") == ""
+    assert "curve" in (cdef.inputs[0].accepts or [])   # a circle/curve may feed it
+    g = Graph.from_dict({"nodes": [
+        {"id": "c", "type": "Circle", "params": {"radius": 5}},
+        {"id": "m", "type": "CenterOfMass", "params": {}},
+        {"id": "dc", "type": "Display", "params": {}},
+        {"id": "dv", "type": "Display", "params": {}},
+    ], "connections": [
+        {"id": "l1", "from_node": "c", "from_socket": "result", "to_node": "m", "to_socket": "shape"},
+        {"id": "l2", "from_node": "m", "from_socket": "center", "to_node": "dc", "to_socket": "value"},
+        {"id": "l3", "from_node": "m", "from_socket": "volume", "to_node": "dv", "to_socket": "value"},
+    ]})
+    assert g.validate() == []                          # curve -> center-of-mass casts fine
+    code = transpile(g)
+    assert "_center_of(" in code and "_volume_of(" in code
+    import re
+    cvar = re.search(r"(\w+) = _center_of", code).group(1)
+    assert f"_probe('dc', {cvar})" in code             # center consumer
+    assert f"_probe('dv', {cvar}_vol)" in code         # volume consumer -> distinct var
 
 
 def test_transpile_origin_input_positions_primitive():

@@ -26,6 +26,15 @@ export const PALETTE = ['#2dd4a0', '#3b82f6', '#f59e0b', '#e94560', '#a855f7',
 
 export function nodeNum(id) { const m = /(\d+)/.exec(id || ''); return m ? parseInt(m[1]) : 0; }
 
+// nearest "nice" 1/2/5×10ⁿ step — used to pick grid spacing that reads cleanly
+function niceStep(x) {
+  if (!(x > 0)) return 1;
+  const base = Math.pow(10, Math.floor(Math.log10(x))), f = x / base;
+  return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * base;
+}
+// tick label: round off float dust, no trailing zeros ("40", "2.5", "-10")
+function fmtTick(v) { return Math.abs(v) < 1e-6 ? '0' : String(Math.round(v * 1000) / 1000); }
+
 // ── pure data -> THREE object builders (no app/page state) ──
 function geomFromData(m) {
   const g = new THREE.BufferGeometry();
@@ -110,7 +119,8 @@ export class CadViewer {
     const key = new THREE.DirectionalLight(0xffffff, 2); key.position.set(40, 60, 80); scene.add(key);
     const fill = new THREE.DirectionalLight(0x8888cc, .8); fill.position.set(-40, -20, 40); scene.add(fill);
 
-    const camera = new THREE.PerspectiveCamera(40, c.clientWidth / c.clientHeight, .1, 5000);
+    this._fov = 40;
+    const camera = new THREE.PerspectiveCamera(this._fov, c.clientWidth / c.clientHeight, .1, 5000);
     camera.up.set(0, 0, 1);                 // Z is up
     camera.position.set(60, -60, 45);
 
@@ -126,9 +136,19 @@ export class CadViewer {
     const clock = new THREE.Clock();
 
     Object.assign(this, { scene, camera, renderer, controls, previewGroup, grid, viewHelper, _clock: clock });
+    this._persp = camera;                   // the two projection cameras; `camera` = active
+    this._ortho = null;
+    this._projection = 'persp';
+    this.onProjectionChange = null;         // pages re-bind their gizmo camera here
+    this.inspectGrid = null;                // ruled measurement grid (inspect mode)
+    this._pendingInspect = false;           // arm inspect once a nav-gizmo snap lands
+    this._wasAnimating = false;
     this._stl = new STLLoader();
     this._ray = new THREE.Raycaster();
     this._mouse = new THREE.Vector2();
+
+    // A user-driven orbit exits the inspect grid (but keeps the projection).
+    controls.addEventListener('start', () => { this._pendingInspect = false; this._hideInspectGrid(); });
 
     canvas.addEventListener('dblclick', () => this.frame());
     this._loop();
@@ -138,7 +158,14 @@ export class CadViewer {
     const tick = () => {
       requestAnimationFrame(tick);
       const dt = this._clock.getDelta();
-      if (this.viewHelper.animating) this.viewHelper.update(dt);
+      const anim = this.viewHelper.animating;
+      if (anim) this.viewHelper.update(dt);
+      // a nav-gizmo snap just finished animating → enter inspect mode
+      if (this._wasAnimating && !anim && this._pendingInspect) {
+        this._pendingInspect = false;
+        this._enterInspectFromView();
+      }
+      this._wasAnimating = anim;
       this.controls.update();
       this.renderer.clear();
       this.renderer.render(this.scene, this.camera);
@@ -149,12 +176,64 @@ export class CadViewer {
 
   resize() {
     const c = this.canvas.parentElement;
-    this.camera.aspect = c.clientWidth / c.clientHeight;
-    this.camera.updateProjectionMatrix();
+    const aspect = c.clientWidth / c.clientHeight;
+    this._persp.aspect = aspect;
+    this._persp.updateProjectionMatrix();
+    if (this._ortho) {                      // keep ortho frustum matched to the aspect
+      const h = (this._ortho.top - this._ortho.bottom) / 2;
+      this._ortho.left = -h * aspect; this._ortho.right = h * aspect;
+      this._ortho.updateProjectionMatrix();
+    }
     this.renderer.setSize(c.clientWidth, c.clientHeight);
   }
 
   setGrid(on) { this.grid.visible = on; }
+
+  // ── projection: perspective ⇄ orthographic ─────────────────────────────
+  // Ortho is the CAD measuring projection (parallel — no perspective foreshorten).
+  // The swap preserves pose AND apparent scale at the orbit target, so it never
+  // jumps. OrbitControls, the ViewHelper and (via onProjectionChange) each page's
+  // TransformControls are all re-pointed at the newly-active camera.
+  get isOrtho() { return this._projection === 'ortho'; }
+
+  setProjection(mode) {
+    if (mode === this._projection) return;
+    const c = this.canvas.parentElement;
+    const aspect = c.clientWidth / c.clientHeight;
+    const tgt = this.controls.target;
+    const from = this.camera;
+    let to;
+    if (mode === 'ortho') {
+      const dist = from.position.distanceTo(tgt);
+      const h = dist * Math.tan(THREE.MathUtils.degToRad(this._fov) / 2);  // half-height at target
+      to = this._ortho || new THREE.OrthographicCamera(-h * aspect, h * aspect, h, -h, -10000, 10000);
+      to.left = -h * aspect; to.right = h * aspect; to.top = h; to.bottom = -h; to.zoom = 1;
+      to.up.copy(from.up); to.position.copy(from.position); to.quaternion.copy(from.quaternion);
+      this._ortho = to;
+    } else {
+      to = this._persp;
+      // carry the ortho zoom back into a perspective distance so scale matches
+      const visH = ((from.top - from.bottom) / 2) / from.zoom;
+      const dist = visH / Math.tan(THREE.MathUtils.degToRad(this._fov) / 2);
+      const dir = new THREE.Vector3().subVectors(from.position, tgt);
+      if (dir.lengthSq() < 1e-9) dir.set(1, -1, 0.8);
+      dir.normalize().multiplyScalar(dist);
+      to.up.copy(from.up); to.quaternion.copy(from.quaternion);
+      to.position.copy(tgt).add(dir);
+      to.aspect = aspect;
+    }
+    to.updateProjectionMatrix();
+    this.camera = to;
+    this._projection = mode;
+    this.controls.object = to; this.controls.update();
+    // re-point the nav gizmo at the active camera (ViewHelper binds one camera)
+    if (this.viewHelper.dispose) this.viewHelper.dispose();
+    this.viewHelper = new ViewHelper(to, this.canvas);
+    this.viewHelper.center.copy(tgt);
+    if (this.onProjectionChange) this.onProjectionChange(this._projection);
+  }
+
+  toggleProjection() { this.setProjection(this.isOrtho ? 'persp' : 'ortho'); return this._projection; }
 
   // Re-target + re-distance the camera to fit the shown geometry WITHOUT moving
   // it: keep the current view direction, just frame the real bounds.
@@ -171,7 +250,115 @@ export class CadViewer {
     dir.normalize().multiplyScalar(d);
     this.controls.target.copy(ctr);
     this.camera.position.copy(ctr).add(dir);
+    if (this.isOrtho) {                     // size the ortho frustum to fit the bounds
+      const c = this.canvas.parentElement;
+      const aspect = c.clientWidth / c.clientHeight;
+      const h = md * 0.75;
+      this.camera.top = h; this.camera.bottom = -h;
+      this.camera.left = -h * aspect; this.camera.right = h * aspect;
+      this.camera.zoom = 1; this.camera.updateProjectionMatrix();
+    }
     this.controls.update();
+  }
+
+  // ── inspect mode: a millimetre-ruled grid on the plane you snapped to ───
+  // Armed by the page right after a nav-gizmo click consumes a pointer-up; the
+  // animate loop fires _enterInspectFromView once the snap animation settles.
+  requestInspectOnSnap() { this._pendingInspect = true; }
+
+  _modelBox() {
+    const box = new THREE.Box3();
+    if (this.previewGroup.children.length) box.setFromObject(this.previewGroup);
+    else if (this.currentMesh) box.setFromObject(this.currentMesh);
+    return box.isEmpty() ? null : box;
+  }
+
+  _enterInspectFromView() {
+    this.setProjection('ortho');
+    const box = this._modelBox();
+    const ctr = new THREE.Vector3(0, 0, 0), size = new THREE.Vector3(20, 20, 20);
+    if (box) { box.getCenter(ctr); box.getSize(size); }
+    // grid normal = the world axis the camera looks most along
+    const dir = new THREE.Vector3().subVectors(this.controls.target, this.camera.position).normalize();
+    const a = [Math.abs(dir.x), Math.abs(dir.y), Math.abs(dir.z)];
+    const normal = a[0] >= a[1] && a[0] >= a[2] ? 0 : (a[1] >= a[2] ? 1 : 2);
+    this._buildInspectGrid(normal, ctr, size);
+  }
+
+  _hideInspectGrid() {
+    if (!this.inspectGrid) return;
+    this.scene.remove(this.inspectGrid);
+    this.inspectGrid.traverse(o => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
+    });
+    this.inspectGrid = null;
+  }
+
+  _buildInspectGrid(normalAxis, center, size) {
+    this._hideInspectGrid();
+    const AX = ['x', 'y', 'z'];
+    const inPlane = [0, 1, 2].filter(i => i !== normalAxis);   // the two ruled axes
+    const uA = inPlane[0], vA = inPlane[1];
+    const cu = center[AX[uA]], cv = center[AX[vA]], cn = center[AX[normalAxis]];
+    const span = Math.max(size[AX[uA]], size[AX[vA]], 10);
+    const H = niceStep(span * 0.75);        // half-extent, rounded to a nice number (margin around the part)
+    const major = niceStep(span / 5);
+    let minor = major / 10;
+    if ((2 * H) / minor > 600) minor = major;                  // never explode the line count
+
+    const grp = new THREE.Group();
+    const put = (arr, u, v) => {                               // world point on the grid plane
+      const p = new THREE.Vector3(); p.setComponent(uA, u); p.setComponent(vA, v);
+      p.setComponent(normalAxis, cn); arr.push(p.x, p.y, p.z);
+    };
+    const line = (pts, color, opacity) => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pts), 3));
+      const m = new THREE.LineBasicMaterial({ color, transparent: true, opacity });
+      return new THREE.LineSegments(g, m);
+    };
+    const minorPts = [], majorPts = [];
+    const lo = k => Math.ceil((k - H) / minor) * minor;
+    for (let u = lo(cu); u <= cu + H + 1e-6; u += minor) {
+      const isMajor = Math.abs((u / major) - Math.round(u / major)) < 1e-6;
+      const dst = isMajor ? majorPts : minorPts;
+      put(dst, u, cv - H); put(dst, u, cv + H);
+    }
+    for (let v = lo(cv); v <= cv + H + 1e-6; v += minor) {
+      const isMajor = Math.abs((v / major) - Math.round(v / major)) < 1e-6;
+      const dst = isMajor ? majorPts : minorPts;
+      put(dst, cu - H, v); put(dst, cu + H, v);
+    }
+    if (minorPts.length) grp.add(line(minorPts, 0x2a3346, 0.55));
+    grp.add(line(majorPts, 0x4a6a9a, 0.9));
+
+    // tick labels (world coords) along the two negative edges — major ticks only
+    const lblScale = major * 0.55;
+    for (let u = Math.ceil((cu - H) / major) * major; u <= cu + H + 1e-6; u += major) {
+      const s = this._labelSprite(fmtTick(u), lblScale);
+      const p = new THREE.Vector3(); p.setComponent(uA, u); p.setComponent(vA, cv - H); p.setComponent(normalAxis, cn);
+      s.position.copy(p); grp.add(s);
+    }
+    for (let v = Math.ceil((cv - H) / major) * major; v <= cv + H + 1e-6; v += major) {
+      const s = this._labelSprite(fmtTick(v), lblScale);
+      const p = new THREE.Vector3(); p.setComponent(uA, cu - H); p.setComponent(vA, v); p.setComponent(normalAxis, cn);
+      s.position.copy(p); grp.add(s);
+    }
+    this.inspectGrid = grp;
+    this.scene.add(grp);
+  }
+
+  _labelSprite(text, worldSize) {
+    const cv = document.createElement('canvas'); cv.width = 128; cv.height = 64;
+    const ctx = cv.getContext('2d');
+    ctx.font = 'bold 34px -apple-system,Segoe UI,Roboto,sans-serif';
+    ctx.fillStyle = '#8ba3c7'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, 64, 32);
+    const tex = new THREE.CanvasTexture(cv); tex.anisotropy = 4;
+    const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+    spr.scale.set(worldSize * 2, worldSize, 1);
+    return spr;
   }
 
   _clearPreviewGroup() {
