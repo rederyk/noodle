@@ -37,6 +37,24 @@ def default_fonts_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "projects" / FONTS_DIRNAME
 
 
+# Fonts shipped WITH the app (OFL-licensed), so built-in examples render right on
+# a fresh install with no uploads — e.g. Exo 2, used by the LEGO-brick example.
+# Read-only: the upload/delete endpoints only touch the user's projects/_fonts.
+BUNDLED_FONTS_DIR = Path(__file__).resolve().parent / "fonts_bundled"
+
+
+def bundled_fonts_dir() -> Path:
+    return BUNDLED_FONTS_DIR
+
+
+def _font_search_dirs(fonts_dir=None):
+    """Font libraries in priority order: the user's uploaded library FIRST (an
+    upload of the same family overrides the bundled one), then the app-bundled
+    fonts. Both feed resolve_font and the picker listing."""
+    user = Path(fonts_dir) if fonts_dir else default_fonts_dir()
+    return [user, BUNDLED_FONTS_DIR]
+
+
 def family_of(path) -> str:
     """Best human family name of a font file (fontTools), or its filename stem
     on any error — never raises."""
@@ -63,20 +81,27 @@ def _iter_font_files(d: Path):
 
 
 def list_custom_fonts(fonts_dir=None) -> list[dict]:
-    """Uploaded fonts: ``{name(=family), family, file, ext, size, mtime}`` — for
-    the Text picker and the /library management panel."""
-    d = Path(fonts_dir) if fonts_dir else default_fonts_dir()
-    out = []
-    for f in _iter_font_files(d):
-        fam = family_of(f)
-        try:
-            st = f.stat()
-            size, mtime = st.st_size, st.st_mtime
-        except OSError:
-            size, mtime = 0, 0
-        out.append({"name": fam, "family": fam, "file": f.name,
-                    "ext": f.suffix.lower(), "custom": True,
-                    "size": size, "mtime": mtime})
+    """Fonts available to the Text picker / library panel: the user's uploaded
+    fonts plus the app-bundled ones (``bundled=True``, not deletable). Deduped by
+    family, case-insensitive — a user upload of the same family shadows the
+    bundled copy (user dir is searched first)."""
+    out, seen = [], set()
+    for d in _font_search_dirs(fonts_dir):
+        is_bundled = d == BUNDLED_FONTS_DIR
+        for f in _iter_font_files(d):
+            fam = family_of(f)
+            key = fam.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                st = f.stat()
+                size, mtime = st.st_size, st.st_mtime
+            except OSError:
+                size, mtime = 0, 0
+            out.append({"name": fam, "family": fam, "file": f.name,
+                        "ext": f.suffix.lower(), "custom": True,
+                        "bundled": is_bundled, "size": size, "mtime": mtime})
     return out
 
 
@@ -108,10 +133,10 @@ def resolve_font(name, fonts_dir=None) -> dict:
     other name -> ``{"font": <name>}`` (a system family via fontconfig)."""
     if not name:
         return {"font": "Arial"}
-    d = Path(fonts_dir) if fonts_dir else default_fonts_dir()
     low = str(name).lower()
-    for f in _iter_font_files(d):
-        stem = f.stem.lower()
-        if low in (f.name.lower(), stem, family_of(f).lower()):
-            return {"font_path": str(f)}
+    for d in _font_search_dirs(fonts_dir):
+        for f in _iter_font_files(d):
+            stem = f.stem.lower()
+            if low in (f.name.lower(), stem, family_of(f).lower()):
+                return {"font_path": str(f)}
     return {"font": str(name)}

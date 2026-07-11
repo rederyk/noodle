@@ -686,7 +686,10 @@ async def api_download_font(filename: str):
     loads it via @font-face to render a live preview."""
     if filename != Path(filename).name or filename in ("", ".", ".."):
         raise HTTPException(400, "bad filename")
+    # user library first, then the app-bundled fonts (read-only)
     p = FONTS_DIR / filename
+    if not p.is_file():
+        p = fontlib.BUNDLED_FONTS_DIR / filename
     if not p.is_file() or p.suffix.lower() not in fontlib.FONT_EXTS:
         raise HTTPException(404, "no such font")
     media = {".ttf": "font/ttf", ".otf": "font/otf",
