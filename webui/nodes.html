@@ -311,6 +311,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
           <div class="menu-status"><span class="health-dot" id="health-menu"></span><span id="health-text">Backend: …</span></div>
           <div class="menu-sep"></div>
           <button class="menu-item" onclick="openConsole()"><span class="ic">⛌</span>Open backend console</button>
+          <button class="menu-item" id="mi-warm" onclick="toggleWarmWorker(event)" title="Keep build123d loaded between runs (faster) vs. free its memory when idle"><span class="ic" id="warm-ic">⏻</span><span id="warm-label">Warm worker: …</span></button>
           <button class="menu-item" onclick="confirmRestart()"><span class="ic">⟳</span>Restart backend…</button>
           <div class="menu-sep"></div>
           <button class="menu-item" onclick="openSettings()"><span class="ic">⚙</span>Settings…</button>
@@ -2790,14 +2791,21 @@ window.runGraph = async function(){
   runAbort = new AbortController();
   const signal = runAbort.signal;
   clearHighlights();
-  setStatus(liveMode ? 'live…' : 'running…');
+  const _rt0 = performance.now();
+  const _elapsed = ()=> ((performance.now()-_rt0)/1000).toFixed(1)+'s';
+  const _verb = liveMode ? 'live' : 'running';
+  setStatus(_verb+'…');
+  // live ticking clock so a long run visibly reads as "thinking", not frozen
+  const _tick = setInterval(()=> setStatus(_verb+'… '+_elapsed()), 250);
   let res;
   try {
     res = await fetch(`${API}/api/graph/${currentName}/execute`, {method:'POST', signal});
   } catch(e){
+    clearInterval(_tick);
     if(e.name === 'AbortError') return;    // a newer change took over
     setStatus('execution failed','err'); log('execute: '+e.message,'err'); return;
   }
+  clearInterval(_tick);
   if(!res.ok){
     const e = await res.json();
     const d = e.detail || e;
@@ -2834,9 +2842,19 @@ window.runGraph = async function(){
   const nids = Object.keys(nerr);
   for (const id of nids){ highlightNode(id); log(`✖ ${id}: ${nerr[id].message}`, 'err'); }
   for (const w of (data.warnings || [])) log('⚠ '+w, 'warn');
-  if (nids.length){ setStatus(`done · ${nids.length} node error(s)`, 'err'); }
-  else if ((data.warnings||[]).length){ setStatus('done ⚠','err'); }
-  else { setStatus('done ✓','ok'); }
+  // per-node timing: total + the few slowest, so a slow run tells you WHICH node
+  const tim = data.node_timings || {};
+  const tent = Object.entries(tim).sort((a,b)=>b[1]-a[1]);
+  if (tent.length){
+    const tot = tent.reduce((s,[,v])=>s+v,0);
+    const nm = id => { const n = nodeByGraphId[id] || nodeIndex[id]; return n ? (n.title||n.cadType||id) : id; };
+    const top = tent.slice(0,5).filter(([,v])=>v>=0.005)
+      .map(([id,v])=>`${nm(id)} ${Math.round(v*1000)}ms`).join(' · ');
+    log(`⏱ ${_elapsed()} wall · ${tot.toFixed(2)}s compute${top?' · slowest: '+top:''}`);
+  }
+  if (nids.length){ setStatus(`done · ${nids.length} node error(s) · ${_elapsed()}`, 'err'); }
+  else if ((data.warnings||[]).length){ setStatus(`done ⚠ · ${_elapsed()}`,'err'); }
+  else { setStatus(`done ✓ · ${_elapsed()}`,'ok'); }
   log('executed '+currentName,'ok');
 };
 
@@ -2896,7 +2914,7 @@ window.openGraph = async function(name){
   localStorage.setItem('noodle:last', name);
   setStatus('opened '+name,'ok');
   maybeRestoreDraft(name);
-  refreshAssets();   // prime the Import-node asset picker for this project
+  refreshAssets(true);   // prime the Import-node asset picker for this project
   syncRefImages();   // draw any RefImage reference quads now currentName is set
 };
 
@@ -3759,28 +3777,32 @@ function clearPickerContent(){
 }
 
 window.openSelectionPicker = async function(node, kind){
+  if (picker._opening) return;        // ignore rapid re-clicks while it loads (no double-open)
   const src = node.getInputNode(0);   // slot 0 = geometry / shapes input
   if (!src){ setStatus(`connect ${kind==='shape'?'a list of shapes':'geometry'} into this Select node first`,'err'); log('select: no input'); return; }
-  await saveGraph();
-  if (!currentName) return;
-  const srcId = 'n'+src.id;
-  setStatus(`loading ${pluralKind(kind)}…`);
-  let data;
+  picker._opening = true;
   try {
-    const res = await fetch(`${API}/api/graph/${currentName}/subshapes/${srcId}?kind=${kind}`, {method:'POST'});
-    if (!res.ok){ const e=await res.json().catch(()=>({})); setStatus('picker failed','err'); log('picker: '+JSON.stringify(e.detail||e)); return; }
-    data = await res.json();
-  } catch(e){ setStatus('picker failed','err'); log('picker: '+e.message,'err'); return; }
-  ensurePicker();
-  picker.node = node; picker.kind = kind; picker.loopCycle = null;
-  setPickerTool('orbit');
-  renderPickerData(data, node.selectionData);
-  document.getElementById('picker-title').textContent = `Select ${pluralKind(kind)} — `+(src.title||src.cadType);
-  document.querySelector('.picker-hint').textContent =
-    `click a ${kind} to toggle · drag to orbit · scroll to zoom`;
-  document.getElementById('picker').classList.add('open');
-  startPickerLoop();
-  setStatus(`picking ${pluralKind(kind)}`);
+    await saveGraph();
+    if (!currentName) return;
+    const srcId = 'n'+src.id;
+    setStatus(`loading ${pluralKind(kind)}…`);
+    let data;
+    try {
+      const res = await fetch(`${API}/api/graph/${currentName}/subshapes/${srcId}?kind=${kind}`, {method:'POST'});
+      if (!res.ok){ const e=await res.json().catch(()=>({})); setStatus('picker failed','err'); log('picker: '+JSON.stringify(e.detail||e)); return; }
+      data = await res.json();
+    } catch(e){ setStatus('picker failed','err'); log('picker: '+e.message,'err'); return; }
+    ensurePicker();
+    picker.node = node; picker.kind = kind; picker.loopCycle = null;
+    setPickerTool('orbit');
+    renderPickerData(data, node.selectionData);
+    document.getElementById('picker-title').textContent = `Select ${pluralKind(kind)} — `+(src.title||src.cadType);
+    document.querySelector('.picker-hint').textContent =
+      `click a ${kind} to toggle · drag to orbit · scroll to zoom`;
+    document.getElementById('picker').classList.add('open');
+    startPickerLoop();
+    setStatus(`picking ${pluralKind(kind)}`);
+  } finally { picker._opening = false; }
 };
 
 // overall size hint, from the context mesh or the items themselves
@@ -3875,6 +3897,7 @@ function renderPickerData(data, stored){
 }
 
 function startPickerLoop(){
+  if (picker.raf){ cancelAnimationFrame(picker.raf); picker.raf = null; }  // never leak a second RAF loop
   const canvas = picker.renderer.domElement;
   (function loop(){
     picker.raf = requestAnimationFrame(loop);
@@ -4477,7 +4500,32 @@ window.toggleProjectMenu = function(e){ e.stopPropagation();
     setTimeout(()=>document.getElementById('project-search').focus(),0); } };
 window.toggleSystemMenu = function(e){ e.stopPropagation();
   const m=document.getElementById('system-menu'); const open=m.classList.contains('open');
-  closeMenus(); if(!open){ m.classList.add('open'); refreshHealthText(); } };
+  closeMenus(); if(!open){ m.classList.add('open'); refreshHealthText(); refreshWarmStatus(); } };
+
+// Warm worker: keeps build123d resident between runs (skips the ~2.7s import)
+// vs. freeing its memory when noodle is idle. Reflected + toggled from the ⚙ menu.
+let _warmEnabled = true;
+function _renderWarm(st){
+  _warmEnabled = !!(st && st.enabled);
+  const lbl=document.getElementById('warm-label'), ic=document.getElementById('warm-ic');
+  if(!lbl) return;
+  const state = _warmEnabled ? (st.alive ? 'on · resident' : 'on · idle') : 'off';
+  lbl.textContent = 'Warm worker: '+state;
+  if(ic) ic.textContent = _warmEnabled ? '⏼' : '⏻';
+}
+async function refreshWarmStatus(){
+  try{ const r=await fetch(`${API}/api/system/warm`); if(r.ok) _renderWarm(await r.json()); }catch(_){}
+}
+window.toggleWarmWorker = async function(e){
+  if(e) e.stopPropagation();
+  const want = !_warmEnabled;
+  try{
+    const r=await fetch(`${API}/api/system/warm`,{method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled:want})});
+    if(r.ok){ _renderWarm(await r.json());
+      setStatus(want?'warm worker on':'warm worker off — memory freed', 'ok'); }
+  }catch(_){ setStatus('warm toggle failed','err'); }
+};
 document.addEventListener('click', ()=>closeMenus());
 document.querySelectorAll('.menu').forEach(m=>m.addEventListener('click', e=>e.stopPropagation()));
 
@@ -4557,15 +4605,25 @@ window.openShortcuts = function(){
  *  "Import model…" uploads + creates a node in one step.        *
  * ============================================================ */
 let assetCache = [];                       // [{name, path, ext}] for the current project
+let _assetsLoadedFor = null, _assetsInFlight = null;   // cache per project; see refreshFonts
 const ASSET_UPLOAD = '⬆ Upload new file…'; // sentinel option in the asset picker
-async function refreshAssets(){
-  if(!currentName){ assetCache = []; return assetCache; }
-  try{
-    const r = await fetch(`${API}/api/graph/${encodeURIComponent(currentName)}/assets`,{cache:'no-store'});
-    if(r.ok) assetCache = (await r.json()).assets || [];
-  }catch(_){}
-  if(lcanvas) lcanvas.setDirty(true,true);   // repaint combos once the list arrives
-  return assetCache;
+// Same loop hazard as refreshFonts: values() runs every repaint, so fetch once
+// per project (not per frame) and only repaint when the list arrives. force=true
+// after an upload or when priming a freshly-opened project.
+async function refreshAssets(force){
+  if(!currentName){ assetCache = []; _assetsLoadedFor = null; return assetCache; }
+  if(_assetsInFlight) return _assetsInFlight;
+  if(_assetsLoadedFor === currentName && !force) return assetCache;
+  _assetsInFlight = (async ()=>{
+    try{
+      const r = await fetch(`${API}/api/graph/${encodeURIComponent(currentName)}/assets`,{cache:'no-store'});
+      if(r.ok){ assetCache = (await r.json()).assets || []; _assetsLoadedFor = currentName;
+                if(lcanvas) lcanvas.setDirty(true,true); }   // repaint once, on arrival
+    }catch(_){}
+    finally{ _assetsInFlight = null; }
+    return assetCache;
+  })();
+  return _assetsInFlight;
 }
 // Upload a file straight into the library and point THIS node's picker at it.
 function uploadAssetForNode(node, widget, exts){
@@ -4580,7 +4638,7 @@ function uploadAssetForNode(node, widget, exts){
       const r=await fetch(`${API}/api/graph/${encodeURIComponent(currentName)}/asset`,{method:'POST',body:fd});
       if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail||r.statusText);
       const d=await r.json();
-      await refreshAssets();
+      await refreshAssets(true);           // force: pull the freshly-uploaded file in
       node.properties[widget.cadParam]=d.path; widget.value=d.path; onParamChange(node);
       toast(`Added <code>${d.name}</code> to the library.`,'success');
     }catch(e){ toast('Upload failed: '+(e.message||e),'error'); }
@@ -4590,14 +4648,25 @@ function uploadAssetForNode(node, widget, exts){
 }
 /* ---- Custom font library (shared across projects; drives the Text font picker) ---- */
 let fontCache = { custom: [], system: [] };
+let _fontsLoaded = false, _fontsInFlight = null;   // fetch once, not on every repaint
 const FONT_UPLOAD = '⬆ Upload font…';       // sentinel option in the font picker
-async function refreshFonts(){
-  try{
-    const r = await fetch(`${API}/api/fonts`, {cache:'no-store'});
-    if(r.ok) fontCache = await r.json();
-  }catch(_){}
-  if(lcanvas) lcanvas.setDirty(true,true);   // repaint combos once the list arrives
-  return fontCache;
+// The font combo's values() runs on every canvas repaint; fetching (and dirtying
+// the canvas) each time is a fetch→repaint→fetch loop that floods /api/fonts and
+// freezes the UI. So load the list ONCE (coalescing concurrent calls) and only
+// repaint when it actually arrives; pass force=true after an upload to refresh.
+async function refreshFonts(force){
+  if(_fontsInFlight) return _fontsInFlight;
+  if(_fontsLoaded && !force) return fontCache;
+  _fontsInFlight = (async ()=>{
+    try{
+      const r = await fetch(`${API}/api/fonts`, {cache:'no-store'});
+      if(r.ok){ fontCache = await r.json(); _fontsLoaded = true;
+                if(lcanvas) lcanvas.setDirty(true,true); }   // repaint once, on arrival
+    }catch(_){}
+    finally{ _fontsInFlight = null; }
+    return fontCache;
+  })();
+  return _fontsInFlight;
 }
 // Upload a .ttf/.otf into the shared library and point THIS Text node at it.
 function uploadFontForNode(node, widget){
@@ -4610,7 +4679,7 @@ function uploadFontForNode(node, widget){
       const r=await fetch(`${API}/api/fonts`,{method:'POST',body:fd});
       if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail||r.statusText);
       const d=await r.json();
-      await refreshFonts();
+      await refreshFonts(true);            // force: pull the freshly-uploaded font in
       node.properties[widget.cadParam]=d.name; widget.value=d.name; onParamChange(node);
       toast(`Added font <code>${d.name}</code> to the library.`,'success');
     }catch(e){ toast('Font upload failed: '+(e.message||e),'error'); }
