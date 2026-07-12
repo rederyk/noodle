@@ -125,9 +125,22 @@ cad_nodes/
                        each value appears once at the call site as an editable span
                        (override in node.params["_cb"], wired socket drives + fans
                        out). The body itself is an editable `code` span (kind=code).
+                       transpile(memo=True) — the execute path ONLY, /ui code stays
+                       clean — wraps each cacheable node in _memo_get/_memo_put
+                       keyed by a content hash (params+code+upstream keys, immune
+                       to var renumbering); non-deterministic nodes (Import*,
+                       open(), random.) poison their lineage, display/export
+                       side-effect nodes stay keyed but re-run. tests/test_memo.py.
   executor.py        Runs the generated script in a worker subprocess; captures
                        STL + view JSON + per-node errors. execute_graph(graph, workdir).
-  worker.py / mesh_extractor.py   the subprocess + meshing.
+  worker.py / mesh_extractor.py   the subprocess + meshing. The warm worker owns
+                       the persistent __MEMO__ store (LRU 256: node outputs,
+                       preview meshes, view stats) — on a repeat run only the
+                       dirty subtree re-executes/re-meshes (~8.5s -> ~0.5s on the
+                       lego brick; cache dies with the worker = ⚙ warm toggle).
+                       Live-path bboxes use optimal=False (~2s -> ~5ms each,
+                       ≤1% oversized, view.bbox carries approx:true); exports
+                       and picker signatures keep exact geometry.
   graph.py           Graph/Node/Connection dataclasses; from_dict/to_dict;
                        validate() (raises on incompatible wires / unknown sockets).
   api.py             High-level ops over a GraphStore: add_node, connect,

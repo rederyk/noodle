@@ -113,7 +113,8 @@ _EPILOGUE = """
 import sys as _sys
 _sys.path.insert(0, {repo_root!r})
 from cad_nodes.mesh_extractor import extract_and_write
-extract_and_write(__result__, {stl!r}, {view!r}, __panels__, __previews__, {lin}, {ang}, __errors__, __timings__)
+extract_and_write(__result__, {stl!r}, {view!r}, __panels__, __previews__, {lin}, {ang}, __errors__, __timings__,
+                  hashes=globals().get("__hashes__") or {{}}, memo=globals().get("__MEMO__"))
 """
 
 # Tessellation level-of-detail: (linear_frac of bbox diagonal, angular tol rad).
@@ -370,8 +371,10 @@ def execute_code(code: str, workdir: Path, timeout: int = 120,
 
 def execute_graph(graph: Graph, workdir: Path, timeout: int = 120,
                   quality: str = "live", write_stl: bool = True) -> dict:
-    """Transpile + execute a graph end-to-end."""
-    code = transpile(graph)
+    """Transpile + execute a graph end-to-end. memo=True: on the warm worker,
+    nodes whose content hash is unchanged are restored from the persistent
+    cache (shapes AND preview meshes) — only the dirty subtree re-runs."""
+    code = transpile(graph, memo=True)
     return execute_code(code, workdir, timeout=timeout, quality=quality,
                         write_stl=write_stl)
 
@@ -405,7 +408,9 @@ def extract_subshapes_for_node(graph: Graph, node_id: str, kind: str,
     except KeyError:
         return {"success": False, "error": f"no node {node_id!r}"}
 
-    code = transpile(graph)
+    # memo=True: right after an execute, the whole graph is warm in the cache,
+    # so the picker's re-run costs almost nothing.
+    code = transpile(graph, memo=True)
     out_path = workdir / "subshapes.json"
     script_path = workdir / "_subshapes.py"
     if out_path.exists():
@@ -518,7 +523,7 @@ def slice_summary_graph(graph: Graph, workdir: Path, n_per_axis: int = 10,
                         timeout: int = 120) -> dict:
     """Symbolic slice summary of the graph's own result (the verify half of
     the retro-engineering loop — see cad_nodes/slice_summary.py)."""
-    return _run_slice(transpile(graph), workdir, "summarize",
+    return _run_slice(transpile(graph, memo=True), workdir, "summarize",
                       f"n_per_axis={int(n_per_axis)}", timeout)
 
 
@@ -532,7 +537,7 @@ def slice_summary_file(path: Path, workdir: Path, n_per_axis: int = 10,
 def section_outline_graph(graph: Graph, workdir: Path, axis: str = "z",
                           position: float = 0.0, timeout: int = 120) -> dict:
     """Exact edge-by-edge outline of ONE section of the graph's result."""
-    return _run_slice(transpile(graph), workdir, "outline",
+    return _run_slice(transpile(graph, memo=True), workdir, "outline",
                       f"axis={str(axis)!r}, position={float(position)}", timeout)
 
 
