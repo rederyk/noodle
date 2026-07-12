@@ -49,6 +49,15 @@ def _count(shape, attr):
         return None
 
 
+def _live_bbox(shape):
+    """Approximate bounding box for the LIVE preview path. optimal=True (the
+    build123d default) computes the exact box from geometry — ~2s on a complex
+    filleted part, and it used to run up to 3x per execute (deflection scaling,
+    view summary, preview entry). optimal=False uses curve/surface poles: <10ms,
+    within ~0.5% (never smaller). Exports and picker signatures don't use it."""
+    return shape.bounding_box(optimal=False)
+
+
 def _deflection(shape, linear_frac: float) -> float:
     """Linear tessellation deflection scaled to the shape size, so big and
     small parts get comparable visual quality (and triangle counts). Heavy shapes
@@ -56,7 +65,7 @@ def _deflection(shape, linear_frac: float) -> float:
     preview stays snappy; this only affects the on-screen mesh, never the exported
     STL/STEP (those tessellate via export_stl/export_step, not this path)."""
     try:
-        bb = shape.bounding_box()
+        bb = _live_bbox(shape)
         diag = (bb.size.X ** 2 + bb.size.Y ** 2 + bb.size.Z ** 2) ** 0.5
         frac = linear_frac
         try:
@@ -133,13 +142,17 @@ def extract_view(shape, linear_frac: float = 0.02, angular: float = 0.4,
 
     view: dict = {"success": True, "kind": type(shape).__name__}
 
-    # Bounding box
+    # Bounding box — approximate (poles-based, ~0.5% oversized, never smaller):
+    # the exact box costs ~2s on complex parts and this one only drives viewer
+    # framing + the info footer. `approx` flags it for agents (retroeng should
+    # seal on slice_summary/volume, not on this box).
     try:
-        bb = shape.bounding_box()
+        bb = _live_bbox(shape)
         view["bbox"] = {
             "min": [bb.min.X, bb.min.Y, bb.min.Z],
             "max": [bb.max.X, bb.max.Y, bb.max.Z],
             "size": [bb.size.X, bb.size.Y, bb.size.Z],
+            "approx": True,
         }
     except Exception:
         view["bbox"] = None
@@ -252,7 +265,7 @@ def _preview_of(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict 
                        "mesh": {"vertices": [[v.X, v.Y, v.Z] for v in verts],
                                 "triangles": [list(t) for t in tris]}}
         try:
-            bb = shape.bounding_box()
+            bb = _live_bbox(shape)
             entry["bbox"] = {"min": [bb.min.X, bb.min.Y, bb.min.Z],
                              "max": [bb.max.X, bb.max.Y, bb.max.Z],
                              "size": [bb.size.X, bb.size.Y, bb.size.Z]}
@@ -438,13 +451,51 @@ def extract_subshapes(shape, kind: str = "edge",
     return out
 
 
+# Same LRU cap as the transpiler PREAMBLE's _memo_put (the store is shared).
+_MEMO_CAP = 256
+
+
+def _cache_get(memo, key):
+    if memo is None or key is None:
+        return None
+    v = memo.get(key)
+    if v is not None:
+        memo.pop(key, None)      # LRU touch
+        memo[key] = v
+    return v
+
+
+def _cache_put(memo, key, value) -> None:
+    if memo is None or key is None or value is None:
+        return
+    while len(memo) >= _MEMO_CAP:
+        memo.pop(next(iter(memo)))
+    memo[key] = value
+
+
 def extract_and_write(result, stl_path: str, view_path: str, panels=None,
                       previews=None, linear_frac: float = 0.02,
-                      angular: float = 0.4, errors=None, timings=None) -> dict:
-    """Write STL + view.json. Returns the view dict."""
+                      angular: float = 0.4, errors=None, timings=None,
+                      hashes=None, memo=None) -> dict:
+    """Write STL + view.json. Returns the view dict.
+
+    hashes/memo (memo-mode runs on the warm worker): per-node content keys +
+    the persistent store. Preview meshes and the terminal view summary — the
+    two OCCT-heavy steps — are cached by (content key, LOD), so an unchanged
+    node is never re-tessellated."""
+    hashes = hashes or {}
     shape = _as_shape(result)
     # When previews carry the render geometry, skip the redundant terminal mesh.
-    view = extract_view(shape, linear_frac, angular, with_mesh=not previews)
+    with_mesh = not previews
+    vkey = hashes.get("__result__")
+    vck = f"view:{vkey}:{int(with_mesh)}:{linear_frac}:{angular}" if vkey else None
+    cached = _cache_get(memo, vck)
+    if cached is not None:
+        view = dict(cached)      # copy: node_errors/timings/stl get added below
+    else:
+        view = extract_view(shape, linear_frac, angular, with_mesh=with_mesh)
+        if view.get("success"):
+            _cache_put(memo, vck, dict(view))
     if errors:
         view["node_errors"] = dict(errors)
     if timings:
@@ -464,10 +515,15 @@ def extract_and_write(result, stl_path: str, view_path: str, panels=None,
     if previews:
         out: dict = {}
         for nid, val in previews.items():
-            try:
-                entry = _preview_of(val, linear_frac, angular)
-            except Exception:
-                entry = None
+            key = hashes.get(nid)
+            pck = f"mesh:{key}:{linear_frac}:{angular}" if key else None
+            entry = _cache_get(memo, pck)
+            if entry is None:
+                try:
+                    entry = _preview_of(val, linear_frac, angular)
+                except Exception:
+                    entry = None
+                _cache_put(memo, pck, entry)
             if entry:
                 out[nid] = entry
         if out:

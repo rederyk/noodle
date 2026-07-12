@@ -28,7 +28,9 @@ here — the user is often watching it; they reload to see your changes.
    `node_errors` (`node_id → message`) — fix the offending node, re-run.
 4. **Verify numerically**: the view **summary** (bbox / volume / area / face &
    edge counts) is in the execute response; don't pull the tessellated mesh
-   unless you truly need triangles (`cad_get_view fmt="mesh"`).
+   unless you truly need triangles (`cad_get_view fmt="mesh"`). The live
+   `bbox` is approximate (`approx: true` — poles-based, up to ~1% oversized,
+   never smaller); treat **volume/area** as the exact figures.
 5. **Iterate** param changes; **export** when done: `step | stl | gltf`.
 
 ## HTTP endpoints
@@ -168,7 +170,8 @@ ImportSTL/ImportSTEP node with a **ToAgent** node in the editor.
    user's stated parametrization intent wins.
 5. Verify with the same eyes: execute, `slice_summary` **without** `path`
    (slices your own result), diff the two texts; per-section areas localize
-   residuals; bbox + volume is the final checksum.
+   residuals; volume is the final checksum (the live bbox is approximate —
+   compare sizes with ~1% tolerance).
 
 ## Cautions
 

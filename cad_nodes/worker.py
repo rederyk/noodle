@@ -19,6 +19,14 @@ import traceback
 
 SENTINEL = "@@CADWORKER@@"
 
+# Persistent memo store, shared across ALL jobs run by this worker process.
+# Injected into each job's globals as __MEMO__; the transpiled script's
+# _memo_get/_memo_put (see transpiler PREAMBLE) and mesh_extractor use it to
+# skip re-building/re-tessellating nodes whose content hash hasn't changed.
+# Entries are content-addressed, so graphs can't collide; the store dies with
+# the process (warm-mode toggle / respawn = cache clear).
+_MEMO: dict = {}
+
 # Warm the kernel once: the job scripts do `from build123d import *`, which is
 # instant once build123d is in sys.modules.
 try:
@@ -47,7 +55,7 @@ def _run(job: dict) -> dict:
     except Exception:
         return {"ok": False, "stdout": "", "error": traceback.format_exc()}
 
-    ns = {"__name__": "__cad_job__", "__file__": path}
+    ns = {"__name__": "__cad_job__", "__file__": path, "__MEMO__": _MEMO}
     buf = io.StringIO()
     try:
         code = compile(src, path, "exec")  # filename=path so tracebacks map to _run.py

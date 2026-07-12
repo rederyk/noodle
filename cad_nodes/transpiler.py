@@ -15,6 +15,7 @@ The generated module exposes `__result__` (the shape to preview) and
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 from . import catalog
@@ -143,6 +144,37 @@ __panels__ = {}
 __previews__ = {}
 __errors__ = {}
 __timings__ = {}     # per-node wall-clock seconds, keyed by node id
+__hashes__ = {}      # node id -> content key (memo mode; drives the mesh cache)
+
+# Persistent memo store. The warm worker injects __MEMO__ (a plain dict that
+# survives across runs) into the script globals; a cold subprocess has none, so
+# every _memo_get misses and the graph executes exactly as before. Entries are
+# content-addressed (see Transpiler._memo_plan), so a param edit re-runs ONLY
+# the dirty subtree — everything upstream/sideways is restored from the cache.
+try:
+    __MEMO__
+except NameError:
+    __MEMO__ = None
+
+_MEMO_CAP = 256      # LRU entries (node outputs + preview meshes + views)
+
+
+def _memo_get(_k):
+    if __MEMO__ is None:
+        return None
+    _v = __MEMO__.get(_k)
+    if _v is not None:
+        __MEMO__.pop(_k, None)   # LRU touch (dict keeps insertion order)
+        __MEMO__[_k] = _v
+    return _v
+
+
+def _memo_put(_k, _v):
+    if __MEMO__ is None:
+        return
+    while len(__MEMO__) >= _MEMO_CAP:
+        __MEMO__.pop(next(iter(__MEMO__)))
+    __MEMO__[_k] = _v
 
 
 def _out(_path):
@@ -1857,9 +1889,32 @@ def _substitute(template: str, values: dict) -> str:
     return _PLACEHOLDER.sub(repl, template)
 
 
+# --- memo cache (transpile(memo=True) — the execute path only) ---------------
+# A node's memo KEY is a content hash of its generated statement(s) with every
+# variable name replaced by the KEY of the node that produced it, so keys are
+# stable under var renumbering (adding an unrelated node never invalidates the
+# cache) and change exactly when the node's own params/code or ANY upstream
+# node changes. Keys address a store that the warm worker keeps alive across
+# runs (__MEMO__), so a param edit re-executes only the dirty subtree.
+_MEMO_VAR = re.compile(r"__(?:out|codeblock|ctx)_\d+(?:_vol)?\b")
+# Deterministic but with a display/export/warning side effect: keyable (lineage
+# stays cacheable downstream) yet re-executed every run so the side effect
+# happens (_select_subshapes records "selection stale" re-pick warnings).
+_MEMO_SIDEFX = ("_panel(", "_probe(", "_gate(", "_out(", "export_", "_export",
+                "_select_subshapes(")
+# Non-deterministic / reads external state: no key, poisons downstream too.
+_MEMO_NONDET = ("import_", "open(", "random.")
+
+
 class Transpiler:
-    def __init__(self, graph: Graph):
+    def __init__(self, graph: Graph, memo: bool = False):
         self.graph = graph
+        self._memo = memo
+        # var name -> memo key of the node output it carries (memo mode).
+        self._var_key: dict[str, str] = {}
+        # node id -> memo key (memo mode) — emitted as __hashes__ for the
+        # persistent preview-mesh / view cache in mesh_extractor.
+        self.key_of: dict[str, str] = {}
         self.var_of: dict[str, str] = {}
         # (node_id, output-socket name) -> var, for the rare node that emits
         # DISTINCT expressions per output (e.g. CenterOfMass: center + volume).
@@ -1958,14 +2013,89 @@ class Transpiler:
             "options": list(pdef.options) if pdef.options else None,
         }, formatted)
 
-    def _guard(self, lines: list[str], body: list[str], node) -> None:
+    @staticmethod
+    def _body_outputs(body: list[str]) -> list[str]:
+        """Ordered unique top-level assignment targets in a node's body."""
+        outs: list[str] = []
+        for bl in body:
+            m = re.match(r"(__\w+) = ", bl)
+            if m and m.group(1) not in outs:
+                outs.append(m.group(1))
+        return outs
+
+    def _memo_plan(self, node, body: list[str], key_src: str):
+        """(key, wrapped) for this node. key=None -> not cacheable (poisons
+        downstream); wrapped=False with a key -> lineage stays cacheable but the
+        body re-runs every time (display/export side effects)."""
+        outs = self._body_outputs(body)
+        # Hash the body WITHOUT preview lines, so toggling a node's eye reuses
+        # the cached shape (and the mesh cache keeps its key).
+        core = [bl for bl in body if not bl.startswith("__previews__[")]
+        text = "\n".join(core) + "\n" + key_src
+        if any(m in text for m in _MEMO_NONDET):
+            return None, False
+        own = {v: f"@o{i}" for i, v in enumerate(outs)}
+        poisoned = False
+
+        def sub(m: re.Match) -> str:
+            nonlocal poisoned
+            v = m.group(0)
+            if v in own:
+                return own[v]
+            # Node-LOCAL tokens that are not assignment targets: a CodeBlock's
+            # function name (its body is hashed via key_src) and a group's
+            # builder ctx. Never carry upstream values -> stable placeholders.
+            if v.startswith("__codeblock_"):
+                return "@fn"
+            if v.startswith("__ctx_"):
+                return "@ctx"
+            k = self._var_key.get(v)
+            if k is None:           # upstream not cacheable -> neither are we
+                poisoned = True
+                return "@x"
+            return k
+
+        norm = _MEMO_VAR.sub(sub, text)
+        if poisoned:
+            return None, False
+        key = hashlib.sha1(norm.encode()).hexdigest()[:16]
+        for i, v in enumerate(outs):
+            self._var_key[v] = f"{key}#{i}"
+        self.key_of[node.id] = key
+        wrapped = bool(outs) and not any(m in text for m in _MEMO_SIDEFX)
+        return key, wrapped
+
+    def _guard(self, lines: list[str], body: list[str], node,
+               key_src: str = "") -> None:
         """Wrap a node's statement(s) in try/except so one node's runtime error
-        is recorded in __errors__ and doesn't abort the rest of the workflow."""
+        is recorded in __errors__ and doesn't abort the rest of the workflow.
+        In memo mode, also wrap the body in a cache lookup: on a hit the node's
+        output vars are restored from the persistent store and the body is
+        skipped entirely (preview assignments still run)."""
+        key = wrapped = None
+        if self._memo:
+            key, wrapped = self._memo_plan(node, body, key_src)
         lines.append("try:")
         lines.append("    _t0 = _perf()")
-        for bl in body:
-            if bl:
+        if wrapped:
+            outs = self._body_outputs(body)
+            tail = [bl for bl in body if bl.startswith("__previews__[")]
+            core = [bl for bl in body if not bl.startswith("__previews__[")]
+            tup = ", ".join(outs) + ("," if len(outs) == 1 else "")
+            lines.append(f"    _m = _memo_get({key!r})")
+            lines.append("    if _m is None:")
+            for bl in core:
+                if bl:
+                    lines.append("        " + bl)
+            lines.append(f"        _memo_put({key!r}, ({tup}))")
+            lines.append("    else:")
+            lines.append(f"        ({tup}) = _m")
+            for bl in tail:
                 lines.append("    " + bl)
+        else:
+            for bl in body:
+                if bl:
+                    lines.append("    " + bl)
         lines.append(f"    __timings__[{node.id!r}] = _perf() - _t0")
         lines.append("except Exception as _e:")
         lines.append(f"    __timings__[{node.id!r}] = _perf() - _t0")
@@ -1997,6 +2127,10 @@ class Transpiler:
             if chosen is None:
                 chosen = v
         lines.append(f"{var} = {chosen or 'None'}{_annot(node)}  # bypassed")
+        # A bypass is a pure alias: it carries the SAME value as its source, so
+        # in memo mode its var inherits the upstream key (lineage continues).
+        if self._memo and chosen in self._var_key:
+            self._var_key[var] = self._var_key[chosen]
 
     def _emit_select(self, node, lines: list[str]) -> None:
         """Sub-shape selector (SelectEdge/Face/Vertex): resolve the picked set
@@ -2128,7 +2262,9 @@ class Transpiler:
         body = [f"{var} = {call}{_annot(node)}"]
         if self._previewed(node, ndef):
             body.append(f"__previews__[{node.id!r}] = {var}")
-        self._guard(lines, body, node)
+        # The def lines live outside the guarded body: hash the user code too,
+        # so editing the block's code invalidates its cache entry.
+        self._guard(lines, body, node, key_src=user_code)
 
     def _cast(self, src, sock, var: str) -> str:
         """Auto-apply a boundary cast when the effective upstream type needs one to
@@ -2337,15 +2473,26 @@ class Transpiler:
         out.append("")
         out.append("# --- result for preview ---")
         out.append(f"__result__ = {result_var}" if result_var else "__result__ = None")
+        if self._memo and self.key_of:
+            hashes = dict(self.key_of)
+            result_nid = next((nid for nid, v in self.var_of.items()
+                               if v == result_var), None)
+            if result_nid in hashes:
+                hashes["__result__"] = hashes[result_nid]
+            out.append("# node content keys -> persistent mesh/view cache")
+            out.append(f"__hashes__.update({hashes!r})")
         text = "\n".join(out) + "\n"
         if emit_map:
             return self._extract_spans(text)
         return text
 
 
-def transpile(graph: Graph) -> str:
-    """Convenience: transpile a Graph to build123d source."""
-    return Transpiler(graph).run()
+def transpile(graph: Graph, memo: bool = False) -> str:
+    """Convenience: transpile a Graph to build123d source. memo=True (the
+    execute path) wraps each cacheable node in a persistent-store lookup so a
+    warm worker re-runs only what changed; the default output stays clean for
+    the /ui code view."""
+    return Transpiler(graph, memo=memo).run()
 
 
 def transpile_with_map(graph: Graph) -> tuple[str, list[dict]]:
