@@ -145,6 +145,7 @@ __previews__ = {}
 __errors__ = {}
 __timings__ = {}     # per-node wall-clock seconds, keyed by node id
 __hashes__ = {}      # node id -> content key (memo mode; drives the mesh cache)
+__cached__ = {}      # node id -> True when the memo store served it (no re-run)
 
 # Persistent memo store. The warm worker injects __MEMO__ (a plain dict that
 # survives across runs) into the script globals; a cold subprocess has none, so
@@ -2090,6 +2091,7 @@ class Transpiler:
             lines.append(f"        _memo_put({key!r}, ({tup}))")
             lines.append("    else:")
             lines.append(f"        ({tup}) = _m")
+            lines.append(f"        __cached__[{node.id!r}] = True")
             for bl in tail:
                 lines.append("    " + bl)
         else:
