@@ -104,6 +104,12 @@ webui/
                        every slider tick) the wave would never finish, so it collapses
                        to a short pulse on the recomputed nodes only. It's a replay,
                        not live progress: /execute is one blocking POST.
+                       Cost badges (drawCostBadge, toolbar "Costi" toggle, remembered
+                       in localStorage `noodle:settings:showCost`): the same story made
+                       to stay — last run's wall-clock on each node's title bar, same
+                       colour vocabulary (blue "cache" = the memo store served it and it
+                       cost nothing, amber→green = a real recompute with the hue set by
+                       cost, red = it threw). The editor doubles as a profiler.
                        parseCbParams() mirrors transpiler.parse_codeblock_params:
                        a CodeBlock's `#@param`s become live widgets + dynamic
                        input sockets (overrides in the `_cb` param namespace),
