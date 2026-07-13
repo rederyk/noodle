@@ -6,9 +6,9 @@ that its geometry *is* its explanation. Drag a slider and the maths redraws.
 The first one shipped — `cad_nodes/examples/softmax.json` — set the pattern. This
 doc records the pattern, then lists the rest so we can work through them.
 
-Audience note: the canvas Notes inside the example graphs are written in **Italian**
-(they are for the user, who reads Italian); this plan and the code comments stay in
-English, like the rest of the repo.
+Everything is in English — the canvas Notes, the `#@param` names, the 3D labels — like
+the rest of the repo. (The first six were drafted in Italian and translated; remember
+that `#@param` names are also socket names, so renaming one rewires the graph.)
 
 ---
 
@@ -65,6 +65,14 @@ the canvas side.
 - Socket names bite: `Extrude` takes `sketch` (not `profile`), `MakeFace` takes
   `edges`, `Bounds` *outputs* `domain`. Validate the graph before writing it —
   `Graph.validate()` names the offending connection.
+- **`__result__` is the last GEOMETRY-typed node**, not the last node emitted. If that
+  node can legitimately produce nothing — the perceptron's "still wrong" markers, once
+  it has converged — the whole run reports `success: false, error: "no result shape"`
+  even though every preview rendered fine. Order the graph so the last geometry node
+  is one that always exists.
+- Geometry is not free: one `Box` fanned into ~500 cubes costs ~2 s, and an L-system
+  breeds branches exponentially (8 per pass). Cap the count in the CodeBlock and *say
+  so* on the node — a silent truncation reads as a wrong answer.
 - **Composition is part of the lesson.** An arrow drawn along a cube's edge is
   invisible inside the solid (draw it ~1.35× long so it pokes out, and look at the
   origin corner); a flat scene (epicycles, k-means) is read from above, so its
@@ -81,7 +89,7 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` planned.
 
 - [x] **Softmax** — `examples/softmax.json`. z/T → exp → sum → normalise, wired node
   by node. Three rows of bars (logits, exp weights, probabilities) + a pie that is
-  always exactly full. `T → 0` is argmax, `T → ∞` is uniform; an `onda`/`t` pair
+  always exactly full. `T → 0` is argmax, `T → ∞` is uniform; a `wave`/`t` pair
   animates the winner travelling between classes.
 - [x] **Gradient descent on a loss surface** — `examples/gradient-descent.json`. A
   height-field surface from `Face.make_surface_from_array_of_points`, the descent
@@ -110,16 +118,24 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` planned.
   been redistributed to the past. 16 nodes.
   Still to do from here: top-k / nucleus sampling = cutting the pie at cumulative 0.9.
 - [x] **K-means** — `examples/kmeans-voronoi.json`. Lloyd's algorithm, and `Voronoi2D`
-  on the centroids gives the decision regions for free. `iterazioni` = 0 shows the
+  on the centroids gives the decision regions for free. `iterations` = 0 shows the
   random init; drag it up and the centroids migrate into the clusters while the
   regions settle. The inertia readout is the number the algorithm minimises — it
   never goes back up. Wrong `k` still "finds" groups: k-means does not tell you how
   many there are, it asks. 16 nodes.
-- [ ] **Perceptron / decision boundary** — two clouds of points, the boundary as a
-  plane that tilts with the weights. With a small MLP the boundary becomes a curved
-  surface.
-- [ ] **Convolution** — an input height-field, a 3×3 kernel as nine sliders, the
-  output height-field beside it: blur, sharpen, edge-detect by moving nine numbers.
+- [x] **Perceptron** — `examples/perceptron.json`. The first learning machine (1958):
+  never told the rule, only told when it guessed wrong, and it leans its line towards
+  the point it missed. Drag `epochs` and the red mistakes wink out one by one, until
+  it converges and stops *for good* — a perceptron that is never wrong never changes
+  again (the convergence theorem, visible). Then add `noise`: no line can be right any
+  more, and it never settles, chasing points it cannot win. It has no notion of "good
+  enough" — that idea needed a loss function, which is the next example along. 18 nodes.
+- [x] **Convolution** — `examples/convolution.json`. The image as a field of columns,
+  the 3×3 kernel as nine little columns beside it, the answer on the right. Edge detect
+  returns exactly **zero** wherever the picture is flat, so the disc's interior
+  collapses and only its rim survives. Some answer columns hang *below* the plane: the
+  sign says which side is brighter. It is what a vision network's first layer does —
+  the network merely *learns* the nine numbers. 22 nodes.
 - [ ] **Overfitting** — noisy points and a degree-`d` polynomial fit; raise `d` and
   watch the curve contort to touch every point.
 - [ ] **A network as an object** — neurons as spheres, weights as cylinders with
@@ -136,8 +152,13 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` planned.
   1/√n. The yellow curve is the gaussian the theorem *predicts* (same μ, same σ),
   not a fit — at n=1 it misses the bars entirely, which is the honest picture.
   13 nodes.
-- [ ] **Riemann sums** — bars under a curve, slider `n`; `Volume`/`Area` reads the
-  convergence error.
+- [x] **Riemann sums** — `examples/riemann-sums.json`. The integral caught in the act
+  of being invented: chop, add, be wrong, chop finer. The error readout falls as you
+  drag `n` and never reaches zero at any finite n — that sentence, made rigorous, *is*
+  the definition. Switching from the left edge to the **midpoint** collapses the error
+  at the same n: a smarter place to look beats a bigger n, which is the whole of
+  numerical analysis. Even the "exact" value is a staircase, just a very fine one.
+  15 nodes.
 - [ ] **Sampling & aliasing** — a sine and its samples; below Nyquist the ghost wave
   appears.
 
@@ -166,8 +187,11 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` planned.
   four control points are `ConstructPoint`s, so you **drag them in the viewport** and
   watch the curve get pulled towards the middle two without ever passing through
   them. 25 nodes.
-- [ ] **L-systems / fractal trees** — a recursive CodeBlock, slider `depth`. The
-  output is a printable object.
+- [x] **L-systems** — `examples/l-system.json`. One letter, one rewrite rule, a turtle
+  — and a tree. `depth` adds a whole generation of twigs per notch; `angle` changes the
+  species. Every branch is a real tapered cone, so unlike the rest of this family the
+  output is genuinely printable. Branches breed exponentially, so `max_branches` caps
+  them and the label says when it bit.
 - [ ] **Dijkstra / A\*** — a grid of cells, height = cost, the found path lit up.
 - [ ] **Perlin noise** — procedural terrain, sliders for octaves and persistence; the
   bridge to generative design proper.

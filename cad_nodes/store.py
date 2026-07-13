@@ -65,6 +65,25 @@ _EXAMPLE_DESCRIPTIONS = {
                         "gizmo) into the wrong basin and watch it settle in a local "
                         "minimum. The gradient is numeric, so the algorithm knows "
                         "nothing about f — change f and it still works.",
+    "perceptron": "The first machine that learned anything (1958) — it is never told "
+                  "the rule, only told when it guessed wrong, and it leans its line "
+                  "towards the point it missed. Drag `epochs` and the red mistakes "
+                  "wink out one by one until it converges and stops for good. Then add "
+                  "`noise`: no line can be right any more, and it never settles.",
+    "l-system": "One letter and one rewrite rule, and a tree grows — F -> F[+F]F[-F][F], "
+                "applied over and over, then read by a turtle. Drag `depth` and a whole "
+                "generation of twigs appears; drag `angle` and you change the species. "
+                "Every branch is a real tapered cone, so this one you can print.",
+    "convolution": "Nine numbers that can blur a picture, sharpen it, or find every edge "
+                   "in it — the image as a field of columns, the 3x3 kernel beside it, "
+                   "the answer on the right. Edge detect returns exactly zero wherever "
+                   "the picture is flat, so only the outline survives. It is what a "
+                   "vision network's first layer does; the network just learns the nine.",
+    "riemann-sums": "The integral, caught in the act of being invented — chop the area "
+                    "under a curve into n rectangles and read how wrong you are. Drag n "
+                    "and watch the error fall; switch from the left edge to the midpoint "
+                    "and it collapses at the same n. Even the 'exact' value is a "
+                    "staircase, just a very fine one.",
     "attention": "The sequel to `softmax` — attention is the same function taken one "
                  "ROW at a time. The blue grid is the raw scores q.k (negative bars "
                  "hang below the plane); the green grid is after the softmax, where "

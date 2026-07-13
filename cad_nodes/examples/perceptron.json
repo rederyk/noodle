@@ -1,0 +1,435 @@
+{
+ "name": "perceptron",
+ "nodes": [
+  {
+   "id": "n1",
+   "type": "IntegerSlider",
+   "params": {
+    "value": 6,
+    "_ui": {
+     "value": {
+      "min": 0,
+      "max": 30,
+      "step": 1
+     }
+    }
+   },
+   "position": [
+    40,
+    200
+   ],
+   "preview": false
+  },
+  {
+   "id": "n2",
+   "type": "NumberSlider",
+   "params": {
+    "value": 0.0,
+    "_ui": {
+     "value": {
+      "min": 0,
+      "max": 0.4,
+      "step": 0.02
+     }
+    }
+   },
+   "position": [
+    40,
+    330
+   ],
+   "preview": false
+  },
+  {
+   "id": "n3",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# THE DATA: two classes of points. The machine is never told the rule that separates\n# them \u2014 it only gets told, point by point, when it has guessed wrong.\npoints = 60      #@param int min=10 max=200\nnoise = 0.0      #@param float min=0 max=0.4 step=0.02\nseed = 9         #@param int min=1 max=999\nrng = random.Random(int(seed))\nW, H = 110.0, 80.0\ntw = (0.8, -1.0, 6.0)              # the TRUE rule, which the perceptron never sees\npts = []\nfor _ in range(int(points)):\n    x = rng.uniform(-W / 2 + 6, W / 2 - 6)\n    y = rng.uniform(-H / 2 + 6, H / 2 - 6)\n    side = tw[0] * x + tw[1] * y + tw[2]\n    if abs(side) < 4:\n        continue                   # a thin no-man's-land, so the two classes are clear\n    label = 1 if side > 0 else -1\n    if rng.random() < noise:\n        label = -label             # NOISE: a mislabelled point. Now NO line can be right.\n    pts.append((x, y, label))\nresult = {\"pts\": pts, \"W\": W, \"H\": H}\n"
+   },
+   "position": [
+    40,
+    470
+   ],
+   "preview": false,
+   "size": [
+    380,
+    300
+   ]
+  },
+  {
+   "id": "n4",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# THE PERCEPTRON RULE, 1958. For every point: if you got it wrong, nudge the line\n# TOWARDS it. If you got it right, do nothing at all. That is the entire algorithm.\n#\n#     wrong  ->  w += lr * label * x  ,  b += lr * label\n#\n# No gradient. No loss function. Just: \"you were wrong, lean this way a bit.\"\nepochs = 6       #@param int min=0 max=30\nlr = 0.02        #@param float min=0.001 max=0.2 step=0.001\nD = in_0\npts = D[\"pts\"]\nw1, w2, bias = 0.4, 0.9, 0.0       # a line that starts out meaning nothing at all\nfor _ in range(int(epochs)):\n    for x, y, label in pts:\n        if label * (w1 * x + w2 * y + bias) <= 0:      # wrong (or right on the fence)\n            w1 += lr * label * x\n            w2 += lr * label * y\n            bias += lr * label\nwrong = sum(1 for x, y, l in pts if l * (w1 * x + w2 * y + bias) <= 0)\nresult = {\"w\": (w1, w2, bias), \"wrong\": wrong, \"epochs\": int(epochs),\n          \"pts\": pts, \"W\": D[\"W\"], \"H\": D[\"H\"]}\n"
+   },
+   "position": [
+    470,
+    470
+   ],
+   "preview": false,
+   "size": [
+    400,
+    380
+   ]
+  },
+  {
+   "id": "n5",
+   "type": "Display",
+   "params": {},
+   "position": [
+    470,
+    900
+   ],
+   "preview": false
+  },
+  {
+   "id": "n6",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# the points the line is still on the wrong side of. On clean data this empties out,\n# and then the perceptron STOPS: it has nothing left to be told.\nD = in_0\nw1, w2, bias = D[\"w\"]\nresult = [Vector(x, y, 3) for x, y, l in D[\"pts\"] if l * (w1 * x + w2 * y + bias) <= 0]\n"
+   },
+   "position": [
+    940,
+    560
+   ],
+   "preview": false,
+   "size": [
+    340,
+    180
+   ]
+  },
+  {
+   "id": "n7",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    1290,
+    560
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n8",
+   "type": "Sphere",
+   "params": {
+    "radius": 4.0
+   },
+   "position": [
+    1510,
+    560
+   ],
+   "preview": true,
+   "color": "#e94560"
+  },
+  {
+   "id": "n9",
+   "type": "CodeBlock",
+   "params": {
+    "code": "which = 1   #@param int min=-1 max=1\nD = in_0\nresult = [Vector(x, y, 0) for x, y, l in D[\"pts\"] if l == which]\n",
+    "_cb": {
+     "which": 1
+    }
+   },
+   "position": [
+    940,
+    200
+   ],
+   "preview": false,
+   "size": [
+    320,
+    150
+   ]
+  },
+  {
+   "id": "n10",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    1290,
+    200
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n11",
+   "type": "Sphere",
+   "params": {
+    "radius": 2.2
+   },
+   "position": [
+    1510,
+    200
+   ],
+   "preview": true,
+   "color": "#e0902f"
+  },
+  {
+   "id": "n12",
+   "type": "CodeBlock",
+   "params": {
+    "code": "which = 1   #@param int min=-1 max=1\nD = in_0\nresult = [Vector(x, y, 0) for x, y, l in D[\"pts\"] if l == which]\n",
+    "_cb": {
+     "which": -1
+    }
+   },
+   "position": [
+    940,
+    380
+   ],
+   "preview": false,
+   "size": [
+    320,
+    150
+   ]
+  },
+  {
+   "id": "n13",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    1290,
+    380
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n14",
+   "type": "Sphere",
+   "params": {
+    "radius": 2.2
+   },
+   "position": [
+    1510,
+    380
+   ],
+   "preview": true,
+   "color": "#5a7fb8"
+  },
+  {
+   "id": "n15",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# THE DECISION REGION. The line w1*x + w2*y + b = 0 splits the field in two, and every\n# point is judged by the side it falls on. Nothing else is stored: the whole \"model\"\n# is three numbers.\nside = 1    #@param int min=-1 max=1\nD = in_0\nw1, w2, bias = D[\"w\"]\nW, H = D[\"W\"], D[\"H\"]\nrect = [(-W / 2, -H / 2), (W / 2, -H / 2), (W / 2, H / 2), (-W / 2, H / 2)]\ndef f(p):\n    return (w1 * p[0] + w2 * p[1] + bias) * side\n# clip the field against the line (Sutherland-Hodgman): what survives is the region\nout = []\nfor i, p in enumerate(rect):\n    q = rect[(i + 1) % len(rect)]\n    fp, fq = f(p), f(q)\n    if fp >= 0:\n        out.append(p)\n    if (fp >= 0) != (fq >= 0):\n        t = fp / (fp - fq)\n        out.append((p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])))\nif len(out) < 3:\n    result = None                  # this side is empty: the line has left the field\nelse:\n    face = make_face(Polyline(*[Vector(x, y, 0) for x, y in out], close=True))\n    result = extrude(face, amount=0.6)\n",
+    "_cb": {
+     "side": 1
+    }
+   },
+   "position": [
+    940,
+    780
+   ],
+   "preview": true,
+   "color": "#8a5a2c",
+   "size": [
+    360,
+    220
+   ]
+  },
+  {
+   "id": "n16",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# THE DECISION REGION. The line w1*x + w2*y + b = 0 splits the field in two, and every\n# point is judged by the side it falls on. Nothing else is stored: the whole \"model\"\n# is three numbers.\nside = 1    #@param int min=-1 max=1\nD = in_0\nw1, w2, bias = D[\"w\"]\nW, H = D[\"W\"], D[\"H\"]\nrect = [(-W / 2, -H / 2), (W / 2, -H / 2), (W / 2, H / 2), (-W / 2, H / 2)]\ndef f(p):\n    return (w1 * p[0] + w2 * p[1] + bias) * side\n# clip the field against the line (Sutherland-Hodgman): what survives is the region\nout = []\nfor i, p in enumerate(rect):\n    q = rect[(i + 1) % len(rect)]\n    fp, fq = f(p), f(q)\n    if fp >= 0:\n        out.append(p)\n    if (fp >= 0) != (fq >= 0):\n        t = fp / (fp - fq)\n        out.append((p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])))\nif len(out) < 3:\n    result = None                  # this side is empty: the line has left the field\nelse:\n    face = make_face(Polyline(*[Vector(x, y, 0) for x, y in out], close=True))\n    result = extrude(face, amount=0.6)\n",
+    "_cb": {
+     "side": -1
+    }
+   },
+   "position": [
+    940,
+    1000
+   ],
+   "preview": true,
+   "color": "#2c4a7a",
+   "size": [
+    360,
+    220
+   ]
+  },
+  {
+   "id": "n17",
+   "type": "CodeBlock",
+   "params": {
+    "code": "size = 4.0  #@param float min=2 max=12 step=0.5\nD = in_0\nw1, w2, bias = D[\"w\"]\ndef _t(s, x, y, fs):          # lying flat: this scene is read from above\n    return extrude(Pos(x, y, 0) * Text(s, font_size=fs), amount=0.8)\nstate = (\"NOT TRAINED: the line means nothing yet\" if D[\"epochs\"] == 0\n         else (f\"CONVERGED in {D['epochs']} passes: nothing left to learn\"\n               if D[\"wrong\"] == 0 else f\"epoch {D['epochs']}\"))\nresult = [_t(\"PERCEPTRON\", 0, 62, size * 1.8),\n          _t(state, 0, 50, size * 1.1),\n          _t(f\"still wrong: {D['wrong']}\", -30, -52, size * 1.2),\n          _t(f\"w = ({w1:.2f}, {w2:.2f})   b = {bias:.2f}\", 32, -52, size * 1.1)]\n"
+   },
+   "position": [
+    1510,
+    780
+   ],
+   "preview": true,
+   "color": "#e8e8e8",
+   "size": [
+    340,
+    200
+   ]
+  },
+  {
+   "id": "n18",
+   "type": "Note",
+   "params": {
+    "text": "THE PERCEPTRON \u2014 the first machine that learned anything (1958).\n\nTwo clouds of points, and the machine has to find a line that keeps them apart. It is never told the rule: it is only told, point by point, when it has guessed wrong. The two slabs are the two sides of its line, and the entire 'model' is three numbers. Red = a point still on the wrong side.\n\nThe rule is one line of arithmetic: got a point wrong? Lean the line TOWARDS it a little. Got it right? Do nothing. No gradient, no loss function.\n\nTRY THIS\n1. Set `epochs` to 0: the line is arbitrary and half the points are red. Now walk it up 1, 2, 3...: the slabs swing round and the red points wink out one by one.\n2. Keep going: `still wrong` hits 0 and the line STOPS \u2014 permanently. A perceptron that is never wrong never changes again. That it always gets here, provided a separating line exists at all, is the perceptron convergence theorem \u2014 and it is why 1958 got so excited.\n3. Now raise `noise` to 0.2: a few points are deliberately mislabelled, so NO line can be right. Watch it: it never settles. It swings back and forth forever, chasing points it cannot win, and a run with more epochs is not better than one with fewer. It has no notion of 'good enough' \u2014 that idea needed the loss function, and the loss function needed gradient descent. Which is the next example along."
+   },
+   "position": [
+    40,
+    880
+   ],
+   "size": [
+    620,
+    470
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "id": "l1",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n3",
+   "to_socket": "noise"
+  },
+  {
+   "id": "l2",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n4",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l3",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n4",
+   "to_socket": "epochs"
+  },
+  {
+   "id": "l4",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n5",
+   "to_socket": "value"
+  },
+  {
+   "id": "l5",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n6",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l6",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "items"
+  },
+  {
+   "id": "l7",
+   "from_node": "n7",
+   "from_socket": "result",
+   "to_node": "n8",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l8",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n9",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l9",
+   "from_node": "n9",
+   "from_socket": "result",
+   "to_node": "n10",
+   "to_socket": "items"
+  },
+  {
+   "id": "l10",
+   "from_node": "n10",
+   "from_socket": "result",
+   "to_node": "n11",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l11",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n12",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l12",
+   "from_node": "n12",
+   "from_socket": "result",
+   "to_node": "n13",
+   "to_socket": "items"
+  },
+  {
+   "id": "l13",
+   "from_node": "n13",
+   "from_socket": "result",
+   "to_node": "n14",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l14",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n15",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l15",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n16",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l16",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n17",
+   "to_socket": "in_0"
+  }
+ ],
+ "groups": [
+  {
+   "title": "1 - KNOBS",
+   "bounding": [
+    10,
+    140,
+    400,
+    300
+   ],
+   "color": "#3f589e"
+  },
+  {
+   "title": "2 - DATA AND LEARNING",
+   "bounding": [
+    10,
+    440,
+    860,
+    500
+   ],
+   "color": "#8a5a2c"
+  },
+  {
+   "title": "3 - THE FIELD: points, mistakes, decision regions",
+   "bounding": [
+    910,
+    140,
+    950,
+    1100
+   ],
+   "color": "#2c7a52"
+  }
+ ]
+}
