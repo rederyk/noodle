@@ -293,6 +293,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
     <div class="tb-zone">
       <button class="tb-btn primary" id="btn-run" onclick="runGraph()" title="Run the graph (Ctrl+Enter)">▶ Run</button>
       <button class="tb-btn toggle js-live-btn" id="btn-live" onclick="toggleLive()" title="Auto-run on every change">Live</button>
+      <button class="tb-btn toggle js-cost-btn" id="btn-cost" onclick="toggleCost()" title="Show each node's cost from the last run (blue = served by the cache)">Costi</button>
       <div class="status-pill" id="status">Ready</div>
       <span class="health-dot" id="health" title="Backend health"></span>
     </div>
@@ -479,10 +480,14 @@ let lgraph, lcanvas;
 // verification (playwright) needs one deliberate peephole. Not used by the app.
 window._noodle = { get lgraph(){ return lgraph; }, get lcanvas(){ return lcanvas; },
   get viewer(){ return viewer; }, get picker(){ return picker; },
-  get execGlow(){ return execGlow; },
+  get execGlow(){ return execGlow; }, get lastCost(){ return lastCost; },
+  get showCost(){ return showCost; },
   togglePick(i){ return togglePick(i); } };
 let currentName = null;
 let lastNodeErrors = {};   // last execution's node_id -> error, for feedback reports
+let lastCost = null;       // last run's per-node cost: Map(node -> {t, cached, failed, heat})
+const COST_FLAG = 'noodle:settings:showCost';
+let showCost = localStorage.getItem(COST_FLAG) === '1';   // cost badges on the nodes
 let nodeIndex = {};        // our graph node-id -> Litegraph node (set on serialize)
 let nodeByGraphId = {};    // on-disk graph id -> node, for cross-view linking (/ui)
 let highlighted = [];      // nodes currently flagged with an error
@@ -770,6 +775,7 @@ function registerNodes(defs){
           if (inlineEditor && inlineEditor.node === this) positionInlineEditor();
         }
         if (this.cadType === 'Display') drawDisplayBody(ctx, this);   // wired value on the body
+        drawCostBadge(ctx, this);                         // last run's ms, title-bar right
         if (!this.bypassed) return;
         ctx.save();
         ctx.fillStyle = 'rgba(11,14,20,.45)';
@@ -2085,6 +2091,7 @@ function fromGraphJSON(data){
   if (sketchNode) exitCurveDrawMode();
   closeInlineNoteEditor(false);   // drop any open note editor before the canvas is rebuilt
   loadingGraph = true;
+  lastCost = null;                // costs belong to the graph that produced them
   lgraph.clear();
   const map = {};
   // legacy migration: the old dual-mode Panel is gone. A Panel with an incoming
@@ -2250,6 +2257,12 @@ window.toggleLive = function(){
   liveMode = !liveMode;
   document.querySelectorAll('.js-live-btn').forEach(b=>b.classList.toggle('on', liveMode));
   if(liveMode) scheduleLive();
+};
+window.toggleCost = function(){
+  showCost = !showCost;
+  localStorage.setItem(COST_FLAG, showCost ? '1' : '0');
+  document.querySelectorAll('.js-cost-btn').forEach(b=>b.classList.toggle('on', showCost));
+  if (lcanvas) lcanvas.setDirty(true, true);
 };
 window.toggleFastDrag = function(){
   fastDrag = !fastDrag;
@@ -2847,6 +2860,7 @@ window.runGraph = async function(){
   // per-node timing: total + the few slowest, so a slow run tells you WHICH node
   const tim = data.node_timings || {};
   const hits = data.node_cached || [];
+  recordCost(tim, hits, nids);      // keep the numbers on the nodes (cost badges)
   startExecGlow(tim, hits, nids);   // replay the run as a glow wave (nids = threw)
   const tent = Object.entries(tim).sort((a,b)=>b[1]-a[1]);
   if (tent.length){
@@ -3242,6 +3256,58 @@ function startExecGlow(timings, cachedIds, failedIds){
     glowRAF = requestAnimationFrame(step);
   };
   glowRAF = requestAnimationFrame(step);
+}
+
+// ── cost badge (the glow's numbers, made to stay) ──
+// The wave tells you what re-ran, then fades. These badges keep the same story on
+// screen: last run's wall-clock per node, in the same colour vocabulary — cold blue
+// = the memo cache served it, amber→green = it really recomputed (hue by cost, the
+// sqrt(t/peak) ramp startExecGlow uses), red = it threw. Toggled from the toolbar.
+function recordCost(timings, cachedIds, failedIds){
+  const ids = Object.keys(timings || {});
+  if (!ids.length){ lastCost = null; return; }
+  const cached = new Set(cachedIds || []), failed = new Set(failedIds || []);
+  const peak = Math.max(1e-6, ...ids.filter(id => !cached.has(id)).map(id => timings[id] || 0));
+  const byNode = new Map();
+  for (const id of ids){
+    const node = nodeByGraphId[id] || nodeIndex[id];
+    if (!node) continue;
+    const t = timings[id] || 0;
+    byNode.set(node, {t, cached: cached.has(id), failed: failed.has(id),
+                      heat: Math.sqrt(Math.min(1, t / peak))});
+  }
+  lastCost = byNode;
+}
+
+function costLabel(t){
+  return t < 0.9995 ? Math.round(t * 1000) + 'ms' : t.toFixed(1) + 's';
+}
+
+function drawCostBadge(ctx, n){
+  if (!showCost || !lastCost) return;
+  const c = lastCost.get(n);
+  if (!c) return;                       // added after the run — nothing to report
+  const rgb = c.failed ? GLOW_FAIL
+            : c.cached ? GLOW_CACHED
+            : GLOW_HOT.map((v, i) => Math.round(v + (GLOW_COOL[i] - v) * (1 - c.heat)));
+  const col = `${rgb[0]},${rgb[1]},${rgb[2]}`;
+  // A cache hit didn't cost anything this run — "0ms" on two thirds of the graph is
+  // noise. Say what actually happened; the number is for what really recomputed.
+  const txt = c.cached ? 'cache' : costLabel(c.t);
+  const th = LiteGraph.NODE_TITLE_HEIGHT || 20;
+  ctx.save();
+  ctx.font = 'bold 9px sans-serif';
+  const w = ctx.measureText(txt).width + 8, h = 12, x = n.size[0] - w - 4, y = -th + 4;
+  ctx.fillStyle = `rgba(${col},.18)`;
+  ctx.strokeStyle = `rgba(${col},.55)`;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, 3); else ctx.rect(x, y, w, h);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = `rgb(${col})`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(txt, x + w / 2, y + h / 2 + 0.5);
+  ctx.restore();
 }
 
 // Paint one node's glow ring. `a` is intensity 0..1, `rgb` the colour.
@@ -4855,9 +4921,17 @@ window.openSettings = function(){
       `<small style="color:var(--txt-dim)">Adds a 🐞 button to the top bar. It saves a local report `+
       `(your text + technical context + optional graph snapshot &amp; recent logs) under `+
       `<code>feedback/</code> so a coding agent can pick it up and fix it.</small></span></label>`+
+    `<label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;margin-top:12px">`+
+      `<input type="checkbox" id="set-cost" ${showCost?'checked':''} style="margin-top:3px">`+
+      `<span><b>Show node costs</b><br>`+
+      `<small style="color:var(--txt-dim)">Puts the last run's wall-clock on each node. `+
+      `Blue means the memo cache served it without re-running; amber&rarr;green is a real `+
+      `recompute, hue by cost; red means it threw.</small></span></label>`+
     `<div class="modal-actions"><button class="tb-btn primary" id="set-ok">Done</button></div>`);
   const cb=m.ov.querySelector('#set-fb');
   cb.addEventListener('change', ()=>{ localStorage.setItem(FEEDBACK_FLAG, cb.checked?'1':'0'); applyFeedbackSetting(); });
+  const cc=m.ov.querySelector('#set-cost');
+  cc.addEventListener('change', ()=>{ if (cc.checked !== showCost) toggleCost(); });
   m.ov.querySelector('#set-ok').onclick=()=>m.close();
 };
 
@@ -5000,6 +5074,7 @@ function paletteCommands(){
     {ic:'⛌', label:'Open backend console', k:'', run:()=>openConsole()},
     {ic:'⟳', label:'Restart backend…', k:'', run:()=>confirmRestart()},
     {ic:'🐞',label:'Send feedback / report…', k:'', run:()=>openFeedback()},
+    {ic:'⏱', label:'Toggle node costs', k:'', run:()=>toggleCost()},
     {ic:'⚙', label:'Settings…', k:'', run:()=>openSettings()},
     {ic:'?', label:'Keyboard shortcuts', k:'', run:()=>openShortcuts()},
   ];
@@ -5058,6 +5133,7 @@ document.addEventListener('keydown', e=>{
   // or graph editing — the editor must stay usable even without the 3D preview.
   try { initViewer(); } catch(e){ log('3D viewer disabled: '+(e.message||e), 'err'); }
   applyFeedbackSetting();
+  document.querySelectorAll('.js-cost-btn').forEach(b=>b.classList.toggle('on', showCost));
   setHealth('busy'); setDocState('none');
   try{
     // wire-type compatibility from the backend cast registry (single source of
