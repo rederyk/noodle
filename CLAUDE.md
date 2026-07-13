@@ -235,13 +235,67 @@ longer drift — to change compatibility, edit `casts.py` only.
 
 Types (constants in `casts.py`): `solid` (3D B-Rep — the old `geometry`),
 `surface` (2D sketch/face — the old `sketch`), `curve`, `plane`, `vector`
-(points), `selection` (picked sub-shapes), `data`, `tree` (declared, unused).
+(points), `selection` (picked sub-shapes), `mesh` (triangles — §5c), `data`,
+`tree` (declared, unused).
 `data` is the universal bus (any output → a `data` input; a `data` output feeds
 everything except `selection`/`tree`). Registered casts: `surface→solid`,
 `solid↔plane` (transforms treat a plane like geometry), `curve→surface`
-(closed curve → face via `_face`), `selection→vector`. A `Socket` can also
-widen per-socket via `accepts=[…]`, carry an advisory `subtype` (legend only,
-not validation), or set `raw=True` to opt out of automatic boundary casts.
+(closed curve → face via `_face`), `selection→vector`, `solid/surface→mesh`
+(`_to_mesh`). A `Socket` can also widen per-socket via `accepts=[…]`, carry an
+advisory `subtype` (legend only, not validation), or set `raw=True` to opt out of
+automatic boundary casts. The transpiler applies a registered cast automatically
+at the wire boundary (`Transpiler._cast`).
+
+## 5c. The mesh lane (triangles)
+
+**build123d cannot model meshes** — it treats them as an I/O format. `import_stl`
+returns a `Face` with only a triangulation and no surface (`is_valid=False`,
+`volume=0`, booleans refused outright); `Mesher.read` sews every triangle into a
+planar B-Rep face — **300s** to open a 147k-triangle STL, **81s** per boolean. And
+OCCT has no remesh/decimate/mesh-repair at all. So triangles get their own lane,
+on **trimesh** (MIT — noodle stays MIT; pymeshlab is GPL-3 and is deliberately NOT
+a dependency). Full findings + measurements: **`PLAN_MESH_LANE.md`**.
+
+- Nodes (category `mesh`, `catalog.py` §12b): `ImportMesh`, `ToMesh`, `MeshFix`
+  (merge verts, drop dup/degenerate faces + stray shards, fill holes, fix normals),
+  `MeshInspect` (text health report → wire into a `Display`), `ExportMesh`,
+  `MeshUnion`/`MeshSubtract`/`MeshIntersect` + `MeshSimplify` (**manifold3d**,
+  Apache-2.0), and `MeshToSolid` — the only bridge back, guarded by `max_tris`.
+- **Two engine gotchas, both load-bearing** (measured — PLAN_MESH_LANE.md §9):
+  `trimesh.Trimesh(...)` defaults to `process=True`, which re-merges manifold3d's
+  already-welded output and **silently breaks the manifold** — `_from_manifold` must
+  pass `process=False`. And a simplify tolerance at/above the part's wall thickness
+  (volume/area) *tears the part apart* while the triangle count climbs, so
+  `MeshSimplify` verifies its own result (volume drift + `decompose()` piece count)
+  and raises rather than returning a broken mesh.
+- `Transpiler._cast` only fires on the **item-access** branch: `multiple` collectors
+  and `list_access` sockets skip it (as the B-Rep `Union`/`Subtract` already did), so
+  `_mesh_bool` coerces every item with `_as_mesh` itself. A solid reaches `MeshUnion`
+  uncast — by design, and there's a test pinning it.
+- Runtime: the `Mesh` class in the transpiler PREAMBLE wraps a `trimesh.Trimesh`.
+  It carries a `_noodle_mesh` marker because `mesh_extractor` runs as an imported
+  module and *cannot* import a class that lives in the generated script's globals —
+  so it duck-types instead of `isinstance`.
+- **Transforms are NOT duplicated.** `Move`/`Rotate`/`Scale`/`Mirror` take a mesh
+  directly: their `shape` socket lists `accepts=[…, WIRE_MESH]`, the PREAMBLE
+  helpers branch on `_is_mesh` and apply a 4×4 (`_mesh_matrix`) instead of a
+  `Location`, and `output_follows="shape"` carries the mesh type back out. There is
+  no `MeshMove` and there must not be. (Arrays/Align don't take meshes yet — their
+  templates still build `Pos(…) * shape` inline.)
+- **The cast is asymmetric on purpose.** `solid/surface → mesh` is automatic
+  (tessellation: milliseconds, safely lossy) — drop a `Box` straight into a mesh
+  input and it just works. `mesh → solid` is **not** a cast: rebuilding a B-Rep from
+  triangles costs ~300s, so it must stay an explicit guarded node (`MeshToSolid`,
+  phase 2), never an implicit coercion that hangs the app for five minutes because
+  someone wired a mesh into a `Fillet`.
+- Previews cost nothing: a mesh IS triangles, so `mesh_extractor` hands the arrays
+  straight to the viewer with no tessellation step.
+- Not yet built (phase 3): hull/smooth/split/refine, and meshes through
+  `ArrayLinear`/`ArrayPolar`/`Align` (their templates still build `Pos(…) * shape`
+  inline, so they need helpers first — the four core transforms already work).
+  Isotropic remesh has no non-GPL implementation that survives a real part — see
+  `PLAN_MESH_LANE.md` §5.
+- Example graph: `cad_nodes/examples/mesh-lane.json` (seeded into `projects/`). Tests: `tests/test_mesh_lane.py`.
 
 ## 5b. Lists & fan-out (Grasshopper-style)
 

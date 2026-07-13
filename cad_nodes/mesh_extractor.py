@@ -15,15 +15,30 @@ from __future__ import annotations
 import json
 
 
+def _is_mesh(value) -> bool:
+    """True for a value on the `mesh` wire (PLAN_MESH_LANE.md).
+
+    The Mesh class lives in the transpiler PREAMBLE — i.e. in the *generated
+    script's* globals — so this module can't import it and isinstance is out.
+    Mesh carries a `_noodle_mesh` marker exactly so this check stays honest."""
+    return getattr(value, "_noodle_mesh", False)
+
+
 def _as_shape(result):
-    """Normalise __result__ (Part/Sketch/Solid/Compound or list) to one shape."""
-    if result is None:
-        return None
+    """Normalise __result__ (Part/Sketch/Solid/Compound/Mesh or list) to one shape."""
+    if result is None or _is_mesh(result):
+        return result
     if isinstance(result, (list, tuple)):
-        from build123d import Compound
         shapes = [s for s in result if s is not None]
         if not shapes:
             return None
+        if all(_is_mesh(s) for s in shapes):
+            if len(shapes) == 1:
+                return shapes[0]
+            import trimesh
+            merged = trimesh.util.concatenate([s.tm for s in shapes])
+            return type(shapes[0])(merged)      # a Mesh again, engine-agnostic
+        from build123d import Compound
         try:
             return Compound(children=shapes)
         except Exception:
@@ -99,6 +114,11 @@ def _summarize(value, _depth: int = 0):
     try:
         if value is None or isinstance(value, (bool, int, float, str)):
             return value
+        # a mesh (the `mesh` wire) — report what actually matters about triangles
+        if _is_mesh(value):
+            return {"kind": "shape", "type": "Mesh", "volume": value.volume,
+                    "area": value.area, "faces": value.n_tris,
+                    "edges": None, "vertices": len(value.tm.vertices)}
         # vector / point / vertex: anything with X,Y,Z components
         if all(hasattr(value, a) for a in ("X", "Y", "Z")):
             return {"kind": "point", "x": _num(lambda: value.X),
@@ -134,11 +154,43 @@ def _summarize(value, _depth: int = 0):
         return {"kind": "repr", "type": "unknown", "repr": repr(value)[:200]}
 
 
+def _mesh_geometry(m) -> dict:
+    """Vertices/triangles + bbox for a Mesh. Nothing to tessellate — it already IS
+    triangles, which makes the mesh lane the cheapest thing here to draw."""
+    verts, tris = m.arrays()
+    return {"mesh": {"vertices": verts, "triangles": tris},
+            "bbox": _bbox_of_coords(verts)}
+
+
+def _mesh_view(m, with_mesh: bool) -> dict:
+    """The `view.json` summary for a mesh result (the Mesh branch of extract_view)."""
+    geom = _mesh_geometry(m)
+    bb = geom["bbox"]
+    view: dict = {
+        "success": True,
+        "kind": "Mesh",
+        "bbox": dict(bb, approx=False) if bb else None,
+        "volume": m.volume,
+        "area": m.area,
+        "center": None,
+        "counts": {"vertices": len(geom["mesh"]["vertices"]), "edges": None,
+                   "faces": m.n_tris, "solids": None},
+        "watertight": m.watertight,
+    }
+    if bb:
+        view["center"] = [(bb["min"][i] + bb["max"][i]) / 2 for i in range(3)]
+    if with_mesh:
+        view["mesh"] = geom["mesh"]
+    return view
+
+
 def extract_view(shape, linear_frac: float = 0.02, angular: float = 0.4,
                  with_mesh: bool = True) -> dict:
     shape = _as_shape(shape)
     if shape is None:
         return {"success": False, "error": "no result shape"}
+    if _is_mesh(shape):
+        return _mesh_view(shape, with_mesh)
 
     view: dict = {"success": True, "kind": type(shape).__name__}
 
@@ -253,6 +305,13 @@ def _preview_of(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict 
     shape = _as_shape(value)
     if shape is None:
         return None
+
+    # 1b) a mesh: already triangles, so no tessellation step at all
+    if _is_mesh(shape):
+        entry = _mesh_geometry(shape)
+        entry["kind"] = "Mesh"
+        entry["volume"] = shape.volume
+        return entry
 
     # 2) meshable surface/solid
     verts, tris = [], []
@@ -508,8 +567,11 @@ def extract_and_write(result, stl_path: str, view_path: str, panels=None,
 
     if shape is not None and stl_path:
         try:
-            from build123d import export_stl
-            export_stl(shape, stl_path)
+            if _is_mesh(shape):
+                shape.tm.export(stl_path)     # already triangles — no meshing step
+            else:
+                from build123d import export_stl
+                export_stl(shape, stl_path)
             view["stl"] = stl_path
         except Exception as e:
             view["stl_error"] = str(e)

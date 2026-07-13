@@ -37,10 +37,11 @@ WIRE_TREE = "tree"              # data tree (declared; unused for now)
 WIRE_PLANE = "plane"            # Plane / Location (a frame)
 WIRE_VECTOR = "vector"          # Vector / Point
 WIRE_SELECTION = "selection"    # picked sub-shapes (edges/faces/vertices)
+WIRE_MESH = "mesh"              # triangle mesh (the mesh lane — PLAN_MESH_LANE.md)
 
 WIRE_TYPES: list[str] = [
     WIRE_SOLID, WIRE_SURFACE, WIRE_CURVE, WIRE_PLANE,
-    WIRE_VECTOR, WIRE_SELECTION, WIRE_DATA, WIRE_TREE,
+    WIRE_VECTOR, WIRE_SELECTION, WIRE_MESH, WIRE_DATA, WIRE_TREE,
 ]
 
 # --- the cast registry: (src, dst) -> coercion helper name (or None) -------
@@ -53,6 +54,16 @@ CASTS: dict[tuple[str, str], str | None] = {
     (WIRE_SOLID, WIRE_PLANE): None,           # transforms treat a plane as geometry…
     (WIRE_PLANE, WIRE_SOLID): None,           # …and a transformed plane flows back
     (WIRE_SELECTION, WIRE_VECTOR): None,         # picked sub-shapes as point origins
+    # --- the mesh lane (PLAN_MESH_LANE.md §1) -----------------------------
+    # B-Rep flows INTO the mesh lane freely: tessellating a solid is milliseconds
+    # and safely lossy, so dropping a Box straight into a mesh input just works.
+    (WIRE_SOLID, WIRE_MESH): "_to_mesh",
+    (WIRE_SURFACE, WIRE_MESH): "_to_mesh",
+    # There is deliberately NO (mesh -> solid) cast. Rebuilding a B-Rep from
+    # triangles costs ~300s on a real 147k-triangle part (see PLAN_MESH_LANE.md
+    # §0), so it must be an explicit, guarded node (MeshToSolid) — never an
+    # implicit boundary coercion that hangs the app for five minutes because
+    # someone wired a mesh into a Fillet.
 }
 
 # A `data` OUTPUT may feed these input types (a list from List/Sort/Item flowing

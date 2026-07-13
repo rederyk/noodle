@@ -530,7 +530,7 @@ let sketchRaycaster = null;    // reused THREE.Raycaster for plane intersection 
 const WIRE_COLORS = {
   solid:'#2dd4a0', surface:'#3b82f6', curve:'#f59e0b',
   data:'#8a93a3', tree:'#a855f7', plane:'#fb923c', vector:'#ef4444',
-  selection:'#e879f9',
+  selection:'#e879f9', mesh:'#14b8a6',   // the mesh lane (PLAN_MESH_LANE.md)
 };
 // for an input of type T, which output types may feed it.
 // This is the SINGLE-SOURCE-OF-TRUTH derived from the backend cast registry
@@ -541,11 +541,12 @@ let INPUT_ACCEPTS = {
   solid:['solid','surface','plane','data'],   // transforms treat a plane like a solid
   surface:['surface','curve','data'],   // a closed curve (Circle/Rectangle…) fills a surface input
   curve:['curve','data'],
-  data:['solid','surface','curve','data','tree','plane','vector','selection'],
+  data:['solid','surface','curve','data','tree','plane','vector','selection','mesh'],
   tree:['tree','data'],
   plane:['plane','solid','data'],               // a transformed plane flows back into a plane input
   vector:['vector','selection','data'],
   selection:['selection'],
+  mesh:['mesh','solid','surface'],   // B-Rep tessellates INTO the mesh lane; never back (PLAN_MESH_LANE.md)
 };
 
 function log(msg, cls=''){

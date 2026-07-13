@@ -54,6 +54,12 @@ _EXAMPLE_DESCRIPTIONS = {
                "chart that redraw live as you drag the logits and the temperature. "
                "Drag `t` with `onda` > 0 to animate the winner travelling between "
                "classes.",
+    "mesh-lane": "The mesh lane — a Box and a Sphere tessellate into triangles just "
+                 "by touching a mesh input, get cut with a mesh boolean (manifold3d: "
+                 "0.1s where the B-Rep kernel needs 81s), simplified within a bounded "
+                 "tolerance and inspected. Note the Sphere rides the SAME Move node "
+                 "the B-Rep lane uses. build123d cannot model meshes at all — see "
+                 "PLAN_MESH_LANE.md.",
 }
 
 # A graph id is a single directory name under the store root. Rejecting
