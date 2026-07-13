@@ -1,0 +1,419 @@
+{
+ "name": "attention",
+ "nodes": [
+  {
+   "id": "n1",
+   "type": "NumberSlider",
+   "params": {
+    "value": 1.0,
+    "_ui": {
+     "value": {
+      "min": 0.1,
+      "max": 4,
+      "step": 0.05
+     }
+    }
+   },
+   "position": [
+    40,
+    200
+   ],
+   "preview": false
+  },
+  {
+   "id": "n2",
+   "type": "IntegerSlider",
+   "params": {
+    "value": 0,
+    "_ui": {
+     "value": {
+      "min": 0,
+      "max": 1,
+      "step": 1
+     }
+    }
+   },
+   "position": [
+    40,
+    330
+   ],
+   "preview": false
+  },
+  {
+   "id": "n3",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# ATTENTION: every token asks every other one \"how much do you matter to me?\"\n# The answer is a softmax \u2014 the SAME function as the `softmax` example \u2014 but taken\n# one ROW at a time. Row i is how token i shares its attention over all the others.\ntokens = 6      #@param int min=2 max=10\nT = 1.0         #@param float min=0.1 max=4 step=0.05\ncausal = 0      #@param int min=0 max=1\nseed = 5        #@param int min=1 max=999\nd = 4           #@param int min=2 max=16\nrng = random.Random(int(seed))\nn = int(tokens)\n# Q and K: each token gets a query vector (\"what am I looking for\") and a key vector\n# (\"what do I offer\"). Here they are random \u2014 in a real model they are LEARNED.\nQ = [[rng.gauss(0, 1) for _ in range(int(d))] for _ in range(n)]\nK = [[rng.gauss(0, 1) for _ in range(int(d))] for _ in range(n)]\n# the RAW SCORE: the dot product q.k \u2014 how well a query matches a key. Divided by\n# sqrt(d) so that more dimensions do not inflate the scores.\nscores = [[sum(Q[i][x] * K[j][x] for x in range(int(d))) / math.sqrt(int(d))\n           for j in range(n)] for i in range(n)]\nweights = []\nfor i, row in enumerate(scores):\n    # CAUSAL MASK: a token may not look at the FUTURE. Masked entries are pushed to\n    # -infinity BEFORE the exp, so exp() sends them to exactly zero.\n    masked = [(-1e30 if (causal and j > i) else s) for j, s in enumerate(row)]\n    e = [math.exp(s / T) for s in masked]\n    tot = sum(e) or 1.0\n    weights.append([v / tot for v in e])      # and the row sums to 1. Every row.\nresult = {\"scores\": scores, \"weights\": weights, \"n\": n, \"T\": T,\n          \"causal\": int(causal), \"W\": 90.0, \"H\": 60.0}\n"
+   },
+   "position": [
+    40,
+    470
+   ],
+   "preview": false,
+   "size": [
+    380,
+    380
+   ]
+  },
+  {
+   "id": "n4",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# the height of each raw-score column: |score|, floored so a zero score is still a\n# visible sliver (a zero-height box is degenerate and would kill the whole grid).\nD = in_0\nresult = [max(abs(s) * 6, 0.2) for row in D[\"scores\"] for s in row]\n"
+   },
+   "position": [
+    470,
+    200
+   ],
+   "preview": false,
+   "size": [
+    340,
+    170
+   ]
+  },
+  {
+   "id": "n5",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# where each column stands. A negative score hangs BELOW the plane \u2014 which is the\n# whole point: raw scores are not probabilities, they can be anything.\nD = in_0\nn, step = D[\"n\"], D[\"W\"] / max(D[\"n\"], 1)\nresult = [Vector(-D[\"W\"] / 2 + (j + 0.5) * step,\n                 D[\"W\"] / 2 - (i + 0.5) * step + 70,\n                 (s * 6) / 2)\n          for i, row in enumerate(D[\"scores\"]) for j, s in enumerate(row)]\n"
+   },
+   "position": [
+    470,
+    410
+   ],
+   "preview": false,
+   "size": [
+    340,
+    200
+   ]
+  },
+  {
+   "id": "n6",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    860,
+    200
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n7",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    860,
+    410
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n8",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# how wide one cell is: a single number, so the Box's `width` socket does not fan out\nD = in_0\nresult = D[\"W\"] / max(D[\"n\"], 1) * 0.8\n"
+   },
+   "position": [
+    470,
+    650
+   ],
+   "preview": false,
+   "size": [
+    340,
+    140
+   ]
+  },
+  {
+   "id": "n9",
+   "type": "Box",
+   "params": {},
+   "position": [
+    1120,
+    250
+   ],
+   "preview": true,
+   "color": "#5a7fb8"
+  },
+  {
+   "id": "n10",
+   "type": "CodeBlock",
+   "params": {
+    "code": "D = in_0\nresult = [max(w * D[\"H\"], 0.2) for row in D[\"weights\"] for w in row]\n"
+   },
+   "position": [
+    470,
+    850
+   ],
+   "preview": false,
+   "size": [
+    340,
+    140
+   ]
+  },
+  {
+   "id": "n11",
+   "type": "CodeBlock",
+   "params": {
+    "code": "D = in_0\nstep = D[\"W\"] / max(D[\"n\"], 1)\nresult = [Vector(-D[\"W\"] / 2 + (j + 0.5) * step,\n                 D[\"W\"] / 2 - (i + 0.5) * step - 40,\n                 max(w * D[\"H\"], 0.2) / 2)\n          for i, row in enumerate(D[\"weights\"]) for j, w in enumerate(row)]\n"
+   },
+   "position": [
+    470,
+    1030
+   ],
+   "preview": false,
+   "size": [
+    340,
+    190
+   ]
+  },
+  {
+   "id": "n12",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    860,
+    850
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n13",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    860,
+    1030
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n14",
+   "type": "Box",
+   "params": {},
+   "position": [
+    1120,
+    900
+   ],
+   "preview": true,
+   "color": "#3fb87f"
+  },
+  {
+   "id": "n15",
+   "type": "CodeBlock",
+   "params": {
+    "code": "size = 4.0  #@param float min=2 max=12 step=0.5\nD = in_0\nn, W, step = D[\"n\"], D[\"W\"], D[\"W\"] / max(D[\"n\"], 1)\ndef _t(s, x, y, fs):          # lying flat: this scene is read from above\n    return extrude(Pos(x, y, 0) * Text(s, font_size=fs), amount=0.8)\nout = [_t(\"ATTENTION = SOFTMAX, ONE ROW AT A TIME\", 0, 128, size * 1.5),\n       _t(\"raw scores  q . k / sqrt(d)   (can be negative)\", 0, 114, size),\n       # in FRONT of the green grid: 60 mm of bars would hide anything behind them\n       _t(\"attention weights: every ROW sums to 1\", 0, -104, size),\n       _t(f\"T = {D['T']:.2f}\" + (\"   \u00b7   CAUSAL MASK ON\" if D[\"causal\"] else \"\"),\n          0, -117, size * 1.2)]\n# one label per row and per column, so you can see who is looking at whom\nfor i in range(n):\n    y = W / 2 - (i + 0.5) * step - 40\n    out.append(_t(f\"t{i}\", -W / 2 - 10, y, size * 0.9))          # the token asking\nfor j in range(n):\n    x = -W / 2 + (j + 0.5) * step\n    out.append(_t(f\"t{j}\", x, -W / 2 - 48, size * 0.9))          # the token looked at\nresult = out\n"
+   },
+   "position": [
+    1120,
+    1220
+   ],
+   "preview": true,
+   "color": "#e8e8e8",
+   "size": [
+    360,
+    240
+   ]
+  },
+  {
+   "id": "n16",
+   "type": "Note",
+   "params": {
+    "text": "ATTENTION \u2014 the same softmax, taken one row at a time.\n\nEvery token has a QUERY ('what am I looking for') and a KEY ('what do I offer'). The raw score is the dot product q.k: how well one matches the other. It can be negative, huge, anything \u2014 exactly like the logits in the `softmax` example. That is the BLUE grid, and some of its bars hang below the plane.\n\nThen the softmax runs on EACH ROW. Row i becomes how token i shares its attention over all the others. That is the GREEN grid: all positive, and every row sums to exactly 1 \u2014 a token has one unit of attention to spend, no more.\n\nTRY THIS\n1. Take T down to 0.1: each row collapses onto its single best match. The model stops hedging and picks one token \u2014 the same argmax you saw in `softmax`.\n2. Take T up to 4: the rows flatten. Every token looks at everybody equally, which is another way of saying it has stopped paying attention at all.\n3. Set `causal` to 1: the upper triangle vanishes. A token may not look at the FUTURE, so those scores are pushed to -infinity BEFORE the exp \u2014 and exp sends them to exactly zero. Look at the remaining bars: each row STILL sums to 1. The attention that was going to the future got redistributed to the past.\n\nThis is the mask that makes a language model able to generate text left to right. It is three characters of code, and you can see all of it."
+   },
+   "position": [
+    40,
+    900
+   ],
+   "size": [
+    640,
+    460
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "id": "l1",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n3",
+   "to_socket": "T"
+  },
+  {
+   "id": "l2",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n3",
+   "to_socket": "causal"
+  },
+  {
+   "id": "l3",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n4",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l4",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n5",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l5",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n6",
+   "to_socket": "items"
+  },
+  {
+   "id": "l6",
+   "from_node": "n5",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "items"
+  },
+  {
+   "id": "l7",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n8",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l8",
+   "from_node": "n8",
+   "from_socket": "result",
+   "to_node": "n9",
+   "to_socket": "width"
+  },
+  {
+   "id": "l9",
+   "from_node": "n8",
+   "from_socket": "result",
+   "to_node": "n9",
+   "to_socket": "height"
+  },
+  {
+   "id": "l10",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n9",
+   "to_socket": "depth"
+  },
+  {
+   "id": "l11",
+   "from_node": "n7",
+   "from_socket": "result",
+   "to_node": "n9",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l12",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n10",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l13",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n11",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l14",
+   "from_node": "n10",
+   "from_socket": "result",
+   "to_node": "n12",
+   "to_socket": "items"
+  },
+  {
+   "id": "l15",
+   "from_node": "n11",
+   "from_socket": "result",
+   "to_node": "n13",
+   "to_socket": "items"
+  },
+  {
+   "id": "l16",
+   "from_node": "n8",
+   "from_socket": "result",
+   "to_node": "n14",
+   "to_socket": "width"
+  },
+  {
+   "id": "l17",
+   "from_node": "n8",
+   "from_socket": "result",
+   "to_node": "n14",
+   "to_socket": "height"
+  },
+  {
+   "id": "l18",
+   "from_node": "n12",
+   "from_socket": "result",
+   "to_node": "n14",
+   "to_socket": "depth"
+  },
+  {
+   "id": "l19",
+   "from_node": "n13",
+   "from_socket": "result",
+   "to_node": "n14",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l20",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n15",
+   "to_socket": "in_0"
+  }
+ ],
+ "groups": [
+  {
+   "title": "1 - KNOBS",
+   "bounding": [
+    10,
+    140,
+    400,
+    300
+   ],
+   "color": "#3f589e"
+  },
+  {
+   "title": "2 - SCORES AND SOFTMAX",
+   "bounding": [
+    10,
+    440,
+    400,
+    420
+   ],
+   "color": "#8a5a2c"
+  },
+  {
+   "title": "3 - THE TWO GRIDS",
+   "bounding": [
+    440,
+    140,
+    1080,
+    1320
+   ],
+   "color": "#2c7a52"
+  }
+ ]
+}

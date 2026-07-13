@@ -101,9 +101,14 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` planned.
   to memorise, it is that volume. Shear it and the volume does not move; zero a row
   and it flattens to a plane (det = 0 *is* "not invertible"); flip a sign and space
   turns inside out. The three arrows are the matrix's columns. 10 nodes.
-- [ ] **Attention** — QKᵀ as a grid of columns, then softmax *per row*: the rows
-  normalise one by one. Extends to top-k / nucleus sampling = cutting the pie at
-  cumulative 0.9. Natural sequel to the softmax example.
+- [x] **Attention** — `examples/attention.json`. The sequel to `softmax`: the same
+  function, taken one **row** at a time. A blue grid of raw scores q·k/√d (negative
+  bars hang below the plane, exactly like logits), a green grid after the softmax
+  where every row sums to 1. The payoff is the `causal` switch: the upper triangle
+  vanishes — a token may not look at the future, so those scores go to −∞ *before*
+  the exp — and each surviving row **still** sums to 1, the masked attention having
+  been redistributed to the past. 16 nodes.
+  Still to do from here: top-k / nucleus sampling = cutting the pie at cumulative 0.9.
 - [x] **K-means** — `examples/kmeans-voronoi.json`. Lloyd's algorithm, and `Voronoi2D`
   on the centroids gives the decision regions for free. `iterazioni` = 0 shows the
   random init; drag it up and the centroids migrate into the clusters while the
@@ -140,8 +145,12 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` planned.
 
 - [ ] **Sorting, animated** — bars of differing height, slider `step` replays the
   algorithm's state at step k.
-- [ ] **Cellular automata** — Game of Life / Rule 30, with generations **stacked
-  along Z**: a printable tower of time.
+- [x] **Cellular automata** — `examples/cellular-automata.json`. An elementary CA:
+  one live cell, one byte of rule, and the generations **stacked along Z** into a
+  printable tower of time (one `Box` node fans out into ~500 cubes, ~2 s). Rule 90
+  is a Sierpinski triangle out of nothing; rule 30 is chaos so convincing it has
+  been used as a random generator, though nothing in it is random; rule 110 is
+  Turing complete. Eight bits. 9 nodes.
 - [x] **Fourier series / epicycles** — `examples/fourier-epicycles.json`. Each harmonic
   is a circle riding on the tip of the last; the pen (a red sphere) traces the wave,
   unrolled in time to the right — one `Circle` node draws all N circles by fanning out
@@ -150,8 +159,13 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` planned.
   sharpen but **never** arrive (the ripples that stay are Gibbs). `forma` swaps square
   / sawtooth / triangle by changing only *which* circles you take and how big they
   are — the machine is the same. 18 nodes.
-- [ ] **De Casteljau** — the Bézier construction at parameter `t`, the interpolation
-  lines collapsing onto the point. Almost obligatory in a CAD app.
+- [x] **De Casteljau** — `examples/de-casteljau.json`. The construction the CAD kernel
+  itself runs: no polynomial, just interpolation repeated until one point is left.
+  Drag `t` and the ladder collapses onto the curve, whose trace lies exactly on the
+  curve the catalog's `Bezier` node draws — same curve, two ways of saying it. The
+  four control points are `ConstructPoint`s, so you **drag them in the viewport** and
+  watch the curve get pulled towards the middle two without ever passing through
+  them. 25 nodes.
 - [ ] **L-systems / fractal trees** — a recursive CodeBlock, slider `depth`. The
   output is a printable object.
 - [ ] **Dijkstra / A\*** — a grid of cells, height = cost, the found path lit up.

@@ -1,0 +1,251 @@
+{
+ "name": "cellular-automata",
+ "nodes": [
+  {
+   "id": "n1",
+   "type": "IntegerSlider",
+   "params": {
+    "value": 30,
+    "_ui": {
+     "value": {
+      "min": 0,
+      "max": 255,
+      "step": 1
+     }
+    }
+   },
+   "position": [
+    40,
+    200
+   ],
+   "preview": false
+  },
+  {
+   "id": "n2",
+   "type": "IntegerSlider",
+   "params": {
+    "value": 22,
+    "_ui": {
+     "value": {
+      "min": 1,
+      "max": 40,
+      "step": 1
+     }
+    }
+   },
+   "position": [
+    40,
+    330
+   ],
+   "preview": false
+  },
+  {
+   "id": "n3",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# AN ELEMENTARY CELLULAR AUTOMATON. A row of cells, each alive or dead. To build the\n# next row, every cell looks at THREE cells above it (itself and its two neighbours)\n# and asks the rule what to become. Eight possible neighbourhoods -> eight answers\n# -> the rule is one byte. That is the entire program: 8 bits.\nrule = 30         #@param int min=0 max=255\ngenerations = 22  #@param int min=1 max=40\nwidth = 41        #@param int min=9 max=81\nstart = 0         #@param int min=0 max=1\nseed = 3          #@param int min=1 max=999\ncell = 4.0        #@param float min=1 max=10 step=0.5\nR, W, G = int(rule), int(width), int(generations)\nrng = random.Random(int(seed))\n# start = 0: ONE live cell in the middle. Everything that follows comes from there.\n# start = 1: a random row \u2014 same rule, and it still organises itself.\nrow = [0] * W\nif start == 0:\n    row[W // 2] = 1\nelse:\n    row = [rng.randint(0, 1) for _ in range(W)]\nalive = []\nfor g in range(G):\n    for i, c in enumerate(row):\n        if c:\n            alive.append((i, g))\n    nxt = []\n    for i in range(W):\n        left = row[(i - 1) % W]         # the row wraps around, like a ring\n        me = row[i]\n        right = row[(i + 1) % W]\n        idx = (left << 2) | (me << 1) | right       # the neighbourhood, as 0..7\n        nxt.append((R >> idx) & 1)                  # the rule, read bit by bit\n    row = nxt\n# each live cell becomes a cube. Generations stack ALONG Z: the tower is TIME.\nresult = {\"alive\": alive, \"W\": W, \"G\": G, \"cell\": cell, \"rule\": R,\n          \"n\": len(alive)}\n"
+   },
+   "position": [
+    40,
+    470
+   ],
+   "preview": false,
+   "size": [
+    380,
+    380
+   ]
+  },
+  {
+   "id": "n4",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# one point per LIVE cell: x = position in the row, z = which generation.\n# Dead cells produce nothing \u2014 the empty space IS part of the pattern.\nD = in_0\nc, W = D[\"cell\"], D[\"W\"]\nresult = [Vector((i - W / 2) * c, 0, g * c + c / 2) for i, g in D[\"alive\"]]\n"
+   },
+   "position": [
+    470,
+    470
+   ],
+   "preview": false,
+   "size": [
+    340,
+    190
+   ]
+  },
+  {
+   "id": "n5",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    860,
+    470
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n6",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = in_0[\"cell\"] * 0.92"
+   },
+   "position": [
+    470,
+    700
+   ],
+   "preview": false,
+   "size": [
+    320,
+    110
+   ]
+  },
+  {
+   "id": "n7",
+   "type": "Box",
+   "params": {},
+   "position": [
+    1120,
+    470
+   ],
+   "preview": true,
+   "color": "#4a9de0"
+  },
+  {
+   "id": "n8",
+   "type": "CodeBlock",
+   "params": {
+    "code": "size = 4.0  #@param float min=2 max=12 step=0.5\nD = in_0\nc, W, G, R = D[\"cell\"], D[\"W\"], D[\"G\"], D[\"rule\"]\nfamous = {30: \"chaos (used as a random generator)\",\n          90: \"the Sierpinski triangle, out of nothing\",\n          110: \"Turing complete: this can compute anything\",\n          184: \"traffic jams\", 250: \"a simple weave\", 54: \"gliders and collisions\"}\ndef _tv(s, x, z, fs):        # standing, facing the camera\n    return extrude(Pos(x, -12, z) * (Plane.XZ * Text(s, font_size=fs)), amount=0.8)\ntop = G * c + 14\nresult = [_tv(\"ELEMENTARY CELLULAR AUTOMATON\", 0, top + 14, size * 1.5),\n          _tv(f\"rule {R}   =   {R:08b}\", 0, top, size * 1.4),\n          _tv(famous.get(R, \"a rule like any other: 8 bits\"), 0, top - 12, size),\n          _tv(\"time  ->\", -W * c / 2 - 16, G * c / 2, size)]\n"
+   },
+   "position": [
+    1120,
+    700
+   ],
+   "preview": true,
+   "color": "#e8e8e8",
+   "size": [
+    360,
+    240
+   ]
+  },
+  {
+   "id": "n9",
+   "type": "Note",
+   "params": {
+    "text": "EIGHT BITS OF PROGRAM, AND A UNIVERSE.\n\nThe bottom row is the start: ONE live cell. Each row above it is the next generation, so the tower grows upward through TIME \u2014 and the whole history is one solid you could print.\n\nThe rule is the entire program. A cell looks at three cells (itself and its two neighbours): eight possible neighbourhoods, eight yes/no answers. Eight bits. One byte. That is all there is \u2014 no memory, no arithmetic, no randomness.\n\nTRY THIS \u2014 drag `rule`:\nrule 90: a perfect Sierpinski triangle. A fractal, out of one cell and a byte.\nrule 30: chaos. It is so unpredictable that it has been used as a random number generator \u2014 yet nothing here is random. Run it again and you get the same chaos, exactly.\nrule 110: this one is TURING COMPLETE. Those little gliders drifting and colliding can carry out any computation a computer can. Eight bits.\nrule 250, 184, 54: weaves, traffic jams, colliding particles.\n\nThen set `start` to 1: a random first row. Same rules, and they still organise themselves \u2014 the order was never in the seed, it was in the rule."
+   },
+   "position": [
+    40,
+    900
+   ],
+   "size": [
+    620,
+    420
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "id": "l1",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n3",
+   "to_socket": "rule"
+  },
+  {
+   "id": "l2",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n3",
+   "to_socket": "generations"
+  },
+  {
+   "id": "l3",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n4",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l4",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n5",
+   "to_socket": "items"
+  },
+  {
+   "id": "l5",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n6",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l6",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "width"
+  },
+  {
+   "id": "l7",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "height"
+  },
+  {
+   "id": "l8",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "depth"
+  },
+  {
+   "id": "l9",
+   "from_node": "n5",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l10",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n8",
+   "to_socket": "in_0"
+  }
+ ],
+ "groups": [
+  {
+   "title": "1 - THE RULE",
+   "bounding": [
+    10,
+    140,
+    400,
+    300
+   ],
+   "color": "#3f589e"
+  },
+  {
+   "title": "2 - THE AUTOMATON",
+   "bounding": [
+    10,
+    440,
+    400,
+    420
+   ],
+   "color": "#8a5a2c"
+  },
+  {
+   "title": "3 - THE TOWER OF TIME",
+   "bounding": [
+    440,
+    400,
+    1080,
+    500
+   ],
+   "color": "#2c7a52"
+  }
+ ]
+}

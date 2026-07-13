@@ -1,0 +1,567 @@
+{
+ "name": "de-casteljau",
+ "nodes": [
+  {
+   "id": "n1",
+   "type": "NumberSlider",
+   "params": {
+    "value": 0.4,
+    "_ui": {
+     "value": {
+      "min": 0,
+      "max": 1,
+      "step": 0.005
+     }
+    }
+   },
+   "position": [
+    40,
+    200
+   ],
+   "preview": false
+  },
+  {
+   "id": "n2",
+   "type": "ConstructPoint",
+   "params": {
+    "x": -52,
+    "y": -22,
+    "z": 0
+   },
+   "position": [
+    40,
+    340
+   ],
+   "preview": false
+  },
+  {
+   "id": "n3",
+   "type": "ConstructPoint",
+   "params": {
+    "x": -20,
+    "y": 40,
+    "z": 0
+   },
+   "position": [
+    40,
+    490
+   ],
+   "preview": false
+  },
+  {
+   "id": "n4",
+   "type": "ConstructPoint",
+   "params": {
+    "x": 22,
+    "y": -38,
+    "z": 0
+   },
+   "position": [
+    40,
+    640
+   ],
+   "preview": false
+  },
+  {
+   "id": "n5",
+   "type": "ConstructPoint",
+   "params": {
+    "x": 52,
+    "y": 26,
+    "z": 0
+   },
+   "position": [
+    40,
+    790
+   ],
+   "preview": false
+  },
+  {
+   "id": "n6",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    420,
+    460
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n7",
+   "type": "Polyline",
+   "params": {},
+   "position": [
+    700,
+    300
+   ],
+   "preview": true,
+   "color": "#7a8899"
+  },
+  {
+   "id": "n8",
+   "type": "Sphere",
+   "params": {
+    "radius": 2.6
+   },
+   "position": [
+    700,
+    160
+   ],
+   "preview": true,
+   "color": "#9fb3c8"
+  },
+  {
+   "id": "n9",
+   "type": "Bezier",
+   "params": {},
+   "position": [
+    700,
+    440
+   ],
+   "preview": true,
+   "color": "#5a7fb8"
+  },
+  {
+   "id": "n10",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# DE CASTELJAU: how a Bezier is really built. No polynomial, no formula \u2014 just\n# INTERPOLATION, over and over, until only one point is left.\n#\n#   level 1: walk a fraction t along each of the 3 sides of the control polygon\n#   level 2: join those 3 points, walk t along each of the 2 new sides\n#   level 3: join those 2, walk t along the 1 remaining side -> THE POINT ON THE CURVE\n#\n# Drag t from 0 to 1 and that point sweeps out the whole curve.\nt = 0.4    #@param float min=0 max=1 step=0.005\nP = [in_0, in_1, in_2, in_3]\n\ndef lerp(a, b, s):\n    return a + (b - a) * s          # a fraction s of the way from a to b\n\ndef step(pts, s):\n    return [lerp(pts[i], pts[i + 1], s) for i in range(len(pts) - 1)]\n\nL1 = step(P, t)          # 3 points\nL2 = step(L1, t)         # 2 points\nL3 = step(L2, t)         # 1 point: it lies exactly ON the curve\n# the trace: the same construction repeated for every moment up to t\ntrace = []\nfor i in range(int(t * 200) + 1):\n    s = i / 200\n    q = P\n    while len(q) > 1:\n        q = step(q, s)\n    trace.append(q[0])\nif len(trace) < 2:\n    trace = [P[0], P[0] + Vector(0, 0, 0.05)]     # a polyline wants 2 points\nresult = {\"L1\": L1, \"L2\": L2, \"point\": L3[0], \"trace\": trace, \"t\": t}\n"
+   },
+   "position": [
+    420,
+    700
+   ],
+   "preview": false,
+   "size": [
+    400,
+    420
+   ]
+  },
+  {
+   "id": "n11",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = in_0[\"L1\"]"
+   },
+   "position": [
+    880,
+    620
+   ],
+   "preview": false,
+   "size": [
+    300,
+    110
+   ]
+  },
+  {
+   "id": "n12",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    1180,
+    620
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n13",
+   "type": "Polyline",
+   "params": {},
+   "position": [
+    1420,
+    560
+   ],
+   "preview": true,
+   "color": "#c85a9e"
+  },
+  {
+   "id": "n14",
+   "type": "Sphere",
+   "params": {
+    "radius": 2.0
+   },
+   "position": [
+    1420,
+    680
+   ],
+   "preview": true,
+   "color": "#c85a9e"
+  },
+  {
+   "id": "n15",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = in_0[\"L2\"]"
+   },
+   "position": [
+    880,
+    800
+   ],
+   "preview": false,
+   "size": [
+    300,
+    110
+   ]
+  },
+  {
+   "id": "n16",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    1180,
+    800
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n17",
+   "type": "Polyline",
+   "params": {},
+   "position": [
+    1420,
+    800
+   ],
+   "preview": true,
+   "color": "#3fb87f"
+  },
+  {
+   "id": "n18",
+   "type": "Sphere",
+   "params": {
+    "radius": 2.4
+   },
+   "position": [
+    1420,
+    920
+   ],
+   "preview": true,
+   "color": "#3fb87f"
+  },
+  {
+   "id": "n19",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = in_0[\"point\"]"
+   },
+   "position": [
+    880,
+    980
+   ],
+   "preview": false,
+   "size": [
+    300,
+    110
+   ]
+  },
+  {
+   "id": "n20",
+   "type": "Sphere",
+   "params": {
+    "radius": 3.4
+   },
+   "position": [
+    1180,
+    980
+   ],
+   "preview": true,
+   "color": "#e94560"
+  },
+  {
+   "id": "n21",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = in_0[\"trace\"]"
+   },
+   "position": [
+    880,
+    1140
+   ],
+   "preview": false,
+   "size": [
+    300,
+    110
+   ]
+  },
+  {
+   "id": "n22",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    1180,
+    1140
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n23",
+   "type": "Polyline",
+   "params": {},
+   "position": [
+    1420,
+    1140
+   ],
+   "preview": true,
+   "color": "#ffd166"
+  },
+  {
+   "id": "n24",
+   "type": "CodeBlock",
+   "params": {
+    "code": "size = 4.0  #@param float min=2 max=12 step=0.5\nD = in_0\ndef _t(s, x, y, fs):          # lying flat: this scene is read from above\n    return extrude(Pos(x, y, 0) * Text(s, font_size=fs), amount=0.8)\nresult = [_t(\"DE CASTELJAU\", 0, 66, size * 1.8),\n          _t(\"a Bezier is just interpolation, repeated\", 0, 54, size),\n          _t(f\"t = {D['t']:.2f}\", 0, -58, size * 1.3)]\n"
+   },
+   "position": [
+    1700,
+    900
+   ],
+   "preview": true,
+   "color": "#e8e8e8",
+   "size": [
+    340,
+    200
+   ]
+  },
+  {
+   "id": "n25",
+   "type": "Note",
+   "params": {
+    "text": "HOW A BEZIER IS ACTUALLY BUILT.\n\nNot with a polynomial: with INTERPOLATION, repeated until only one point is left. That is de Casteljau's algorithm, and every CAD kernel \u2014 this one included \u2014 runs it under the hood.\n\nGREY: the control polygon, the 4 points joined up. VIOLET: walk a fraction t along each of its 3 sides, and join the 3 points you land on. GREEN: do it again on those, and you get 2 points, and one segment. RED: do it one last time, and the single point left IS a point of the curve.\n\nTRY THIS\n1. Drag `t` from 0 to 1: the ladder collapses and the red point sweeps out the whole curve. That yellow trail is the Bezier \u2014 and the blue curve behind it, drawn by the catalog's Bezier node, lies exactly on top of it. Same curve.\n2. DRAG A CONTROL POINT in the viewport (they carry gizmos). Notice the curve never goes THROUGH the middle two points: it is pulled towards them, and lets go. Only the first and last are actually touched.\n3. Put the two middle points on top of each other: the curve snaps taut.\n4. At t = 0 the point sits on P0; at t = 1 on P3. Nothing in between is promised \u2014 which is precisely what makes the curve smooth and controllable."
+   },
+   "position": [
+    420,
+    1300
+   ],
+   "size": [
+    640,
+    400
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "id": "l1",
+   "from_node": "n2",
+   "from_socket": "point",
+   "to_node": "n6",
+   "to_socket": "items"
+  },
+  {
+   "id": "l2",
+   "from_node": "n3",
+   "from_socket": "point",
+   "to_node": "n6",
+   "to_socket": "items"
+  },
+  {
+   "id": "l3",
+   "from_node": "n4",
+   "from_socket": "point",
+   "to_node": "n6",
+   "to_socket": "items"
+  },
+  {
+   "id": "l4",
+   "from_node": "n5",
+   "from_socket": "point",
+   "to_node": "n6",
+   "to_socket": "items"
+  },
+  {
+   "id": "l5",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "points"
+  },
+  {
+   "id": "l6",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n8",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l7",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n9",
+   "to_socket": "points"
+  },
+  {
+   "id": "l8",
+   "from_node": "n2",
+   "from_socket": "point",
+   "to_node": "n10",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l9",
+   "from_node": "n3",
+   "from_socket": "point",
+   "to_node": "n10",
+   "to_socket": "in_1"
+  },
+  {
+   "id": "l10",
+   "from_node": "n4",
+   "from_socket": "point",
+   "to_node": "n10",
+   "to_socket": "in_2"
+  },
+  {
+   "id": "l11",
+   "from_node": "n5",
+   "from_socket": "point",
+   "to_node": "n10",
+   "to_socket": "in_3"
+  },
+  {
+   "id": "l12",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n10",
+   "to_socket": "t"
+  },
+  {
+   "id": "l13",
+   "from_node": "n10",
+   "from_socket": "result",
+   "to_node": "n11",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l14",
+   "from_node": "n11",
+   "from_socket": "result",
+   "to_node": "n12",
+   "to_socket": "items"
+  },
+  {
+   "id": "l15",
+   "from_node": "n12",
+   "from_socket": "result",
+   "to_node": "n13",
+   "to_socket": "points"
+  },
+  {
+   "id": "l16",
+   "from_node": "n12",
+   "from_socket": "result",
+   "to_node": "n14",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l17",
+   "from_node": "n10",
+   "from_socket": "result",
+   "to_node": "n15",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l18",
+   "from_node": "n15",
+   "from_socket": "result",
+   "to_node": "n16",
+   "to_socket": "items"
+  },
+  {
+   "id": "l19",
+   "from_node": "n16",
+   "from_socket": "result",
+   "to_node": "n17",
+   "to_socket": "points"
+  },
+  {
+   "id": "l20",
+   "from_node": "n16",
+   "from_socket": "result",
+   "to_node": "n18",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l21",
+   "from_node": "n10",
+   "from_socket": "result",
+   "to_node": "n19",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l22",
+   "from_node": "n19",
+   "from_socket": "result",
+   "to_node": "n20",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l23",
+   "from_node": "n10",
+   "from_socket": "result",
+   "to_node": "n21",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l24",
+   "from_node": "n21",
+   "from_socket": "result",
+   "to_node": "n22",
+   "to_socket": "items"
+  },
+  {
+   "id": "l25",
+   "from_node": "n22",
+   "from_socket": "result",
+   "to_node": "n23",
+   "to_socket": "points"
+  },
+  {
+   "id": "l26",
+   "from_node": "n10",
+   "from_socket": "result",
+   "to_node": "n24",
+   "to_socket": "in_0"
+  }
+ ],
+ "groups": [
+  {
+   "title": "1 - t, THE ONE KNOB",
+   "bounding": [
+    10,
+    140,
+    400,
+    140
+   ],
+   "color": "#3f589e"
+  },
+  {
+   "title": "2 - THE FOUR CONTROL POINTS (drag them in 3D)",
+   "bounding": [
+    10,
+    300,
+    400,
+    620
+   ],
+   "color": "#8a5a2c"
+  },
+  {
+   "title": "3 - THE LADDER: interpolate, interpolate, interpolate",
+   "bounding": [
+    400,
+    560,
+    1180,
+    720
+   ],
+   "color": "#2c7a52"
+  }
+ ]
+}

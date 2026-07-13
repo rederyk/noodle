@@ -65,6 +65,22 @@ _EXAMPLE_DESCRIPTIONS = {
                         "gizmo) into the wrong basin and watch it settle in a local "
                         "minimum. The gradient is numeric, so the algorithm knows "
                         "nothing about f — change f and it still works.",
+    "attention": "The sequel to `softmax` — attention is the same function taken one "
+                 "ROW at a time. The blue grid is the raw scores q.k (negative bars "
+                 "hang below the plane); the green grid is after the softmax, where "
+                 "every row sums to exactly 1. Switch `causal` on and the upper "
+                 "triangle vanishes: a token may not look at the future — and each "
+                 "row still sums to 1.",
+    "cellular-automata": "Eight bits of program, and a universe — an elementary "
+                         "cellular automaton whose generations stack along Z into a "
+                         "printable tower of time. Rule 90 is a Sierpinski triangle, "
+                         "rule 30 is chaos used as a random generator, rule 110 is "
+                         "Turing complete. One live cell to start with.",
+    "de-casteljau": "How a Bezier is actually built: not a polynomial, just "
+                    "interpolation repeated until one point is left. Drag `t` and the "
+                    "ladder collapses onto the curve; drag a control point (they carry "
+                    "gizmos) and watch the curve get pulled towards it without ever "
+                    "passing through it.",
     "matrix-determinant": "Linear algebra you can hold — a 3x3 matrix (nine sliders) "
                           "deforms a unit cube, and the catalog's Volume node reads "
                           "the DETERMINANT off the solid. Shear it and the volume "
