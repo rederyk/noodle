@@ -43,7 +43,7 @@
    "id": "n3",
    "type": "CodeBlock",
    "params": {
-    "code": "# I DATI: nuvole di punti. L'algoritmo NON sa quali sono i gruppi veri \u2014\n# li deve trovare. Noi qui li generiamo, ma poi glieli diamo mescolati.\ngruppi_veri = 3   #@param int min=1 max=6\nper_gruppo = 45   #@param int min=5 max=200\nsparpaglio = 7.0  #@param float min=1 max=20 step=0.5\nseme = 22         #@param int min=1 max=999\nrng = random.Random(int(seme))\nW, H = 110.0, 80.0                      # il campo, in mm\ncentri_veri = [(rng.uniform(-W / 2 + 15, W / 2 - 15), rng.uniform(-H / 2 + 12, H / 2 - 12))\n               for _ in range(int(gruppi_veri))]\npts = []\nfor cx, cy in centri_veri:\n    for _ in range(int(per_gruppo)):\n        pts.append((rng.gauss(cx, sparpaglio), rng.gauss(cy, sparpaglio)))\nresult = {\"pts\": pts, \"W\": W, \"H\": H}\n"
+    "code": "# THE DATA: clouds of points. The algorithm does NOT know which the real groups\n# are \u2014 it has to find them. We generate them here, then hand them over shuffled.\ntrue_groups = 3   #@param int min=1 max=6\nper_group = 45    #@param int min=5 max=200\nspread = 7.0      #@param float min=1 max=20 step=0.5\nseed = 22         #@param int min=1 max=999\nrng = random.Random(int(seed))\nW, H = 110.0, 80.0                      # the field, in mm\ntrue_centres = [(rng.uniform(-W / 2 + 15, W / 2 - 15), rng.uniform(-H / 2 + 12, H / 2 - 12))\n                for _ in range(int(true_groups))]\npts = []\nfor cx, cy in true_centres:\n    for _ in range(int(per_group)):\n        pts.append((rng.gauss(cx, spread), rng.gauss(cy, spread)))\nresult = {\"pts\": pts, \"W\": W, \"H\": H}\n"
    },
    "position": [
     40,
@@ -59,7 +59,7 @@
    "id": "n4",
    "type": "CodeBlock",
    "params": {
-    "code": "# i punti da disegnare. Il dict passa INTERO sul filo (un CodeBlock non produce\n# liste, quindi niente fan-out); qui lo apriamo in una lista vera.\nresult = [Vector(x, y, 0) for x, y in in_0[\"pts\"]]\n"
+    "code": "# the points, to draw. The dict rides the wire WHOLE (a CodeBlock is not a list\n# producer, so nothing fans out); here we open it into a real list.\nresult = [Vector(x, y, 0) for x, y in in_0[\"pts\"]]\n"
    },
    "position": [
     470,
@@ -101,7 +101,7 @@
    "id": "n7",
    "type": "CodeBlock",
    "params": {
-    "code": "# K-MEANS (algoritmo di Lloyd), due mosse ripetute:\n#   1. ASSEGNA  ogni punto al centroide piu' vicino\n#   2. SPOSTA   ogni centroide nella media dei suoi punti\n# Ripeti. Si ferma da solo quando nessuno cambia piu' squadra.\nk = 3           #@param int min=1 max=8\niterazioni = 8  #@param int min=0 max=20\nseme = 11       #@param int min=1 max=999\nD = in_0\npts, W, H = D[\"pts\"], D[\"W\"], D[\"H\"]\nrng = random.Random(int(seme))\nK = max(1, min(int(k), len(pts)))\n# partenza: K punti a caso fra i dati stessi (e' l'inizializzazione classica)\ncent = [list(p) for p in rng.sample(pts, K)]\nfor _ in range(int(iterazioni)):\n    gruppi = [[] for _ in range(K)]\n    for x, y in pts:\n        i = min(range(K), key=lambda j: (x - cent[j][0]) ** 2 + (y - cent[j][1]) ** 2)\n        gruppi[i].append((x, y))\n    for i, g in enumerate(gruppi):\n        if g:                                   # un centroide senza punti resta dov'e'\n            cent[i] = [sum(p[0] for p in g) / len(g), sum(p[1] for p in g) / len(g)]\n# inerzia: la somma delle distanze al quadrato dal proprio centroide.\n# E' il NUMERO che k-means minimizza \u2014 scende a ogni iterazione, mai risale.\ninerzia = sum(min((x - c[0]) ** 2 + (y - c[1]) ** 2 for c in cent) for x, y in pts)\nresult = {\"cent\": cent, \"inerzia\": inerzia, \"k\": K, \"it\": int(iterazioni),\n          \"W\": W, \"H\": H}\n"
+    "code": "# K-MEANS (Lloyd's algorithm), two moves, repeated:\n#   1. ASSIGN  every point to the nearest centroid\n#   2. MOVE    every centroid to the mean of its points\n# Repeat. It stops on its own when nobody changes team any more.\nk = 3           #@param int min=1 max=8\niterations = 8  #@param int min=0 max=20\nseed = 11       #@param int min=1 max=999\nD = in_0\npts, W, H = D[\"pts\"], D[\"W\"], D[\"H\"]\nrng = random.Random(int(seed))\nK = max(1, min(int(k), len(pts)))\n# the start: K points picked at random from the data itself (the classic init)\ncent = [list(p) for p in rng.sample(pts, K)]\nfor _ in range(int(iterations)):\n    groups = [[] for _ in range(K)]\n    for x, y in pts:\n        i = min(range(K), key=lambda j: (x - cent[j][0]) ** 2 + (y - cent[j][1]) ** 2)\n        groups[i].append((x, y))\n    for i, g in enumerate(groups):\n        if g:                                   # a centroid with no points stays put\n            cent[i] = [sum(p[0] for p in g) / len(g), sum(p[1] for p in g) / len(g)]\n# inertia: the sum of squared distances from each point to its own centroid. It is\n# THE number k-means minimises \u2014 it goes down every iteration and never back up.\ninertia = sum(min((x - c[0]) ** 2 + (y - c[1]) ** 2 for c in cent) for x, y in pts)\nresult = {\"cent\": cent, \"inertia\": inertia, \"k\": K, \"it\": int(iterations),\n          \"W\": W, \"H\": H}\n"
    },
    "position": [
     470,
@@ -207,7 +207,7 @@
    "id": "n15",
    "type": "CodeBlock",
    "params": {
-    "code": "corpo = 4.0  #@param float min=2 max=12 step=0.5\nD = in_0\ndef _t(s, x, y, size):        # sdraiato: questa scena si guarda dall'alto\n    return extrude(Pos(x, y, 0) * Text(s, font_size=size), amount=0.8)\nstato = \"PARTENZA (centroidi a caso)\" if D[\"it\"] == 0 else f\"iterazione {D['it']}\"\nresult = [_t(\"K-MEANS\", 0, 62, corpo * 1.8),\n          _t(stato, 0, 51, corpo * 1.2),\n          _t(f\"k = {D['k']}\", -34, -52, corpo * 1.2),\n          _t(f\"inerzia = {D['inerzia']:.0f}\", 26, -52, corpo * 1.2)]\n"
+    "code": "size = 4.0  #@param float min=2 max=12 step=0.5\nD = in_0\ndef _t(s, x, y, fs):          # lying flat: this scene is read from above\n    return extrude(Pos(x, y, 0) * Text(s, font_size=fs), amount=0.8)\nstate = \"START (centroids thrown at random)\" if D[\"it\"] == 0 else f\"iteration {D['it']}\"\nresult = [_t(\"K-MEANS\", 0, 62, size * 1.8),\n          _t(state, 0, 51, size * 1.2),\n          _t(f\"k = {D['k']}\", -34, -52, size * 1.2),\n          _t(f\"inertia = {D['inertia']:.0f}\", 26, -52, size * 1.2)]\n"
    },
    "position": [
     1400,
@@ -224,7 +224,7 @@
    "id": "n16",
    "type": "Note",
    "params": {
-    "text": "K-MEANS: trovare i gruppi che nessuno ti ha detto.\n\nI punti bianchi sono i dati. Le palline rosse sono i centroidi. Le lastre sotto sono il VORONOI dei centroidi: la mappa di chi vince dove.\n\nL'algoritmo e' due mosse, ripetute: assegna ogni punto al centroide piu' vicino, poi sposta ogni centroide nella media dei suoi punti.\n\nDA PROVARE\n1. Metti `iterazioni` a 0: i centroidi sono buttati a caso e le regioni sono assurde. Ora sali 1, 2, 3...: li vedi MIGRARE nel cuore dei gruppi e le regioni assestarsi. Dopo 5-6 passi non si muove piu' niente.\n2. Guarda l'inerzia (la somma dei quadrati delle distanze dal proprio centroide): e' il numero che l'algoritmo minimizza. Scende a ogni iterazione e non risale MAI. E' tutto qui il k-means.\n3. Cambia `k`: con k sbagliato l'algoritmo trova comunque dei gruppi, e sono senza senso. K-means non ti dice quanti gruppi ci sono: te lo chiede.\n4. Cambia il `seme` del k-means (non della nuvola): partenze diverse possono dare risultati diversi. Anche questo cade in minimi locali.\n\nLe celle di Voronoi non le abbiamo calcolate: e' un nodo del catalogo, gia' li'. Il confine fra due centroidi E' la regola di decisione."
+    "text": "K-MEANS: finding the groups nobody told you about.\n\nThe white dots are the data. The red balls are the centroids. The slabs underneath are the VORONOI of the centroids: the map of who wins where.\n\nThe algorithm is two moves, repeated: assign every point to the nearest centroid, then move every centroid to the mean of its points.\n\nTRY THIS\n1. Set `iterations` to 0: the centroids are thrown at random and the regions are nonsense. Now go up 1, 2, 3...: you watch them MIGRATE into the heart of the clusters while the regions settle. After 5-6 steps nothing moves.\n2. Watch the inertia (the sum of squared distances from each point to its own centroid): it is the number the algorithm minimises. It falls every iteration and NEVER goes back up. That is the whole of k-means.\n3. Change `k`: with the wrong k the algorithm still finds groups, and they are meaningless. K-means does not tell you how many groups there are: it asks you.\n4. Change the k-means `seed` (not the cloud's): different starts can give different answers. This one falls into local minima too.\n\nWe did not compute the Voronoi cells: it is a catalog node, already there. The boundary between two centroids IS the decision rule."
    },
    "position": [
     40,
@@ -277,7 +277,7 @@
    "from_node": "n2",
    "from_socket": "result",
    "to_node": "n7",
-   "to_socket": "iterazioni"
+   "to_socket": "iterations"
   },
   {
    "id": "l7",
@@ -338,7 +338,7 @@
  ],
  "groups": [
   {
-   "title": "1 \u00b7 MANOPOLE",
+   "title": "1 - KNOBS",
    "bounding": [
     10,
     140,
@@ -348,7 +348,7 @@
    "color": "#3f589e"
   },
   {
-   "title": "2 \u00b7 I DATI",
+   "title": "2 - THE DATA",
    "bounding": [
     10,
     400,
@@ -358,7 +358,7 @@
    "color": "#8a5a2c"
   },
   {
-   "title": "3 \u00b7 L'ALGORITMO",
+   "title": "3 - THE ALGORITHM",
    "bounding": [
     440,
     360,
@@ -368,7 +368,7 @@
    "color": "#7a2c5a"
   },
   {
-   "title": "4 \u00b7 CENTROIDI + REGIONI DI DECISIONE",
+   "title": "4 - CENTROIDS + DECISION REGIONS",
    "bounding": [
     880,
     140,

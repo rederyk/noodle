@@ -5,7 +5,7 @@
    "id": "n1",
    "type": "CodeBlock",
    "params": {
-    "code": "# IL PAESAGGIO: la funzione di costo f(x, y) che vogliamo minimizzare.\n# Questo nodo non disegna niente: manda la FUNZIONE stessa lungo il filo.\ncurva_x = 0.08     #@param float min=0.01 max=1.0 step=0.01\ncurva_y = 0.80     #@param float min=0.01 max=3.0 step=0.05\ngobbe = 1.2        #@param float min=0 max=3 step=0.1\npendenza = 0.30    #@param float min=0 max=1 step=0.05\ndef f(x, y):\n    # una GOLA: ripidissima in y (curva_y), quasi piatta in x (curva_x). E' la\n    # forma che mette in crisi la discesa del gradiente, ed e' la forma vera\n    # delle loss reali. Le gobbe scavano minimi LOCALI lungo il fondo; la\n    # pendenza li mette a quote diverse, cosi' cadere in quello sbagliato COSTA.\n    return (0.5 * (curva_x * x * x + curva_y * y * y)\n            + gobbe * math.cos(1.1 * x) * math.cos(0.9 * y)\n            + pendenza * x)\n# sxy/sz: da unita' della funzione a millimetri. R: mezza larghezza del dominio.\nresult = {\"f\": f, \"sxy\": 6.0, \"sz\": 2.2, \"R\": 6.0}\n"
+    "code": "# THE LANDSCAPE: the cost function f(x, y) we want to minimise.\n# This node draws nothing: it sends the FUNCTION itself down the wire.\ncurve_x = 0.08     #@param float min=0.01 max=1.0 step=0.01\ncurve_y = 0.80     #@param float min=0.01 max=3.0 step=0.05\nbumps = 1.2        #@param float min=0 max=3 step=0.1\ntilt = 0.30        #@param float min=0 max=1 step=0.05\ndef f(x, y):\n    # A RAVINE: steep along y (curve_y), nearly flat along x (curve_x). It is the\n    # shape that breaks gradient descent, and it is the real shape of real losses.\n    # The bumps dig LOCAL minima along the floor; the tilt puts them at different\n    # heights, so falling into the wrong one actually COSTS you something.\n    return (0.5 * (curve_x * x * x + curve_y * y * y)\n            + bumps * math.cos(1.1 * x) * math.cos(0.9 * y)\n            + tilt * x)\n# sxy/sz: from function units to millimetres. R: half-width of the domain.\nresult = {\"f\": f, \"sxy\": 6.0, \"sz\": 2.2, \"R\": 6.0}\n"
    },
    "position": [
     40,
@@ -21,7 +21,7 @@
    "id": "n2",
    "type": "CodeBlock",
    "params": {
-    "code": "# LA SUPERFICIE: f campionata su una griglia NxN -> una vera superficie B-Rep.\n# E' solo un DISEGNO di f: l'algoritmo non la usa, cammina sulla funzione.\nrisoluzione = 30  #@param int min=8 max=60\nspessore = 1.2    #@param float min=0.4 max=6 step=0.2\nM = in_0\nf, sxy, sz, R = M[\"f\"], M[\"sxy\"], M[\"sz\"], M[\"R\"]\nN = int(risoluzione)\nu = [-R + 2 * R * i / (N - 1) for i in range(N)]\ngriglia = [[(x * sxy, y * sxy, f(x, y) * sz) for y in u] for x in u]\nresult = thicken(Face.make_surface_from_array_of_points(griglia), spessore)\n"
+    "code": "# THE SURFACE: f sampled on an NxN grid -> a real B-Rep surface.\n# Only a PORTRAIT of f: the algorithm never touches it, it walks on the function.\nresolution = 30   #@param int min=8 max=60\nthickness = 1.2   #@param float min=0.4 max=6 step=0.2\nM = in_0\nf, sxy, sz, R = M[\"f\"], M[\"sxy\"], M[\"sz\"], M[\"R\"]\nN = int(resolution)\nu = [-R + 2 * R * i / (N - 1) for i in range(N)]\ngrid = [[(x * sxy, y * sxy, f(x, y) * sz) for y in u] for x in u]\nresult = thicken(Face.make_surface_from_array_of_points(grid), thickness)\n"
    },
    "position": [
     40,
@@ -109,7 +109,7 @@
    "id": "n7",
    "type": "CodeBlock",
    "params": {
-    "code": "# LA DISCESA: x <- x - lr * gradiente(f, x).  Ripetuto `passi` volte.\n# E' l'unico nodo che non si puo' fare con i nodi del catalogo: e' un CICLO.\nlr = 0.15    #@param float min=0.005 max=2.5 step=0.005\npassi = 60   #@param int min=1 max=200\nk = 60       #@param int min=0 max=200\nM, partenza = in_0, in_1\nf, sxy, sz, R = M[\"f\"], M[\"sxy\"], M[\"sz\"], M[\"R\"]\nx, y = float(partenza.X) / sxy, float(partenza.Y) / sxy      # da mm a unita' di f\nh = 1e-4\ncammino = [(x, y)]\nfor _ in range(int(passi)):\n    # gradiente NUMERICO (differenze centrali): nessuna derivata scritta a mano.\n    # La pendenza in x e' quanto cambia f facendo un passettino h in x.\n    gx = (f(x + h, y) - f(x - h, y)) / (2 * h)\n    gy = (f(x, y + h) - f(x, y - h)) / (2 * h)\n    x -= lr * gx          # <- IL passo: contro il gradiente, lungo la discesa\n    y -= lr * gy\n    if abs(x) > R + 1 or abs(y) > R + 1:\n        break             # lr troppo grande: e' schizzata FUORI dal paesaggio.\n    cammino.append((x, y))\n# mostra solo i primi k passi: trascinare k = far rotolare la pallina\nvisibile = cammino[:max(int(k), 1) + 1]\npunti = [Vector(px * sxy, py * sxy, f(px, py) * sz + 2.2) for px, py in visibile]\n# scarta i passi ormai fermi: due punti coincidenti sono un segmento NULLO, e la\n# polilinea che ci passa dentro fa esplodere il kernel geometrico.\npuliti = [punti[0]]\nfor pt in punti[1:]:\n    if (pt - puliti[-1]).length > 0.02:\n        puliti.append(pt)\nif len(puliti) < 2:\n    puliti.append(puliti[0] + Vector(0, 0, 0.05))   # una polilinea vuole 2 punti\nresult = puliti\n"
+    "code": "# THE DESCENT: x <- x - lr * gradient(f, x).  Repeated `steps` times.\n# The one thing the catalog nodes cannot express: a LOOP.\nlr = 0.15    #@param float min=0.005 max=2.5 step=0.005\nsteps = 60   #@param int min=1 max=200\nk = 60       #@param int min=0 max=200\nM, start = in_0, in_1\nf, sxy, sz, R = M[\"f\"], M[\"sxy\"], M[\"sz\"], M[\"R\"]\nx, y = float(start.X) / sxy, float(start.Y) / sxy       # from mm to units of f\nh = 1e-4\npath = [(x, y)]\nfor _ in range(int(steps)):\n    # NUMERIC gradient (central differences): no derivative written by hand. The\n    # slope along x is just how much f changes if you take a tiny step h in x.\n    gx = (f(x + h, y) - f(x - h, y)) / (2 * h)\n    gy = (f(x, y + h) - f(x, y - h)) / (2 * h)\n    x -= lr * gx          # <- THE step: against the gradient, downhill\n    y -= lr * gy\n    if abs(x) > R + 1 or abs(y) > R + 1:\n        break             # lr too large: it has shot straight OUT of the landscape\n    path.append((x, y))\n# show only the first k steps: dragging k rolls the ball\nvisible = path[:max(int(k), 1) + 1]\npts = [Vector(px * sxy, py * sxy, f(px, py) * sz + 2.2) for px, py in visible]\n# drop the steps that have already converged: two coincident points make a NULL\n# segment, and the polyline through them blows up the geometry kernel.\nclean = [pts[0]]\nfor pt in pts[1:]:\n    if (pt - clean[-1]).length > 0.02:\n        clean.append(pt)\nif len(clean) < 2:\n    clean.append(clean[0] + Vector(0, 0, 0.05))    # a polyline wants 2 points\nresult = clean\n"
    },
    "position": [
     470,
@@ -195,7 +195,7 @@
    "id": "n14",
    "type": "CodeBlock",
    "params": {
-    "code": "# I NUMERI, in 3D: si riscrivono a ogni esecuzione.\nlr = 0.15   #@param float min=0.005 max=2.5 step=0.005\nk = 60      #@param int min=0 max=200\ncorpo = 4.0 #@param float min=2 max=12 step=0.5\nM, qui = in_0, in_1\nf, sxy, sz = M[\"f\"], M[\"sxy\"], M[\"sz\"]\nx, y = float(qui.X) / sxy, float(qui.Y) / sxy\ndef _tv(s, px, py, pz, size):     # testo in piedi, rivolto alla camera\n    return extrude(Pos(px, py, pz) * (Plane.XZ * Text(s, font_size=size)), amount=0.8)\nresult = [_tv(\"DISCESA DEL GRADIENTE\", 0, 46, 70, corpo * 1.8),\n          _tv(\"x <- x - lr * gradiente f(x)\", 0, 46, 59, corpo),\n          _tv(f\"lr = {lr:.3f}\", -34, 46, 47, corpo * 1.2),\n          _tv(f\"passo {int(k)}\", 0, 46, 47, corpo * 1.2),\n          _tv(f\"loss = {f(x, y):.2f}\", 36, 46, 47, corpo * 1.2)]\n"
+    "code": "# THE NUMBERS, in 3D: they rewrite themselves on every run.\nlr = 0.15   #@param float min=0.005 max=2.5 step=0.005\nk = 60      #@param int min=0 max=200\nsize = 4.0  #@param float min=2 max=12 step=0.5\nM, here = in_0, in_1\nf, sxy, sz = M[\"f\"], M[\"sxy\"], M[\"sz\"]\nx, y = float(here.X) / sxy, float(here.Y) / sxy\ndef _tv(s, px, py, pz, fs):      # standing text, facing the camera\n    return extrude(Pos(px, py, pz) * (Plane.XZ * Text(s, font_size=fs)), amount=0.8)\nresult = [_tv(\"GRADIENT DESCENT\", 0, 46, 70, size * 1.8),\n          _tv(\"x <- x - lr * gradient f(x)\", 0, 46, 59, size),\n          _tv(f\"lr = {lr:.3f}\", -34, 46, 47, size * 1.2),\n          _tv(f\"step {int(k)}\", 0, 46, 47, size * 1.2),\n          _tv(f\"loss = {f(x, y):.2f}\", 36, 46, 47, size * 1.2)]\n"
    },
    "position": [
     1420,
@@ -212,7 +212,7 @@
    "id": "n15",
    "type": "Note",
    "params": {
-    "text": "DISCESA DEL GRADIENTE \u2014 come una macchina impara.\n\nLa superficie e' la LOSS: quanto sbaglia il modello per ogni coppia di parametri (x, y). Imparare = scendere fino al fondo.\n\nL'algoritmo e' una riga sola: guarda la pendenza sotto i piedi (il gradiente) e fai un passo nella direzione opposta, lungo lr.\n\nIl paesaggio e' una GOLA: ripida da un lato, quasi piatta dall'altro. E' la forma che mette in crisi l'algoritmo \u2014 e la forma vera delle loss.\n\nDA PROVARE\n1. Trascina k da 0 a 60: la pallina rossa rotola giu'. E' l'animazione.\n2. Porta lr a 1.5: il percorso ZIGZAGA da una parete all'altra della gola invece di scendere, e finisce PEGGIO (loss +0.3 invece di -1.7). Spingilo oltre 2 e scappa via dal paesaggio.\n3. Abbassa lr a 0.05: scende dritto, ma in 60 passi non arriva in fondo (loss +0.1). Troppo piccolo e' lento, troppo grande e' rotto.\n5. TRASCINA IL PUNTO DI PARTENZA nel viewport (ha il gizmo): partendo da destra finisce nel minimo LOCALE (loss -0.1) invece che nel minimo vero (loss -1.7), e li' resta per sempre. Non e' un bug: e' IL problema della discesa del gradiente."
+    "text": "GRADIENT DESCENT \u2014 how a machine learns.\n\nThe surface is the LOSS: how wrong the model is for every pair of parameters (x, y). Learning = walking down to the bottom.\n\nThe algorithm is one line: look at the slope under your feet (the gradient) and take a step the other way, of size lr.\n\nThe landscape is a RAVINE: steep on one side, nearly flat along the other. That is the shape that breaks the algorithm \u2014 and the real shape of losses.\n\nTRY THIS\n1. Drag k from 0 to 60: the red ball rolls down. That is the animation.\n2. Set lr = 1.5: the path ZIG-ZAGS from one wall of the ravine to the other instead of descending, and ends up WORSE than it started (loss +0.3 instead of -1.7). Push it past 2 and it escapes the landscape entirely.\n3. Drop lr to 0.05: it descends straight, but 60 steps are not enough to arrive (loss +0.1). Too small is slow, too large is broken.\n4. DRAG THE STARTING POINT in the viewport (it carries a gizmo): start from the right and it settles in the LOCAL minimum (loss -0.1) instead of the true one (loss -1.7), and stays there forever. That is not a bug: it is THE problem of gradient descent."
    },
    "position": [
     470,
@@ -227,7 +227,7 @@
    "id": "n16",
    "type": "Note",
    "params": {
-    "text": "PERCHE' IL GRADIENTE E' NUMERICO\n\nNel nodo della discesa la pendenza non e' una derivata scritta a mano: e' la differenza centrale (f(x+h) - f(x-h)) / 2h.\n\nCosi' l'algoritmo NON sa nulla di f: cambia la funzione nel nodo Paesaggio e la discesa continua a funzionare. E' esattamente il motivo per cui la discesa del gradiente e' universale."
+    "text": "WHY THE GRADIENT IS NUMERIC\n\nIn the descent node the slope is not a hand-written derivative: it is the central difference (f(x+h) - f(x-h)) / 2h.\n\nSo the algorithm knows NOTHING about f: change the function in the Landscape node and the descent keeps working. That is exactly why gradient descent is universal."
    },
    "position": [
     470,
@@ -242,7 +242,7 @@
    "id": "n17",
    "type": "Note",
    "params": {
-    "text": "COME E' FATTO\n\n1. Il nodo Paesaggio non emette geometria: manda la FUNZIONE f lungo il filo (un dict {f, scale}). Superficie, discesa ed etichette la ricevono \u2014 una sola definizione di f, tre consumatori. Il bus `data` trasporta qualsiasi oggetto Python, funzioni comprese.\n\n2. La superficie e' solo un ritratto di f: 30x30 campioni -> Face.make_surface_from_array_of_points -> thicken. L'algoritmo non la tocca, cammina sulla funzione.\n\n3. Il ciclo e' l'unica cosa che i nodi del catalogo non sanno fare: sta in un CodeBlock. Tutto il resto e' catalogo.\n\n4. Il nodo List dopo la discesa serve: un CodeBlock non e' marcato 'produce liste', e senza di lui la Sphere non farebbe fan-out (una sola pallina invece di N).\n\n5. Il punto di partenza e' un ConstructPoint perche' porta il gizmo di traslazione: lo trascini nel 3D e il grafo ricalcola."
+    "text": "HOW IT IS BUILT\n\n1. The Landscape node emits no geometry: it sends the FUNCTION f down the wire (a dict {f, scales}). Surface, descent and labels all receive it \u2014 one definition of f, three consumers. The `data` bus carries any Python object, closures included.\n\n2. The surface is only a portrait of f: 30x30 samples -> Face.make_surface_from_array_of_points -> thicken. The algorithm never touches it; it walks on the function.\n\n3. The loop is the one thing the catalog nodes cannot do, so it lives in a CodeBlock. Everything else is catalog.\n\n4. The List node after the descent earns its place: a CodeBlock is not marked as a list producer, and without it the Sphere would not fan out (one ball instead of N).\n\n5. The starting point is a ConstructPoint because it carries the translate gizmo: drag it in 3D and the graph recomputes."
    },
    "position": [
     930,
@@ -288,7 +288,7 @@
    "from_node": "n4",
    "from_socket": "result",
    "to_node": "n7",
-   "to_socket": "passi"
+   "to_socket": "steps"
   },
   {
    "id": "l6",
@@ -370,7 +370,7 @@
  ],
  "groups": [
   {
-   "title": "1 \u00b7 IL PAESAGGIO \u2014 la funzione di costo f(x, y)",
+   "title": "1 - THE LANDSCAPE: the cost function f(x, y)",
    "bounding": [
     10,
     140,
@@ -380,7 +380,7 @@
    "color": "#3f589e"
   },
   {
-   "title": "2 \u00b7 LE MANOPOLE",
+   "title": "2 - THE KNOBS",
    "bounding": [
     10,
     820,
@@ -390,7 +390,7 @@
    "color": "#8a5a2c"
   },
   {
-   "title": "3 \u00b7 LA DISCESA \u2014 l'unico ciclo",
+   "title": "3 - THE DESCENT: the only loop",
    "bounding": [
     440,
     820,
@@ -400,7 +400,7 @@
    "color": "#7a2c5a"
   },
   {
-   "title": "4 \u00b7 LE FIGURE \u2014 cammino, pallina, numeri",
+   "title": "4 - THE FIGURES: path, ball, numbers",
    "bounding": [
     910,
     780,

@@ -5,7 +5,7 @@
    "id": "n1",
    "type": "CodeBlock",
    "params": {
-    "code": "# I LOGIT: 4 punteggi grezzi, uno per classe. Possono essere negativi.\n# Muovi gli slider = cambi l'input della softmax.\nz1 = 2.0    #@param float min=-5 max=5 step=0.1\nz2 = 1.0    #@param float min=-5 max=5 step=0.1\nz3 = 0.2    #@param float min=-5 max=5 step=0.1\nz4 = -1.0   #@param float min=-5 max=5 step=0.1\n# ANIMAZIONE: `onda` > 0 aggiunge un rialzo che gira fra le 4 classi.\n# Trascina `t` da 0 a 1: il vincitore si sposta. onda = 0 -> input manuale.\nonda = 0.0  #@param float min=0 max=4 step=0.1\nt = 0.0     #@param float min=0 max=1 step=0.01\nresult = [z + onda * math.cos(math.radians(360 * (t - i / 4)))\n          for i, z in enumerate([z1, z2, z3, z4])]\n"
+    "code": "# THE LOGITS: 4 raw scores, one per class. They may be negative.\n# Move the sliders = you are changing the input of the softmax.\nz1 = 2.0    #@param float min=-5 max=5 step=0.1\nz2 = 1.0    #@param float min=-5 max=5 step=0.1\nz3 = 0.2    #@param float min=-5 max=5 step=0.1\nz4 = -1.0   #@param float min=-5 max=5 step=0.1\n# ANIMATION: `wave` > 0 adds a bump that travels between the 4 classes.\n# Drag `t` from 0 to 1 and the winner moves. wave = 0 -> manual input.\nwave = 0.0  #@param float min=0 max=4 step=0.1\nt = 0.0     #@param float min=0 max=1 step=0.01\nresult = [z + wave * math.cos(math.radians(360 * (t - i / 4)))\n          for i, z in enumerate([z1, z2, z3, z4])]\n"
    },
    "position": [
     40,
@@ -496,7 +496,7 @@
    "id": "n42",
    "type": "CodeBlock",
    "params": {
-    "code": "# LA TORTA: angolo dello spicchio = 360 * p.\n# Comunque muovi gli slider, il disco resta ESATTAMENTE pieno: somma(p) = 1.\np1 = 0.25   #@param float min=0 max=1 step=0.01\np2 = 0.25   #@param float min=0 max=1 step=0.01\np3 = 0.25   #@param float min=0 max=1 step=0.01\np4 = 0.25   #@param float min=0 max=1 step=0.01\nraggio = 16.0     #@param float min=5 max=40 step=0.5\nspessore = 3.0    #@param float min=1 max=10 step=0.5\nesplosione = 2.0  #@param float min=0 max=8 step=0.5\ncx = -105.0       #@param float min=-150 max=150 step=1\nout, a0 = [], 0.0\nfor p in [p1, p2, p3, p4]:\n    ampiezza = min(max(360 * p, 0.3), 359.4)      # 0 e 360 sarebbero degeneri\n    arco = CenterArc((0, 0), raggio, a0, ampiezza)\n    spicchio = make_face(Wire([Line((0, 0), arco @ 0).edge(), arco.edge(),\n                               Line(arco @ 1, (0, 0)).edge()]))\n    solido = extrude(spicchio, amount=spessore)\n    meta = math.radians(a0 + ampiezza / 2)         # stacca lo spicchio lungo la bisettrice\n    out.append(Pos(cx + esplosione * math.cos(meta), esplosione * math.sin(meta), 0) * solido)\n    a0 += ampiezza\nresult = out\n"
+    "code": "# THE PIE: the angle of a slice is 360 * p.\n# However you move the sliders, the disc stays EXACTLY full: sum(p) = 1.\np1 = 0.25   #@param float min=0 max=1 step=0.01\np2 = 0.25   #@param float min=0 max=1 step=0.01\np3 = 0.25   #@param float min=0 max=1 step=0.01\np4 = 0.25   #@param float min=0 max=1 step=0.01\nradius = 16.0     #@param float min=5 max=40 step=0.5\nthickness = 3.0   #@param float min=1 max=10 step=0.5\nexplode = 2.0     #@param float min=0 max=8 step=0.5\ncx = -105.0       #@param float min=-150 max=150 step=1\nout, a0 = [], 0.0\nfor p in [p1, p2, p3, p4]:\n    sweep = min(max(360 * p, 0.3), 359.4)         # 0 and 360 would both be degenerate\n    arc = CenterArc((0, 0), radius, a0, sweep)\n    slice_ = make_face(Wire([Line((0, 0), arc @ 0).edge(), arc.edge(),\n                             Line(arc @ 1, (0, 0)).edge()]))\n    solid = extrude(slice_, amount=thickness)\n    mid = math.radians(a0 + sweep / 2)             # push the slice out along its bisector\n    out.append(Pos(cx + explode * math.cos(mid), explode * math.sin(mid), 0) * solid)\n    a0 += sweep\nresult = out\n"
    },
    "position": [
     2200,
@@ -513,7 +513,7 @@
    "id": "n43",
    "type": "CodeBlock",
    "params": {
-    "code": "# I NUMERI SONO GEOMETRIA: testo 3D che si riscrive a ogni esecuzione.\nz1 = 2.0   #@param float min=-5 max=5 step=0.1\nz2 = 1.0   #@param float min=-5 max=5 step=0.1\nz3 = 0.2   #@param float min=-5 max=5 step=0.1\nz4 = -1.0  #@param float min=-5 max=5 step=0.1\np1 = 0.25  #@param float min=0 max=1 step=0.01\np2 = 0.25  #@param float min=0 max=1 step=0.01\np3 = 0.25  #@param float min=0 max=1 step=0.01\np4 = 0.25  #@param float min=0 max=1 step=0.01\nT = 1.0    #@param float min=0.05 max=10 step=0.01\ncorpo = 4.5 #@param float min=2 max=12 step=0.5\ndef _t(s, x, y, size):                 # sdraiato sul piano\n    return extrude(Pos(x, y, 0) * Text(s, font_size=size), amount=0.8)\ndef _tv(s, x, y, z, size):             # in piedi, faccia rivolta alla camera\n    return extrude(Pos(x, y, z) * (Plane.XZ * Text(s, font_size=size)), amount=0.8)\nout = [_tv(\"SOFTMAX\", 0, 72, 48, corpo * 2.0),                        # insegna sospesa\n       _tv(\"p(i) = exp(z(i)/T) / somma exp(z(j)/T)\", 0, 72, 38, corpo),\n       _t(f\"T = {T:.2f}\", -105, 32, corpo * 1.4),\n       _t(\"logit z\", -58, 45, corpo * 0.9),\n       _t(\"pesi exp\", -58, 0, corpo * 0.9),\n       _t(\"prob. p\", -58, -45, corpo * 0.9)]\nfor x, z, p in zip([-27, -9, 9, 27], [z1, z2, z3, z4], [p1, p2, p3, p4]):\n    # il logit galleggia SOPRA la sua barra: cosi' non ci finisce mai dietro\n    out.append(_tv(f\"{z:+.1f}\", x, 52, max(abs(z) * 5, 0) + 6, corpo))\n    out.append(_t(f\"{p*100:.0f}%\", x, -64, corpo * 1.2))   # davanti, sotto le verdi\nresult = out\n"
+    "code": "# THE NUMBERS ARE GEOMETRY: 3D text, rebuilt on every execution.\nz1 = 2.0   #@param float min=-5 max=5 step=0.1\nz2 = 1.0   #@param float min=-5 max=5 step=0.1\nz3 = 0.2   #@param float min=-5 max=5 step=0.1\nz4 = -1.0  #@param float min=-5 max=5 step=0.1\np1 = 0.25  #@param float min=0 max=1 step=0.01\np2 = 0.25  #@param float min=0 max=1 step=0.01\np3 = 0.25  #@param float min=0 max=1 step=0.01\np4 = 0.25  #@param float min=0 max=1 step=0.01\nT = 1.0    #@param float min=0.05 max=10 step=0.01\nsize = 4.5 #@param float min=2 max=12 step=0.5\ndef _t(s, x, y, sz):                  # lying on the ground plane\n    return extrude(Pos(x, y, 0) * Text(s, font_size=sz), amount=0.8)\ndef _tv(s, x, y, z, sz):              # standing up, facing the camera\n    return extrude(Pos(x, y, z) * (Plane.XZ * Text(s, font_size=sz)), amount=0.8)\nout = [_tv(\"SOFTMAX\", 0, 72, 48, size * 2.0),                        # hanging sign\n       _tv(\"p(i) = exp(z(i)/T) / sum exp(z(j)/T)\", 0, 72, 38, size),\n       _t(f\"T = {T:.2f}\", -105, 32, size * 1.4),\n       _t(\"logits z\", -58, 45, size * 0.9),\n       _t(\"exp weights\", -58, 0, size * 0.9),\n       _t(\"prob. p\", -58, -45, size * 0.9)]\nfor x, z, p in zip([-27, -9, 9, 27], [z1, z2, z3, z4], [p1, p2, p3, p4]):\n    # the logit floats ABOVE its bar, so it can never hide behind it\n    out.append(_tv(f\"{z:+.1f}\", x, 52, max(abs(z) * 5, 0) + 6, size))\n    out.append(_t(f\"{p*100:.0f}%\", x, -64, size * 1.2))   # in front, under the green bars\nresult = out\n"
    },
    "position": [
     2660,
@@ -530,7 +530,7 @@
    "id": "n44",
    "type": "Note",
    "params": {
-    "text": "SOFTMAX \u2014 la funzione che trasforma 4 punteggi qualsiasi (i logit) in 4 probabilita' che sommano a 1.\n\nIl grafo E' la formula: ogni nodo e' un pezzo di p(i) = exp(z(i)/T) / somma exp(z(j)/T).\nLe figure a destra sono lo stesso calcolo, in geometria.\n\nDA PROVARE\n1. Alza z1: la sua barra verde e il suo spicchio si mangiano gli altri.\n2. Porta T verso 0.1: la softmax diventa un argmax (una classe prende tutto).\n3. Porta T verso 5: le probabilita' si appiattiscono verso 25% ciascuna.\n4. Metti onda = 2 e trascina t da 0 a 1: il vincitore GIRA fra le classi."
+    "text": "SOFTMAX \u2014 the function that turns 4 arbitrary scores (the logits) into 4 probabilities that sum to 1.\n\nThe graph IS the formula: every node is one piece of p(i) = exp(z(i)/T) / sum exp(z(j)/T).\nThe figures on the right are the same computation, in geometry.\n\nTRY THIS\n1. Raise z1: its green bar and its slice eat the others.\n2. Take T down to 0.1: the softmax becomes an argmax (one class takes all).\n3. Take T up to 5: the probabilities flatten towards 25% each.\n4. Set wave = 2 and drag t from 0 to 1: the winner TRAVELS between classes."
    },
    "position": [
     40,
@@ -545,7 +545,7 @@
    "id": "n45",
    "type": "Note",
    "params": {
-    "text": "1 \u00b7 INPUT\n\nz sono punteggi grezzi: possono essere negativi, grandi, qualsiasi cosa. La softmax non chiede permesso.\n\nT (temperatura) divide i logit PRIMA dell'exp: e' la manopola che decide quanto la funzione e' decisa (T piccolo) o incerta (T grande)."
+    "text": "1 - INPUT\n\nz are raw scores: they may be negative, huge, anything at all. The softmax does not ask permission.\n\nT (the temperature) divides the logits BEFORE the exp: it is the knob that decides how decisive the function is (small T) or how unsure (large T)."
    },
    "position": [
     40,
@@ -560,7 +560,7 @@
    "id": "n46",
    "type": "Note",
    "params": {
-    "text": "2 \u00b7 LA FORMULA, NODO PER NODO\n\nexp() fa due cose: rende tutto POSITIVO (anche i logit negativi) e AMPLIFICA le differenze \u2014 e' esponenziale, non lineare.\n\nLa somma dei 4 pesi e' il denominatore: un solo numero che tutti si dividono. Guarda il filo di Sigma che si sdoppia verso l'ultima divisione: e' li' che nasce il vincolo 'somma = 1'."
+    "text": "2 - THE FORMULA, NODE BY NODE\n\nexp() does two things: it makes everything POSITIVE (negative logits included) and it AMPLIFIES the differences \u2014 it is exponential, not linear.\n\nThe sum of the 4 weights is the denominator: a single number that everybody divides by. Watch Sigma's wire fan out into the last division: that is where the constraint 'they sum to 1' is born."
    },
    "position": [
     1080,
@@ -575,7 +575,7 @@
    "id": "n47",
    "type": "Note",
    "params": {
-    "text": "COME E' FATTO (dietro le quinte)\n\n1. I logit vivono in un CodeBlock, non in 4 Number Slider: gli slider del catalogo hanno minimo 0, e un logit deve poter essere NEGATIVO. I `#@param float min=-5 max=5` del CodeBlock diventano manopole vere sul nodo.\n\n2. Il CodeBlock emette una LISTA di 4 numeri, ma il transpiler non lo sa: solo certi nodi sono marcati 'produce liste'. Il nodo List (ListCreate) subito dopo e' quello che rende esplicito 'questo e' il vettore z' \u2014 da li' in poi tutto FA FAN-OUT da solo.\n\n3. Grazie al fan-out, Divide/exp lavorano sull'intero vettore con UN nodo ciascuno, e un solo nodo Box disegna tutte e 4 le barre di una fila (altezza = lista, origine = lista di punti dalla Series).\n\n4. Sigma invece serve INTERO: le 4 List Item + la catena di Add esistono apposta per mostrare la somma a occhio (il catalogo non ha un nodo Somma).\n\n5. I numeri a schermo sono geometria: un CodeBlock costruisce Text() 3D e lo estrude, quindi si riscrivono a ogni esecuzione."
+    "text": "HOW IT IS BUILT (behind the scenes)\n\n1. The logits live in a CodeBlock, not in 4 Number Sliders: the catalog's slider is hard-floored at 0, and a logit must be able to go NEGATIVE. A CodeBlock's `#@param float min=-5 max=5` becomes a real knob on the node.\n\n2. The CodeBlock emits a LIST of 4 numbers, but the transpiler does not know that: only certain node types are marked as list producers. The List (ListCreate) right after it is what makes 'this is the vector z' explicit \u2014 and from there on everything FANS OUT by itself.\n\n3. Thanks to the fan-out, Divide and exp work on the whole vector with ONE node each, and a single Box node draws all four bars of a row (height = a list, origin = a list of points from the Series).\n\n4. Sigma, instead, needs the list WHOLE: the four List Items and the chain of Adds exist precisely to show the summation (the catalog has no Sum node).\n\n5. The numbers on screen are geometry: a CodeBlock builds Text() and extrudes it, so they rewrite themselves on every run."
    },
    "position": [
     680,
@@ -590,7 +590,7 @@
    "id": "n48",
    "type": "Note",
    "params": {
-    "text": "TRAPPOLE INCONTRATE (utili se lo modifichi)\n\n\u00b7 Nel nodo Box la dimensione VERTICALE e' `depth`, non `height`: il template e' Box(width, height, depth) -> build123d Box(X, Y, Z).\n\n\u00b7 Una barra di altezza 0 e' un Box degenere: OCCT lo rifiuta e, siccome il nodo e' fanned, l'errore fa sparire l'INTERA fila. Da qui il max(x*24, 0.15) nelle Expression delle altezze.\n\n\u00b7 Il nodo Expression funziona SOLO se il suo input e' una lista (il fan-out lega la x dentro la lambda). Con uno scalare genera (math.exp(x)) con x mai definita -> NameError. E' un bug dell'app, non della demo: qui giriamo sempre sul vettore.\n\n\u00b7 T passa da un Clamp(0.05, 10): T=0 sarebbe una divisione per zero.\n\n\u00b7 I pesi exp sono scalati sul MASSIMO. Non e' un trucco grafico: e(i)/max(e) = exp((z(i) - z_max)/T), cioe' la forma numericamente stabile della softmax, la stessa che si usa nel codice vero per non far esplodere l'esponenziale."
+    "text": "TRAPS MET ALONG THE WAY (useful if you edit this)\n\n- In the Box node the VERTICAL dimension is `depth`, not `height`: the template is Box(width, height, depth) -> build123d Box(X, Y, Z).\n\n- A bar of height 0 is a degenerate solid: OCCT rejects it and, because the node is fanned, the error takes out the WHOLE row. Hence the max(x*24, 0.15) in the height Expressions.\n\n- The Expression node only works when its input is a LIST (the fan-out is what binds x inside the lambda). Fed a scalar it emits (math.exp(x)) with x never defined -> NameError. That is an app bug, not a constraint of this example: here we always ride the vector.\n\n- T goes through a Clamp(0.05, 10): T = 0 would be a division by zero.\n\n- The exp weights are scaled by the MAXIMUM. Not a graphical trick: e(i)/max(e) = exp((z(i) - z_max)/T), the numerically stable form of the softmax \u2014 the one real code uses to keep the exponential from exploding."
    },
    "position": [
     1310,
@@ -605,7 +605,7 @@
    "id": "n49",
    "type": "Note",
    "params": {
-    "text": "3 \u00b7 LE FIGURE\n\nBLU  = i logit z (barre firmate: le negative scendono sotto il piano)\nAMBRA = i pesi exp(z/T), scalati sul massimo\nVERDE = le probabilita' p (1.0 = 24 mm)\nTORTA = le stesse p come spicchi: il disco e' sempre pieno.\n\nUn logit negativo NON da' probabilita' negativa: exp lo schiaccia vicino a zero, ma sopra zero. E' il motivo per cui l'exp e' li'."
+    "text": "3 - THE FIGURES\n\nBLUE  = the logits z (signed bars: negative ones sink below the plane)\nAMBER = the exp weights exp(z/T), scaled by the largest\nGREEN = the probabilities p (1.0 = 24 mm)\nPIE   = the same p as slices: the disc is always exactly full.\n\nA negative logit does NOT give a negative probability: exp squashes it close to zero, but above zero. That is why the exp is there at all."
    },
    "position": [
     3150,
@@ -1062,7 +1062,7 @@
  ],
  "groups": [
   {
-   "title": "1 \u00b7 INPUT \u2014 i logit z e la temperatura T",
+   "title": "1 - INPUT: the logits z and the temperature T",
    "bounding": [
     10,
     140,
@@ -1072,7 +1072,7 @@
    "color": "#3f589e"
   },
   {
-   "title": "2 \u00b7 LA FORMULA \u2014 exp, somma, normalizza",
+   "title": "2 - THE FORMULA: exp, sum, normalise",
    "bounding": [
     610,
     80,
@@ -1082,7 +1082,7 @@
    "color": "#8a5a2c"
   },
   {
-   "title": "3 \u00b7 LE FIGURE \u2014 barre e torta",
+   "title": "3 - THE FIGURES: bars and pie",
    "bounding": [
     2170,
     40,
