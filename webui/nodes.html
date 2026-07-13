@@ -2847,7 +2847,7 @@ window.runGraph = async function(){
   // per-node timing: total + the few slowest, so a slow run tells you WHICH node
   const tim = data.node_timings || {};
   const hits = data.node_cached || [];
-  startExecGlow(tim, hits);        // replay the run as a glow wave over the nodes
+  startExecGlow(tim, hits, nids);   // replay the run as a glow wave (nids = threw)
   const tent = Object.entries(tim).sort((a,b)=>b[1]-a[1]);
   if (tent.length){
     const tot = tent.reduce((s,[,v])=>s+v,0);
@@ -3185,10 +3185,14 @@ function highlightNode(graphId){
 // subtree and the slow nodes in it are visible at a glance.
 // This is a replay, not live progress — /execute is one blocking POST.
 const GLOW_HOT = [251, 191, 36], GLOW_COOL = [74, 222, 128], GLOW_CACHED = [56, 189, 248];
-const GLOW_MIN = 150, GLOW_MAX = 800, GLOW_HIT = 110, GLOW_PULSE = 260;   // ms per node
-const GLOW_TAIL = 420, GLOW_ATTACK = 90, GLOW_TOTAL = 2600;
-let execGlow = null;      // {t0, spans: [{node, start, end, cached}], end}
+const GLOW_FAIL = [233, 69, 96];   // matches the error highlight — a node that threw
+const GLOW_MIN = 150, GLOW_MAX = 700, GLOW_HIT = 80, GLOW_PULSE = 260;   // ms per node
+const GLOW_TAIL = 420, GLOW_ATTACK = 90, GLOW_TOTAL = 1800;
+let execGlow = null;      // {t0, spans: [{node, start, end, cached, failed}], end}
 let glowRAF = 0;
+// A user who asked the OS for less motion gets the information without the wave:
+// every node lights up at once, briefly.
+const glowStill = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 function clearExecGlow(){
   execGlow = null;
@@ -3196,16 +3200,18 @@ function clearExecGlow(){
   if (lcanvas) lcanvas.setDirty(true, true);
 }
 
-function startExecGlow(timings, cachedIds){
+function startExecGlow(timings, cachedIds, failedIds){
   clearExecGlow();
   const ids = Object.keys(timings || {});
   if (!ids.length || !lcanvas) return;
   const cached = new Set(cachedIds || []);
-  // Live mode re-runs on every slider tick, so a 3s wave would restart before it
+  const failed = new Set(failedIds || []);
+  // Live mode re-runs on every slider tick, so a full wave would restart before it
   // ever finished — a permanent shimmer. There it collapses to a short pulse on
   // just the nodes that actually recomputed (the dirty subtree); the full
-  // topological wave is for an explicit run.
-  const wave = !liveMode;
+  // topological wave is for an explicit run. Reduced-motion does the same, for
+  // every run.
+  const wave = !liveMode && !glowStill;
   // Scale each span by sqrt(t/peak): a 3s fillet reads as clearly slower than a
   // 30ms box without the fast nodes collapsing to an invisible blip.
   const peak = Math.max(1e-6, ...ids.filter(id => !cached.has(id)).map(id => timings[id] || 0));
@@ -3213,12 +3219,12 @@ function startExecGlow(timings, cachedIds){
   let cursor = 0;
   for (const id of ids){
     const node = nodeByGraphId[id] || nodeIndex[id];
-    const hit = cached.has(id);
-    if (!node || (!wave && hit)) continue;      // live pulse: dirty nodes only
-    if (!wave){ spans.push({node, start: 0, end: GLOW_PULSE, cached: false}); continue; }
+    const hit = cached.has(id), bad = failed.has(id);
+    if (!node || (!wave && hit && !bad)) continue;   // pulse: only what recomputed/threw
+    if (!wave){ spans.push({node, start: 0, end: GLOW_PULSE, cached: false, failed: bad}); continue; }
     const dur = hit ? GLOW_HIT
                     : GLOW_MIN + (GLOW_MAX - GLOW_MIN) * Math.sqrt(Math.min(1, (timings[id] || 0) / peak));
-    spans.push({node, start: cursor, end: cursor + dur, cached: hit});
+    spans.push({node, start: cursor, end: cursor + dur, cached: hit, failed: bad});
     cursor += dur * 0.62;      // overlap: the wave flows instead of stepping
   }
   if (!spans.length) return;
@@ -3259,7 +3265,15 @@ function drawExecGlow(ctx, s){
   const now = performance.now() - execGlow.t0;
   for (const sp of execGlow.spans){
     if (now < sp.start) continue;                       // not reached yet
+    if (!sp.node.graph) continue;                       // deleted mid-replay
     let a, rgb;
+    if (sp.failed){                                     // threw: red, never "settles"
+      a = now <= sp.end ? Math.min(1, (now - sp.start) / GLOW_ATTACK)
+                        : 1 - (now - sp.end) / GLOW_TAIL;
+      if (a <= 0) continue;
+      strokeGlow(ctx, sp.node, GLOW_FAIL, a, s);
+      continue;
+    }
     if (now <= sp.end){
       a = Math.min(1, (now - sp.start) / GLOW_ATTACK);  // ramp in
       const p = (now - sp.start) / Math.max(1, sp.end - sp.start);
