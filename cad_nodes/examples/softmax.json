@@ -1,0 +1,1095 @@
+{
+ "name": "softmax",
+ "nodes": [
+  {
+   "id": "n1",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# I LOGIT: 4 punteggi grezzi, uno per classe. Possono essere negativi.\n# Muovi gli slider = cambi l'input della softmax.\nz1 = 2.0    #@param float min=-5 max=5 step=0.1\nz2 = 1.0    #@param float min=-5 max=5 step=0.1\nz3 = 0.2    #@param float min=-5 max=5 step=0.1\nz4 = -1.0   #@param float min=-5 max=5 step=0.1\n# ANIMAZIONE: `onda` > 0 aggiunge un rialzo che gira fra le 4 classi.\n# Trascina `t` da 0 a 1: il vincitore si sposta. onda = 0 -> input manuale.\nonda = 0.0  #@param float min=0 max=4 step=0.1\nt = 0.0     #@param float min=0 max=1 step=0.01\nresult = [z + onda * math.cos(math.radians(360 * (t - i / 4)))\n          for i, z in enumerate([z1, z2, z3, z4])]\n"
+   },
+   "position": [
+    40,
+    220
+   ],
+   "preview": false,
+   "size": [
+    330,
+    320
+   ]
+  },
+  {
+   "id": "n2",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    430,
+    250
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n3",
+   "type": "NumberSlider",
+   "params": {
+    "value": 1.0,
+    "_ui": {
+     "value": {
+      "min": 0.1,
+      "max": 5,
+      "step": 0.01
+     }
+    }
+   },
+   "position": [
+    40,
+    880
+   ],
+   "preview": false
+  },
+  {
+   "id": "n4",
+   "type": "Clamp",
+   "params": {
+    "min": 0.05,
+    "max": 10
+   },
+   "position": [
+    310,
+    880
+   ],
+   "preview": false
+  },
+  {
+   "id": "n5",
+   "type": "Divide",
+   "params": {},
+   "position": [
+    640,
+    300
+   ],
+   "preview": false
+  },
+  {
+   "id": "n6",
+   "type": "Expression",
+   "params": {
+    "expr": "math.exp(x)"
+   },
+   "position": [
+    850,
+    300
+   ],
+   "preview": false
+  },
+  {
+   "id": "n7",
+   "type": "Display",
+   "params": {},
+   "position": [
+    850,
+    430
+   ],
+   "preview": false
+  },
+  {
+   "id": "n8",
+   "type": "ListItem",
+   "params": {
+    "index": 0
+   },
+   "position": [
+    1080,
+    150
+   ],
+   "preview": false
+  },
+  {
+   "id": "n9",
+   "type": "ListItem",
+   "params": {
+    "index": 1
+   },
+   "position": [
+    1080,
+    240
+   ],
+   "preview": false
+  },
+  {
+   "id": "n10",
+   "type": "ListItem",
+   "params": {
+    "index": 2
+   },
+   "position": [
+    1080,
+    330
+   ],
+   "preview": false
+  },
+  {
+   "id": "n11",
+   "type": "ListItem",
+   "params": {
+    "index": 3
+   },
+   "position": [
+    1080,
+    420
+   ],
+   "preview": false
+  },
+  {
+   "id": "n12",
+   "type": "Add",
+   "params": {},
+   "position": [
+    1290,
+    190
+   ],
+   "preview": false
+  },
+  {
+   "id": "n13",
+   "type": "Add",
+   "params": {},
+   "position": [
+    1290,
+    360
+   ],
+   "preview": false
+  },
+  {
+   "id": "n14",
+   "type": "Add",
+   "params": {},
+   "position": [
+    1490,
+    275
+   ],
+   "preview": false
+  },
+  {
+   "id": "n15",
+   "type": "Display",
+   "params": {},
+   "position": [
+    1490,
+    400
+   ],
+   "preview": false
+  },
+  {
+   "id": "n16",
+   "type": "Divide",
+   "params": {},
+   "position": [
+    1720,
+    300
+   ],
+   "preview": false
+  },
+  {
+   "id": "n17",
+   "type": "Display",
+   "params": {},
+   "position": [
+    1720,
+    430
+   ],
+   "preview": false
+  },
+  {
+   "id": "n18",
+   "type": "ListItem",
+   "params": {
+    "index": 0
+   },
+   "position": [
+    1940,
+    150
+   ],
+   "preview": false
+  },
+  {
+   "id": "n19",
+   "type": "ListItem",
+   "params": {
+    "index": 1
+   },
+   "position": [
+    1940,
+    240
+   ],
+   "preview": false
+  },
+  {
+   "id": "n20",
+   "type": "ListItem",
+   "params": {
+    "index": 2
+   },
+   "position": [
+    1940,
+    330
+   ],
+   "preview": false
+  },
+  {
+   "id": "n21",
+   "type": "ListItem",
+   "params": {
+    "index": 3
+   },
+   "position": [
+    1940,
+    420
+   ],
+   "preview": false
+  },
+  {
+   "id": "n22",
+   "type": "ListItem",
+   "params": {
+    "index": 0
+   },
+   "position": [
+    1940,
+    640
+   ],
+   "preview": false
+  },
+  {
+   "id": "n23",
+   "type": "ListItem",
+   "params": {
+    "index": 1
+   },
+   "position": [
+    1940,
+    720
+   ],
+   "preview": false
+  },
+  {
+   "id": "n24",
+   "type": "ListItem",
+   "params": {
+    "index": 2
+   },
+   "position": [
+    1940,
+    800
+   ],
+   "preview": false
+  },
+  {
+   "id": "n25",
+   "type": "ListItem",
+   "params": {
+    "index": 3
+   },
+   "position": [
+    1940,
+    880
+   ],
+   "preview": false
+  },
+  {
+   "id": "n26",
+   "type": "Series",
+   "params": {
+    "start": -27,
+    "step": 18,
+    "count": 4
+   },
+   "position": [
+    2200,
+    90
+   ],
+   "preview": false
+  },
+  {
+   "id": "n27",
+   "type": "Expression",
+   "params": {
+    "expr": "max(abs(x)*5, 0.3)"
+   },
+   "position": [
+    2200,
+    200
+   ],
+   "preview": false
+  },
+  {
+   "id": "n28",
+   "type": "Expression",
+   "params": {
+    "expr": "x*2.5"
+   },
+   "position": [
+    2200,
+    330
+   ],
+   "preview": false
+  },
+  {
+   "id": "n29",
+   "type": "ConstructPoint",
+   "params": {
+    "y": 45
+   },
+   "position": [
+    2450,
+    220
+   ],
+   "preview": false
+  },
+  {
+   "id": "n30",
+   "type": "Box",
+   "params": {
+    "width": 12,
+    "height": 12
+   },
+   "position": [
+    2700,
+    220
+   ],
+   "preview": true,
+   "color": "#5a7fb8"
+  },
+  {
+   "id": "n31",
+   "type": "Bounds",
+   "params": {},
+   "position": [
+    2200,
+    500
+   ],
+   "preview": false
+  },
+  {
+   "id": "n32",
+   "type": "ListLast",
+   "params": {},
+   "position": [
+    2450,
+    500
+   ],
+   "preview": false
+  },
+  {
+   "id": "n33",
+   "type": "Divide",
+   "params": {},
+   "position": [
+    2200,
+    640
+   ],
+   "preview": false
+  },
+  {
+   "id": "n34",
+   "type": "Expression",
+   "params": {
+    "expr": "max(x*24, 0.15)"
+   },
+   "position": [
+    2450,
+    640
+   ],
+   "preview": false
+  },
+  {
+   "id": "n35",
+   "type": "Expression",
+   "params": {
+    "expr": "x/2"
+   },
+   "position": [
+    2700,
+    640
+   ],
+   "preview": false
+  },
+  {
+   "id": "n36",
+   "type": "ConstructPoint",
+   "params": {
+    "y": 0
+   },
+   "position": [
+    2950,
+    610
+   ],
+   "preview": false
+  },
+  {
+   "id": "n37",
+   "type": "Box",
+   "params": {
+    "width": 12,
+    "height": 12
+   },
+   "position": [
+    3200,
+    610
+   ],
+   "preview": true,
+   "color": "#e0902f"
+  },
+  {
+   "id": "n38",
+   "type": "Expression",
+   "params": {
+    "expr": "max(x*24, 0.15)"
+   },
+   "position": [
+    2200,
+    830
+   ],
+   "preview": false
+  },
+  {
+   "id": "n39",
+   "type": "Expression",
+   "params": {
+    "expr": "x/2"
+   },
+   "position": [
+    2450,
+    830
+   ],
+   "preview": false
+  },
+  {
+   "id": "n40",
+   "type": "ConstructPoint",
+   "params": {
+    "y": -45
+   },
+   "position": [
+    2700,
+    830
+   ],
+   "preview": false
+  },
+  {
+   "id": "n41",
+   "type": "Box",
+   "params": {
+    "width": 12,
+    "height": 12
+   },
+   "position": [
+    2950,
+    830
+   ],
+   "preview": true,
+   "color": "#3fb87f"
+  },
+  {
+   "id": "n42",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# LA TORTA: angolo dello spicchio = 360 * p.\n# Comunque muovi gli slider, il disco resta ESATTAMENTE pieno: somma(p) = 1.\np1 = 0.25   #@param float min=0 max=1 step=0.01\np2 = 0.25   #@param float min=0 max=1 step=0.01\np3 = 0.25   #@param float min=0 max=1 step=0.01\np4 = 0.25   #@param float min=0 max=1 step=0.01\nraggio = 16.0     #@param float min=5 max=40 step=0.5\nspessore = 3.0    #@param float min=1 max=10 step=0.5\nesplosione = 2.0  #@param float min=0 max=8 step=0.5\ncx = -105.0       #@param float min=-150 max=150 step=1\nout, a0 = [], 0.0\nfor p in [p1, p2, p3, p4]:\n    ampiezza = min(max(360 * p, 0.3), 359.4)      # 0 e 360 sarebbero degeneri\n    arco = CenterArc((0, 0), raggio, a0, ampiezza)\n    spicchio = make_face(Wire([Line((0, 0), arco @ 0).edge(), arco.edge(),\n                               Line(arco @ 1, (0, 0)).edge()]))\n    solido = extrude(spicchio, amount=spessore)\n    meta = math.radians(a0 + ampiezza / 2)         # stacca lo spicchio lungo la bisettrice\n    out.append(Pos(cx + esplosione * math.cos(meta), esplosione * math.sin(meta), 0) * solido)\n    a0 += ampiezza\nresult = out\n"
+   },
+   "position": [
+    2200,
+    1010
+   ],
+   "preview": true,
+   "color": "#c85a9e",
+   "size": [
+    360,
+    300
+   ]
+  },
+  {
+   "id": "n43",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# I NUMERI SONO GEOMETRIA: testo 3D che si riscrive a ogni esecuzione.\nz1 = 2.0   #@param float min=-5 max=5 step=0.1\nz2 = 1.0   #@param float min=-5 max=5 step=0.1\nz3 = 0.2   #@param float min=-5 max=5 step=0.1\nz4 = -1.0  #@param float min=-5 max=5 step=0.1\np1 = 0.25  #@param float min=0 max=1 step=0.01\np2 = 0.25  #@param float min=0 max=1 step=0.01\np3 = 0.25  #@param float min=0 max=1 step=0.01\np4 = 0.25  #@param float min=0 max=1 step=0.01\nT = 1.0    #@param float min=0.05 max=10 step=0.01\ncorpo = 4.5 #@param float min=2 max=12 step=0.5\ndef _t(s, x, y, size):                 # sdraiato sul piano\n    return extrude(Pos(x, y, 0) * Text(s, font_size=size), amount=0.8)\ndef _tv(s, x, y, z, size):             # in piedi, faccia rivolta alla camera\n    return extrude(Pos(x, y, z) * (Plane.XZ * Text(s, font_size=size)), amount=0.8)\nout = [_tv(\"SOFTMAX\", 0, 72, 48, corpo * 2.0),                        # insegna sospesa\n       _tv(\"p(i) = exp(z(i)/T) / somma exp(z(j)/T)\", 0, 72, 38, corpo),\n       _t(f\"T = {T:.2f}\", -105, 32, corpo * 1.4),\n       _t(\"logit z\", -58, 45, corpo * 0.9),\n       _t(\"pesi exp\", -58, 0, corpo * 0.9),\n       _t(\"prob. p\", -58, -45, corpo * 0.9)]\nfor x, z, p in zip([-27, -9, 9, 27], [z1, z2, z3, z4], [p1, p2, p3, p4]):\n    # il logit galleggia SOPRA la sua barra: cosi' non ci finisce mai dietro\n    out.append(_tv(f\"{z:+.1f}\", x, 52, max(abs(z) * 5, 0) + 6, corpo))\n    out.append(_t(f\"{p*100:.0f}%\", x, -64, corpo * 1.2))   # davanti, sotto le verdi\nresult = out\n"
+   },
+   "position": [
+    2660,
+    1010
+   ],
+   "preview": true,
+   "color": "#e8e8e8",
+   "size": [
+    360,
+    320
+   ]
+  },
+  {
+   "id": "n44",
+   "type": "Note",
+   "params": {
+    "text": "SOFTMAX \u2014 la funzione che trasforma 4 punteggi qualsiasi (i logit) in 4 probabilita' che sommano a 1.\n\nIl grafo E' la formula: ogni nodo e' un pezzo di p(i) = exp(z(i)/T) / somma exp(z(j)/T).\nLe figure a destra sono lo stesso calcolo, in geometria.\n\nDA PROVARE\n1. Alza z1: la sua barra verde e il suo spicchio si mangiano gli altri.\n2. Porta T verso 0.1: la softmax diventa un argmax (una classe prende tutto).\n3. Porta T verso 5: le probabilita' si appiattiscono verso 25% ciascuna.\n4. Metti onda = 2 e trascina t da 0 a 1: il vincitore GIRA fra le classi."
+   },
+   "position": [
+    40,
+    -280
+   ],
+   "size": [
+    560,
+    250
+   ]
+  },
+  {
+   "id": "n45",
+   "type": "Note",
+   "params": {
+    "text": "1 \u00b7 INPUT\n\nz sono punteggi grezzi: possono essere negativi, grandi, qualsiasi cosa. La softmax non chiede permesso.\n\nT (temperatura) divide i logit PRIMA dell'exp: e' la manopola che decide quanto la funzione e' decisa (T piccolo) o incerta (T grande)."
+   },
+   "position": [
+    40,
+    1030
+   ],
+   "size": [
+    500,
+    200
+   ]
+  },
+  {
+   "id": "n46",
+   "type": "Note",
+   "params": {
+    "text": "2 \u00b7 LA FORMULA, NODO PER NODO\n\nexp() fa due cose: rende tutto POSITIVO (anche i logit negativi) e AMPLIFICA le differenze \u2014 e' esponenziale, non lineare.\n\nLa somma dei 4 pesi e' il denominatore: un solo numero che tutti si dividono. Guarda il filo di Sigma che si sdoppia verso l'ultima divisione: e' li' che nasce il vincolo 'somma = 1'."
+   },
+   "position": [
+    1080,
+    560
+   ],
+   "size": [
+    520,
+    230
+   ]
+  },
+  {
+   "id": "n47",
+   "type": "Note",
+   "params": {
+    "text": "COME E' FATTO (dietro le quinte)\n\n1. I logit vivono in un CodeBlock, non in 4 Number Slider: gli slider del catalogo hanno minimo 0, e un logit deve poter essere NEGATIVO. I `#@param float min=-5 max=5` del CodeBlock diventano manopole vere sul nodo.\n\n2. Il CodeBlock emette una LISTA di 4 numeri, ma il transpiler non lo sa: solo certi nodi sono marcati 'produce liste'. Il nodo List (ListCreate) subito dopo e' quello che rende esplicito 'questo e' il vettore z' \u2014 da li' in poi tutto FA FAN-OUT da solo.\n\n3. Grazie al fan-out, Divide/exp lavorano sull'intero vettore con UN nodo ciascuno, e un solo nodo Box disegna tutte e 4 le barre di una fila (altezza = lista, origine = lista di punti dalla Series).\n\n4. Sigma invece serve INTERO: le 4 List Item + la catena di Add esistono apposta per mostrare la somma a occhio (il catalogo non ha un nodo Somma).\n\n5. I numeri a schermo sono geometria: un CodeBlock costruisce Text() 3D e lo estrude, quindi si riscrivono a ogni esecuzione."
+   },
+   "position": [
+    680,
+    820
+   ],
+   "size": [
+    580,
+    400
+   ]
+  },
+  {
+   "id": "n48",
+   "type": "Note",
+   "params": {
+    "text": "TRAPPOLE INCONTRATE (utili se lo modifichi)\n\n\u00b7 Nel nodo Box la dimensione VERTICALE e' `depth`, non `height`: il template e' Box(width, height, depth) -> build123d Box(X, Y, Z).\n\n\u00b7 Una barra di altezza 0 e' un Box degenere: OCCT lo rifiuta e, siccome il nodo e' fanned, l'errore fa sparire l'INTERA fila. Da qui il max(x*24, 0.15) nelle Expression delle altezze.\n\n\u00b7 Il nodo Expression funziona SOLO se il suo input e' una lista (il fan-out lega la x dentro la lambda). Con uno scalare genera (math.exp(x)) con x mai definita -> NameError. E' un bug dell'app, non della demo: qui giriamo sempre sul vettore.\n\n\u00b7 T passa da un Clamp(0.05, 10): T=0 sarebbe una divisione per zero.\n\n\u00b7 I pesi exp sono scalati sul MASSIMO. Non e' un trucco grafico: e(i)/max(e) = exp((z(i) - z_max)/T), cioe' la forma numericamente stabile della softmax, la stessa che si usa nel codice vero per non far esplodere l'esponenziale."
+   },
+   "position": [
+    1310,
+    820
+   ],
+   "size": [
+    620,
+    400
+   ]
+  },
+  {
+   "id": "n49",
+   "type": "Note",
+   "params": {
+    "text": "3 \u00b7 LE FIGURE\n\nBLU  = i logit z (barre firmate: le negative scendono sotto il piano)\nAMBRA = i pesi exp(z/T), scalati sul massimo\nVERDE = le probabilita' p (1.0 = 24 mm)\nTORTA = le stesse p come spicchi: il disco e' sempre pieno.\n\nUn logit negativo NON da' probabilita' negativa: exp lo schiaccia vicino a zero, ma sopra zero. E' il motivo per cui l'exp e' li'."
+   },
+   "position": [
+    3150,
+    1010
+   ],
+   "size": [
+    480,
+    260
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "id": "l1",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n2",
+   "to_socket": "items"
+  },
+  {
+   "id": "l2",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n4",
+   "to_socket": "x"
+  },
+  {
+   "id": "l3",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n5",
+   "to_socket": "a"
+  },
+  {
+   "id": "l4",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n5",
+   "to_socket": "b"
+  },
+  {
+   "id": "l5",
+   "from_node": "n5",
+   "from_socket": "result",
+   "to_node": "n6",
+   "to_socket": "x"
+  },
+  {
+   "id": "l6",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "value"
+  },
+  {
+   "id": "l7",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n8",
+   "to_socket": "list"
+  },
+  {
+   "id": "l8",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n9",
+   "to_socket": "list"
+  },
+  {
+   "id": "l9",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n10",
+   "to_socket": "list"
+  },
+  {
+   "id": "l10",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n11",
+   "to_socket": "list"
+  },
+  {
+   "id": "l11",
+   "from_node": "n8",
+   "from_socket": "result",
+   "to_node": "n12",
+   "to_socket": "a"
+  },
+  {
+   "id": "l12",
+   "from_node": "n9",
+   "from_socket": "result",
+   "to_node": "n12",
+   "to_socket": "b"
+  },
+  {
+   "id": "l13",
+   "from_node": "n10",
+   "from_socket": "result",
+   "to_node": "n13",
+   "to_socket": "a"
+  },
+  {
+   "id": "l14",
+   "from_node": "n11",
+   "from_socket": "result",
+   "to_node": "n13",
+   "to_socket": "b"
+  },
+  {
+   "id": "l15",
+   "from_node": "n12",
+   "from_socket": "result",
+   "to_node": "n14",
+   "to_socket": "a"
+  },
+  {
+   "id": "l16",
+   "from_node": "n13",
+   "from_socket": "result",
+   "to_node": "n14",
+   "to_socket": "b"
+  },
+  {
+   "id": "l17",
+   "from_node": "n14",
+   "from_socket": "result",
+   "to_node": "n15",
+   "to_socket": "value"
+  },
+  {
+   "id": "l18",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n16",
+   "to_socket": "a"
+  },
+  {
+   "id": "l19",
+   "from_node": "n14",
+   "from_socket": "result",
+   "to_node": "n16",
+   "to_socket": "b"
+  },
+  {
+   "id": "l20",
+   "from_node": "n16",
+   "from_socket": "result",
+   "to_node": "n17",
+   "to_socket": "value"
+  },
+  {
+   "id": "l21",
+   "from_node": "n16",
+   "from_socket": "result",
+   "to_node": "n18",
+   "to_socket": "list"
+  },
+  {
+   "id": "l22",
+   "from_node": "n16",
+   "from_socket": "result",
+   "to_node": "n19",
+   "to_socket": "list"
+  },
+  {
+   "id": "l23",
+   "from_node": "n16",
+   "from_socket": "result",
+   "to_node": "n20",
+   "to_socket": "list"
+  },
+  {
+   "id": "l24",
+   "from_node": "n16",
+   "from_socket": "result",
+   "to_node": "n21",
+   "to_socket": "list"
+  },
+  {
+   "id": "l25",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n22",
+   "to_socket": "list"
+  },
+  {
+   "id": "l26",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n23",
+   "to_socket": "list"
+  },
+  {
+   "id": "l27",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n24",
+   "to_socket": "list"
+  },
+  {
+   "id": "l28",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n25",
+   "to_socket": "list"
+  },
+  {
+   "id": "l29",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n27",
+   "to_socket": "x"
+  },
+  {
+   "id": "l30",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n28",
+   "to_socket": "x"
+  },
+  {
+   "id": "l31",
+   "from_node": "n26",
+   "from_socket": "result",
+   "to_node": "n29",
+   "to_socket": "x"
+  },
+  {
+   "id": "l32",
+   "from_node": "n28",
+   "from_socket": "result",
+   "to_node": "n29",
+   "to_socket": "z"
+  },
+  {
+   "id": "l33",
+   "from_node": "n27",
+   "from_socket": "result",
+   "to_node": "n30",
+   "to_socket": "depth"
+  },
+  {
+   "id": "l34",
+   "from_node": "n29",
+   "from_socket": "point",
+   "to_node": "n30",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l35",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n31",
+   "to_socket": "list"
+  },
+  {
+   "id": "l36",
+   "from_node": "n31",
+   "from_socket": "domain",
+   "to_node": "n32",
+   "to_socket": "list"
+  },
+  {
+   "id": "l37",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n33",
+   "to_socket": "a"
+  },
+  {
+   "id": "l38",
+   "from_node": "n32",
+   "from_socket": "result",
+   "to_node": "n33",
+   "to_socket": "b"
+  },
+  {
+   "id": "l39",
+   "from_node": "n33",
+   "from_socket": "result",
+   "to_node": "n34",
+   "to_socket": "x"
+  },
+  {
+   "id": "l40",
+   "from_node": "n34",
+   "from_socket": "result",
+   "to_node": "n35",
+   "to_socket": "x"
+  },
+  {
+   "id": "l41",
+   "from_node": "n26",
+   "from_socket": "result",
+   "to_node": "n36",
+   "to_socket": "x"
+  },
+  {
+   "id": "l42",
+   "from_node": "n35",
+   "from_socket": "result",
+   "to_node": "n36",
+   "to_socket": "z"
+  },
+  {
+   "id": "l43",
+   "from_node": "n34",
+   "from_socket": "result",
+   "to_node": "n37",
+   "to_socket": "depth"
+  },
+  {
+   "id": "l44",
+   "from_node": "n36",
+   "from_socket": "point",
+   "to_node": "n37",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l45",
+   "from_node": "n16",
+   "from_socket": "result",
+   "to_node": "n38",
+   "to_socket": "x"
+  },
+  {
+   "id": "l46",
+   "from_node": "n38",
+   "from_socket": "result",
+   "to_node": "n39",
+   "to_socket": "x"
+  },
+  {
+   "id": "l47",
+   "from_node": "n26",
+   "from_socket": "result",
+   "to_node": "n40",
+   "to_socket": "x"
+  },
+  {
+   "id": "l48",
+   "from_node": "n39",
+   "from_socket": "result",
+   "to_node": "n40",
+   "to_socket": "z"
+  },
+  {
+   "id": "l49",
+   "from_node": "n38",
+   "from_socket": "result",
+   "to_node": "n41",
+   "to_socket": "depth"
+  },
+  {
+   "id": "l50",
+   "from_node": "n40",
+   "from_socket": "point",
+   "to_node": "n41",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l51",
+   "from_node": "n18",
+   "from_socket": "result",
+   "to_node": "n42",
+   "to_socket": "p1"
+  },
+  {
+   "id": "l52",
+   "from_node": "n19",
+   "from_socket": "result",
+   "to_node": "n42",
+   "to_socket": "p2"
+  },
+  {
+   "id": "l53",
+   "from_node": "n20",
+   "from_socket": "result",
+   "to_node": "n42",
+   "to_socket": "p3"
+  },
+  {
+   "id": "l54",
+   "from_node": "n21",
+   "from_socket": "result",
+   "to_node": "n42",
+   "to_socket": "p4"
+  },
+  {
+   "id": "l55",
+   "from_node": "n22",
+   "from_socket": "result",
+   "to_node": "n43",
+   "to_socket": "z1"
+  },
+  {
+   "id": "l56",
+   "from_node": "n23",
+   "from_socket": "result",
+   "to_node": "n43",
+   "to_socket": "z2"
+  },
+  {
+   "id": "l57",
+   "from_node": "n24",
+   "from_socket": "result",
+   "to_node": "n43",
+   "to_socket": "z3"
+  },
+  {
+   "id": "l58",
+   "from_node": "n25",
+   "from_socket": "result",
+   "to_node": "n43",
+   "to_socket": "z4"
+  },
+  {
+   "id": "l59",
+   "from_node": "n18",
+   "from_socket": "result",
+   "to_node": "n43",
+   "to_socket": "p1"
+  },
+  {
+   "id": "l60",
+   "from_node": "n19",
+   "from_socket": "result",
+   "to_node": "n43",
+   "to_socket": "p2"
+  },
+  {
+   "id": "l61",
+   "from_node": "n20",
+   "from_socket": "result",
+   "to_node": "n43",
+   "to_socket": "p3"
+  },
+  {
+   "id": "l62",
+   "from_node": "n21",
+   "from_socket": "result",
+   "to_node": "n43",
+   "to_socket": "p4"
+  },
+  {
+   "id": "l63",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n43",
+   "to_socket": "T"
+  }
+ ],
+ "groups": [
+  {
+   "title": "1 \u00b7 INPUT \u2014 i logit z e la temperatura T",
+   "bounding": [
+    10,
+    140,
+    620,
+    1120
+   ],
+   "color": "#3f589e"
+  },
+  {
+   "title": "2 \u00b7 LA FORMULA \u2014 exp, somma, normalizza",
+   "bounding": [
+    610,
+    80,
+    1500,
+    530
+   ],
+   "color": "#8a5a2c"
+  },
+  {
+   "title": "3 \u00b7 LE FIGURE \u2014 barre e torta",
+   "bounding": [
+    2170,
+    40,
+    1500,
+    1720
+   ],
+   "color": "#2c7a52"
+  }
+ ]
+}

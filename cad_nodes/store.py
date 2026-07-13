@@ -49,6 +49,11 @@ _EXAMPLE_DESCRIPTIONS = {
     "lego-brick": "Array fan-out showcase — one stud becomes a grid via two "
                   "Linear Arrays, fused with Union and rounded into a "
                   "recognizable LEGO brick. Grouped into 4 labelled stages.",
+    "softmax": "Maths made geometry — the softmax function wired node by node "
+               "(z/T → exp → sum → normalise), with three rows of bars and a pie "
+               "chart that redraw live as you drag the logits and the temperature. "
+               "Drag `t` with `onda` > 0 to animate the winner travelling between "
+               "classes.",
 }
 
 # A graph id is a single directory name under the store root. Rejecting

@@ -44,6 +44,8 @@ class Node:
     # Display-only (don't affect geometry): preview colour (hex) and wireframe.
     color: Optional[str] = None
     wireframe: bool = False
+    # Editor-only canvas size [w, h] — a resized sticky Note keeps its box.
+    size: Optional[list[float]] = None
     # UX-only: names of inputs whose "multi" (+) toggle is on, so the editor
     # restores their extra/spare connection slots on reload. Ignored by the
     # engine (several connections to one socket already fan out by themselves).
@@ -65,6 +67,8 @@ class Node:
             d["color"] = self.color
         if self.wireframe:
             d["wireframe"] = True
+        if self.size:
+            d["size"] = list(self.size)
         if self.multi:
             d["multi"] = list(self.multi)
         return d
@@ -82,6 +86,7 @@ class Node:
             bypassed=bool(d.get("bypassed", False)),
             color=d.get("color"),
             wireframe=bool(d.get("wireframe", False)),
+            size=list(d["size"]) if d.get("size") else None,
             multi=list(d.get("multi", [])),
         )
 
