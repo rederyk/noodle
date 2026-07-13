@@ -476,13 +476,16 @@ def _cache_put(memo, key, value) -> None:
 def extract_and_write(result, stl_path: str, view_path: str, panels=None,
                       previews=None, linear_frac: float = 0.02,
                       angular: float = 0.4, errors=None, timings=None,
-                      hashes=None, memo=None) -> dict:
+                      hashes=None, memo=None, cached_nodes=None) -> dict:
     """Write STL + view.json. Returns the view dict.
 
     hashes/memo (memo-mode runs on the warm worker): per-node content keys +
     the persistent store. Preview meshes and the terminal view summary — the
     two OCCT-heavy steps — are cached by (content key, LOD), so an unchanged
-    node is never re-tessellated."""
+    node is never re-tessellated.
+
+    cached_nodes: ids the memo store served without re-running, so the editor
+    can tell a cache hit from a real re-execution (view["node_cached"])."""
     hashes = hashes or {}
     shape = _as_shape(result)
     # When previews carry the render geometry, skip the redundant terminal mesh.
@@ -500,6 +503,8 @@ def extract_and_write(result, stl_path: str, view_path: str, panels=None,
         view["node_errors"] = dict(errors)
     if timings:
         view["node_timings"] = {k: round(float(v), 4) for k, v in timings.items()}
+    if cached_nodes:
+        view["node_cached"] = sorted(cached_nodes)
 
     if shape is not None and stl_path:
         try:

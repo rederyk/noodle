@@ -479,6 +479,7 @@ let lgraph, lcanvas;
 // verification (playwright) needs one deliberate peephole. Not used by the app.
 window._noodle = { get lgraph(){ return lgraph; }, get lcanvas(){ return lcanvas; },
   get viewer(){ return viewer; }, get picker(){ return picker; },
+  get execGlow(){ return execGlow; },
   togglePick(i){ return togglePick(i); } };
 let currentName = null;
 let lastNodeErrors = {};   // last execution's node_id -> error, for feedback reports
@@ -2791,6 +2792,7 @@ window.runGraph = async function(){
   runAbort = new AbortController();
   const signal = runAbort.signal;
   clearHighlights();
+  clearExecGlow();
   const _rt0 = performance.now();
   const _elapsed = ()=> ((performance.now()-_rt0)/1000).toFixed(1)+'s';
   const _verb = liveMode ? 'live' : 'running';
@@ -2844,13 +2846,17 @@ window.runGraph = async function(){
   for (const w of (data.warnings || [])) log('⚠ '+w, 'warn');
   // per-node timing: total + the few slowest, so a slow run tells you WHICH node
   const tim = data.node_timings || {};
+  const hits = data.node_cached || [];
+  startExecGlow(tim, hits);        // replay the run as a glow wave over the nodes
   const tent = Object.entries(tim).sort((a,b)=>b[1]-a[1]);
   if (tent.length){
     const tot = tent.reduce((s,[,v])=>s+v,0);
     const nm = id => { const n = nodeByGraphId[id] || nodeIndex[id]; return n ? (n.title||n.cadType||id) : id; };
-    const top = tent.slice(0,5).filter(([,v])=>v>=0.005)
+    const ran = tent.filter(([id]) => !hits.includes(id));
+    const top = ran.sort((a,b)=>b[1]-a[1]).slice(0,5).filter(([,v])=>v>=0.005)
       .map(([id,v])=>`${nm(id)} ${Math.round(v*1000)}ms`).join(' · ');
-    log(`⏱ ${_elapsed()} wall · ${tot.toFixed(2)}s compute${top?' · slowest: '+top:''}`);
+    const cache = hits.length ? ` · ${hits.length}/${tent.length} cached` : '';
+    log(`⏱ ${_elapsed()} wall · ${tot.toFixed(2)}s compute${cache}${top?' · slowest: '+top:''}`);
   }
   if (nids.length){ setStatus(`done · ${nids.length} node error(s) · ${_elapsed()}`, 'err'); }
   else if ((data.warnings||[]).length){ setStatus(`done ⚠ · ${_elapsed()}`,'err'); }
@@ -3168,6 +3174,105 @@ function highlightNode(graphId){
   highlighted.push(n);
   lcanvas.setDirty(true, true);
   return true;
+}
+
+// ── execution glow ──
+// A finished run replays itself as a wave of glow across the nodes. The order is
+// Object.keys(node_timings): the transpiler assigns __timings__[id] as it walks
+// the graph, so the key order IS the execution (topological) order. A node the
+// memo cache served (node_cached) gets a brief cold-blue flash; one that really
+// re-ran glows amber->green for a span scaled to its wall-clock, so the dirty
+// subtree and the slow nodes in it are visible at a glance.
+// This is a replay, not live progress — /execute is one blocking POST.
+const GLOW_HOT = [251, 191, 36], GLOW_COOL = [74, 222, 128], GLOW_CACHED = [56, 189, 248];
+const GLOW_MIN = 150, GLOW_MAX = 800, GLOW_HIT = 110, GLOW_PULSE = 260;   // ms per node
+const GLOW_TAIL = 420, GLOW_ATTACK = 90, GLOW_TOTAL = 2600;
+let execGlow = null;      // {t0, spans: [{node, start, end, cached}], end}
+let glowRAF = 0;
+
+function clearExecGlow(){
+  execGlow = null;
+  if (glowRAF){ cancelAnimationFrame(glowRAF); glowRAF = 0; }
+  if (lcanvas) lcanvas.setDirty(true, true);
+}
+
+function startExecGlow(timings, cachedIds){
+  clearExecGlow();
+  const ids = Object.keys(timings || {});
+  if (!ids.length || !lcanvas) return;
+  const cached = new Set(cachedIds || []);
+  // Live mode re-runs on every slider tick, so a 3s wave would restart before it
+  // ever finished — a permanent shimmer. There it collapses to a short pulse on
+  // just the nodes that actually recomputed (the dirty subtree); the full
+  // topological wave is for an explicit run.
+  const wave = !liveMode;
+  // Scale each span by sqrt(t/peak): a 3s fillet reads as clearly slower than a
+  // 30ms box without the fast nodes collapsing to an invisible blip.
+  const peak = Math.max(1e-6, ...ids.filter(id => !cached.has(id)).map(id => timings[id] || 0));
+  const spans = [];
+  let cursor = 0;
+  for (const id of ids){
+    const node = nodeByGraphId[id] || nodeIndex[id];
+    const hit = cached.has(id);
+    if (!node || (!wave && hit)) continue;      // live pulse: dirty nodes only
+    if (!wave){ spans.push({node, start: 0, end: GLOW_PULSE, cached: false}); continue; }
+    const dur = hit ? GLOW_HIT
+                    : GLOW_MIN + (GLOW_MAX - GLOW_MIN) * Math.sqrt(Math.min(1, (timings[id] || 0) / peak));
+    spans.push({node, start: cursor, end: cursor + dur, cached: hit});
+    cursor += dur * 0.62;      // overlap: the wave flows instead of stepping
+  }
+  if (!spans.length) return;
+  let end = Math.max(...spans.map(s => s.end));
+  if (end > GLOW_TOTAL){       // long runs compress; the relative rhythm survives
+    const k = GLOW_TOTAL / end;
+    for (const s of spans){ s.start *= k; s.end *= k; }
+    end = GLOW_TOTAL;
+  }
+  execGlow = {t0: performance.now(), spans, end: end + GLOW_TAIL};
+  const step = () => {
+    if (!execGlow){ glowRAF = 0; return; }
+    lcanvas.setDirty(true, true);
+    if (performance.now() - execGlow.t0 > execGlow.end){ clearExecGlow(); return; }
+    glowRAF = requestAnimationFrame(step);
+  };
+  glowRAF = requestAnimationFrame(step);
+}
+
+// Paint one node's glow ring. `a` is intensity 0..1, `rgb` the colour.
+function strokeGlow(ctx, n, rgb, a, s){
+  const th = LiteGraph.NODE_TITLE_HEIGHT || 20;
+  const col = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.strokeStyle = col; ctx.shadowColor = col;
+  ctx.lineWidth = (1.6 + 1.4 * a) / s;
+  ctx.shadowBlur = (8 + 16 * a) / s;
+  const x = n.pos[0] - 3, y = n.pos[1] - th - 3, w = n.size[0] + 6, h = n.size[1] + th + 6;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, 9); else ctx.rect(x, y, w, h);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawExecGlow(ctx, s){
+  if (!execGlow) return;
+  const now = performance.now() - execGlow.t0;
+  for (const sp of execGlow.spans){
+    if (now < sp.start) continue;                       // not reached yet
+    let a, rgb;
+    if (now <= sp.end){
+      a = Math.min(1, (now - sp.start) / GLOW_ATTACK);  // ramp in
+      const p = (now - sp.start) / Math.max(1, sp.end - sp.start);
+      rgb = sp.cached ? GLOW_CACHED
+                      : GLOW_HOT.map((c, i) => Math.round(c + (GLOW_COOL[i] - c) * p));
+    } else {
+      a = 1 - (now - sp.end) / GLOW_TAIL;               // fade out
+      if (a <= 0) continue;
+      rgb = sp.cached ? GLOW_CACHED : GLOW_COOL;
+    }
+    if (sp.cached) a *= 0.5;      // a cache hit is a hint, not an event
+    strokeGlow(ctx, sp.node, rgb, a, s);
+  }
 }
 
 // ── Three.js viewer (same setup as the code UI) ──
@@ -4334,8 +4439,10 @@ function initGraph(){
   // node, so it never clashes with the error-red or the preview boxcolor dot.
   const SELECT_HL = '#22d3ee';
   lcanvas.onDrawForeground = function(ctx){
+    const s0 = this.ds.scale || 1;
+    drawExecGlow(ctx, s0);        // execution replay, under the selection ring
     const sel = this.selected_nodes; if (!sel) return;
-    const th = LiteGraph.NODE_TITLE_HEIGHT || 20, s = this.ds.scale || 1;
+    const th = LiteGraph.NODE_TITLE_HEIGHT || 20, s = s0;
     ctx.save();
     ctx.strokeStyle = SELECT_HL; ctx.shadowColor = SELECT_HL;
     ctx.lineWidth = 2.2 / s; ctx.shadowBlur = 10 / s;

@@ -739,6 +739,10 @@ async def execute_graph_project(name: str):
         "code": result["code"],
         "warnings": result.get("warnings", []),
         "node_errors": result.get("node_errors", {}),
+        # Per-node wall-clock + which ids the memo store served: the editor
+        # replays them as an execution glow (cache hit vs real re-run).
+        "node_timings": result.get("node_timings", {}),
+        "node_cached": result.get("node_cached", []),
         # Always offered — /download regenerates the STL on demand if it's stale.
         "stl": f"/api/projects/{name}/download",
     }

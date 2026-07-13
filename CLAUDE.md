@@ -94,6 +94,16 @@ webui/
                        WIRE_COLORS; INPUT_ACCEPTS is fetched at boot from
                        /api/wiretypes (derived from casts.py, §5 — the inline
                        literal is only an offline fallback).
+                       Execution glow (startExecGlow/drawExecGlow): a finished run
+                       replays itself as a wave of glow over the nodes, in the key
+                       order of node_timings (= topological execution order). A node
+                       the memo cache served (node_cached) gets a dim cold-blue
+                       flash; one that really re-ran glows amber→green for a span
+                       scaled to its wall-clock — so the dirty subtree, and the slow
+                       nodes in it, are visible at a glance. In live mode (re-runs on
+                       every slider tick) the wave would never finish, so it collapses
+                       to a short pulse on the recomputed nodes only. It's a replay,
+                       not live progress: /execute is one blocking POST.
                        parseCbParams() mirrors transpiler.parse_codeblock_params:
                        a CodeBlock's `#@param`s become live widgets + dynamic
                        input sockets (overrides in the `_cb` param namespace),

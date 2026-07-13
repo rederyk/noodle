@@ -114,7 +114,8 @@ import sys as _sys
 _sys.path.insert(0, {repo_root!r})
 from cad_nodes.mesh_extractor import extract_and_write
 extract_and_write(__result__, {stl!r}, {view!r}, __panels__, __previews__, {lin}, {ang}, __errors__, __timings__,
-                  hashes=globals().get("__hashes__") or {{}}, memo=globals().get("__MEMO__"))
+                  hashes=globals().get("__hashes__") or {{}}, memo=globals().get("__MEMO__"),
+                  cached_nodes=globals().get("__cached__") or {{}})
 """
 
 # Tessellation level-of-detail: (linear_frac of bbox diagonal, angular tol rad).
@@ -282,6 +283,7 @@ def _finalize(code: str, script_text: str, stdout: str, stderr,
         "warnings": [],
         "node_errors": {},
         "node_timings": (view or {}).get("node_timings") or {},
+        "node_cached": (view or {}).get("node_cached") or [],
         "stl": str(stl_path) if stl_path.exists() else None,
     }
 
