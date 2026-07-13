@@ -54,6 +54,13 @@ _EXAMPLE_DESCRIPTIONS = {
                "chart that redraw live as you drag the logits and the temperature. "
                "Drag `t` with `onda` > 0 to animate the winner travelling between "
                "classes.",
+    "gradient-descent": "How a machine learns, as geometry — a loss surface, and "
+                        "the descent path as a chain of spheres. Drag `k` to roll the "
+                        "ball down; raise the learning rate until the path zig-zags "
+                        "out of the valley; drag the starting point (it carries a "
+                        "gizmo) into the wrong basin and watch it settle in a local "
+                        "minimum. The gradient is numeric, so the algorithm knows "
+                        "nothing about f — change f and it still works.",
     "mesh-lane": "The mesh lane — a Box and a Sphere tessellate into triangles just "
                  "by touching a mesh input, get cut with a mesh boolean (manifold3d: "
                  "0.1s where the B-Rep kernel needs 81s), simplified within a bounded "

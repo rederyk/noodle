@@ -1,0 +1,413 @@
+{
+ "name": "gradient-descent",
+ "nodes": [
+  {
+   "id": "n1",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# IL PAESAGGIO: la funzione di costo f(x, y) che vogliamo minimizzare.\n# Questo nodo non disegna niente: manda la FUNZIONE stessa lungo il filo.\ncurva_x = 0.08     #@param float min=0.01 max=1.0 step=0.01\ncurva_y = 0.80     #@param float min=0.01 max=3.0 step=0.05\ngobbe = 1.2        #@param float min=0 max=3 step=0.1\npendenza = 0.30    #@param float min=0 max=1 step=0.05\ndef f(x, y):\n    # una GOLA: ripidissima in y (curva_y), quasi piatta in x (curva_x). E' la\n    # forma che mette in crisi la discesa del gradiente, ed e' la forma vera\n    # delle loss reali. Le gobbe scavano minimi LOCALI lungo il fondo; la\n    # pendenza li mette a quote diverse, cosi' cadere in quello sbagliato COSTA.\n    return (0.5 * (curva_x * x * x + curva_y * y * y)\n            + gobbe * math.cos(1.1 * x) * math.cos(0.9 * y)\n            + pendenza * x)\n# sxy/sz: da unita' della funzione a millimetri. R: mezza larghezza del dominio.\nresult = {\"f\": f, \"sxy\": 6.0, \"sz\": 2.2, \"R\": 6.0}\n"
+   },
+   "position": [
+    40,
+    200
+   ],
+   "preview": false,
+   "size": [
+    340,
+    260
+   ]
+  },
+  {
+   "id": "n2",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# LA SUPERFICIE: f campionata su una griglia NxN -> una vera superficie B-Rep.\n# E' solo un DISEGNO di f: l'algoritmo non la usa, cammina sulla funzione.\nrisoluzione = 30  #@param int min=8 max=60\nspessore = 1.2    #@param float min=0.4 max=6 step=0.2\nM = in_0\nf, sxy, sz, R = M[\"f\"], M[\"sxy\"], M[\"sz\"], M[\"R\"]\nN = int(risoluzione)\nu = [-R + 2 * R * i / (N - 1) for i in range(N)]\ngriglia = [[(x * sxy, y * sxy, f(x, y) * sz) for y in u] for x in u]\nresult = thicken(Face.make_surface_from_array_of_points(griglia), spessore)\n"
+   },
+   "position": [
+    40,
+    520
+   ],
+   "preview": true,
+   "color": "#4a6fa5",
+   "size": [
+    340,
+    240
+   ]
+  },
+  {
+   "id": "n3",
+   "type": "NumberSlider",
+   "params": {
+    "value": 0.15,
+    "_ui": {
+     "value": {
+      "min": 0.005,
+      "max": 2.5,
+      "step": 0.005
+     }
+    }
+   },
+   "position": [
+    40,
+    880
+   ],
+   "preview": false
+  },
+  {
+   "id": "n4",
+   "type": "IntegerSlider",
+   "params": {
+    "value": 60,
+    "_ui": {
+     "value": {
+      "min": 1,
+      "max": 200,
+      "step": 1
+     }
+    }
+   },
+   "position": [
+    40,
+    1010
+   ],
+   "preview": false
+  },
+  {
+   "id": "n5",
+   "type": "IntegerSlider",
+   "params": {
+    "value": 60,
+    "_ui": {
+     "value": {
+      "min": 0,
+      "max": 200,
+      "step": 1
+     }
+    }
+   },
+   "position": [
+    40,
+    1140
+   ],
+   "preview": false
+  },
+  {
+   "id": "n6",
+   "type": "ConstructPoint",
+   "params": {
+    "x": -26,
+    "y": 26,
+    "z": 0
+   },
+   "position": [
+    40,
+    1270
+   ],
+   "preview": false
+  },
+  {
+   "id": "n7",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# LA DISCESA: x <- x - lr * gradiente(f, x).  Ripetuto `passi` volte.\n# E' l'unico nodo che non si puo' fare con i nodi del catalogo: e' un CICLO.\nlr = 0.15    #@param float min=0.005 max=2.5 step=0.005\npassi = 60   #@param int min=1 max=200\nk = 60       #@param int min=0 max=200\nM, partenza = in_0, in_1\nf, sxy, sz, R = M[\"f\"], M[\"sxy\"], M[\"sz\"], M[\"R\"]\nx, y = float(partenza.X) / sxy, float(partenza.Y) / sxy      # da mm a unita' di f\nh = 1e-4\ncammino = [(x, y)]\nfor _ in range(int(passi)):\n    # gradiente NUMERICO (differenze centrali): nessuna derivata scritta a mano.\n    # La pendenza in x e' quanto cambia f facendo un passettino h in x.\n    gx = (f(x + h, y) - f(x - h, y)) / (2 * h)\n    gy = (f(x, y + h) - f(x, y - h)) / (2 * h)\n    x -= lr * gx          # <- IL passo: contro il gradiente, lungo la discesa\n    y -= lr * gy\n    if abs(x) > R + 1 or abs(y) > R + 1:\n        break             # lr troppo grande: e' schizzata FUORI dal paesaggio.\n    cammino.append((x, y))\n# mostra solo i primi k passi: trascinare k = far rotolare la pallina\nvisibile = cammino[:max(int(k), 1) + 1]\npunti = [Vector(px * sxy, py * sxy, f(px, py) * sz + 2.2) for px, py in visibile]\n# scarta i passi ormai fermi: due punti coincidenti sono un segmento NULLO, e la\n# polilinea che ci passa dentro fa esplodere il kernel geometrico.\npuliti = [punti[0]]\nfor pt in punti[1:]:\n    if (pt - puliti[-1]).length > 0.02:\n        puliti.append(pt)\nif len(puliti) < 2:\n    puliti.append(puliti[0] + Vector(0, 0, 0.05))   # una polilinea vuole 2 punti\nresult = puliti\n"
+   },
+   "position": [
+    470,
+    880
+   ],
+   "preview": false,
+   "size": [
+    380,
+    300
+   ]
+  },
+  {
+   "id": "n8",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    930,
+    900
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n9",
+   "type": "Display",
+   "params": {},
+   "position": [
+    930,
+    1030
+   ],
+   "preview": false
+  },
+  {
+   "id": "n10",
+   "type": "Sphere",
+   "params": {
+    "radius": 1.6
+   },
+   "position": [
+    1180,
+    830
+   ],
+   "preview": true,
+   "color": "#e0902f"
+  },
+  {
+   "id": "n11",
+   "type": "Polyline",
+   "params": {},
+   "position": [
+    1180,
+    990
+   ],
+   "preview": true,
+   "color": "#ffd166"
+  },
+  {
+   "id": "n12",
+   "type": "ListLast",
+   "params": {},
+   "position": [
+    1180,
+    1120
+   ],
+   "preview": false
+  },
+  {
+   "id": "n13",
+   "type": "Sphere",
+   "params": {
+    "radius": 3.0
+   },
+   "position": [
+    1420,
+    1120
+   ],
+   "preview": true,
+   "color": "#e94560"
+  },
+  {
+   "id": "n14",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# I NUMERI, in 3D: si riscrivono a ogni esecuzione.\nlr = 0.15   #@param float min=0.005 max=2.5 step=0.005\nk = 60      #@param int min=0 max=200\ncorpo = 4.0 #@param float min=2 max=12 step=0.5\nM, qui = in_0, in_1\nf, sxy, sz = M[\"f\"], M[\"sxy\"], M[\"sz\"]\nx, y = float(qui.X) / sxy, float(qui.Y) / sxy\ndef _tv(s, px, py, pz, size):     # testo in piedi, rivolto alla camera\n    return extrude(Pos(px, py, pz) * (Plane.XZ * Text(s, font_size=size)), amount=0.8)\nresult = [_tv(\"DISCESA DEL GRADIENTE\", 0, 46, 70, corpo * 1.8),\n          _tv(\"x <- x - lr * gradiente f(x)\", 0, 46, 59, corpo),\n          _tv(f\"lr = {lr:.3f}\", -34, 46, 47, corpo * 1.2),\n          _tv(f\"passo {int(k)}\", 0, 46, 47, corpo * 1.2),\n          _tv(f\"loss = {f(x, y):.2f}\", 36, 46, 47, corpo * 1.2)]\n"
+   },
+   "position": [
+    1420,
+    830
+   ],
+   "preview": true,
+   "color": "#e8e8e8",
+   "size": [
+    360,
+    260
+   ]
+  },
+  {
+   "id": "n15",
+   "type": "Note",
+   "params": {
+    "text": "DISCESA DEL GRADIENTE \u2014 come una macchina impara.\n\nLa superficie e' la LOSS: quanto sbaglia il modello per ogni coppia di parametri (x, y). Imparare = scendere fino al fondo.\n\nL'algoritmo e' una riga sola: guarda la pendenza sotto i piedi (il gradiente) e fai un passo nella direzione opposta, lungo lr.\n\nIl paesaggio e' una GOLA: ripida da un lato, quasi piatta dall'altro. E' la forma che mette in crisi l'algoritmo \u2014 e la forma vera delle loss.\n\nDA PROVARE\n1. Trascina k da 0 a 60: la pallina rossa rotola giu'. E' l'animazione.\n2. Porta lr a 1.5: il percorso ZIGZAGA da una parete all'altra della gola invece di scendere, e finisce PEGGIO (loss +0.3 invece di -1.7). Spingilo oltre 2 e scappa via dal paesaggio.\n3. Abbassa lr a 0.05: scende dritto, ma in 60 passi non arriva in fondo (loss +0.1). Troppo piccolo e' lento, troppo grande e' rotto.\n5. TRASCINA IL PUNTO DI PARTENZA nel viewport (ha il gizmo): partendo da destra finisce nel minimo LOCALE (loss -0.1) invece che nel minimo vero (loss -1.7), e li' resta per sempre. Non e' un bug: e' IL problema della discesa del gradiente."
+   },
+   "position": [
+    470,
+    -300
+   ],
+   "size": [
+    640,
+    300
+   ]
+  },
+  {
+   "id": "n16",
+   "type": "Note",
+   "params": {
+    "text": "PERCHE' IL GRADIENTE E' NUMERICO\n\nNel nodo della discesa la pendenza non e' una derivata scritta a mano: e' la differenza centrale (f(x+h) - f(x-h)) / 2h.\n\nCosi' l'algoritmo NON sa nulla di f: cambia la funzione nel nodo Paesaggio e la discesa continua a funzionare. E' esattamente il motivo per cui la discesa del gradiente e' universale."
+   },
+   "position": [
+    470,
+    1250
+   ],
+   "size": [
+    420,
+    260
+   ]
+  },
+  {
+   "id": "n17",
+   "type": "Note",
+   "params": {
+    "text": "COME E' FATTO\n\n1. Il nodo Paesaggio non emette geometria: manda la FUNZIONE f lungo il filo (un dict {f, scale}). Superficie, discesa ed etichette la ricevono \u2014 una sola definizione di f, tre consumatori. Il bus `data` trasporta qualsiasi oggetto Python, funzioni comprese.\n\n2. La superficie e' solo un ritratto di f: 30x30 campioni -> Face.make_surface_from_array_of_points -> thicken. L'algoritmo non la tocca, cammina sulla funzione.\n\n3. Il ciclo e' l'unica cosa che i nodi del catalogo non sanno fare: sta in un CodeBlock. Tutto il resto e' catalogo.\n\n4. Il nodo List dopo la discesa serve: un CodeBlock non e' marcato 'produce liste', e senza di lui la Sphere non farebbe fan-out (una sola pallina invece di N).\n\n5. Il punto di partenza e' un ConstructPoint perche' porta il gizmo di traslazione: lo trascini nel 3D e il grafo ricalcola."
+   },
+   "position": [
+    930,
+    1250
+   ],
+   "size": [
+    520,
+    380
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "id": "l1",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n2",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l2",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l3",
+   "from_node": "n6",
+   "from_socket": "point",
+   "to_node": "n7",
+   "to_socket": "in_1"
+  },
+  {
+   "id": "l4",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "lr"
+  },
+  {
+   "id": "l5",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "passi"
+  },
+  {
+   "id": "l6",
+   "from_node": "n5",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "k"
+  },
+  {
+   "id": "l7",
+   "from_node": "n7",
+   "from_socket": "result",
+   "to_node": "n8",
+   "to_socket": "items"
+  },
+  {
+   "id": "l8",
+   "from_node": "n8",
+   "from_socket": "result",
+   "to_node": "n9",
+   "to_socket": "value"
+  },
+  {
+   "id": "l9",
+   "from_node": "n8",
+   "from_socket": "result",
+   "to_node": "n10",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l10",
+   "from_node": "n8",
+   "from_socket": "result",
+   "to_node": "n11",
+   "to_socket": "points"
+  },
+  {
+   "id": "l11",
+   "from_node": "n8",
+   "from_socket": "result",
+   "to_node": "n12",
+   "to_socket": "list"
+  },
+  {
+   "id": "l12",
+   "from_node": "n12",
+   "from_socket": "result",
+   "to_node": "n13",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l13",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n14",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l14",
+   "from_node": "n12",
+   "from_socket": "result",
+   "to_node": "n14",
+   "to_socket": "in_1"
+  },
+  {
+   "id": "l15",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n14",
+   "to_socket": "lr"
+  },
+  {
+   "id": "l16",
+   "from_node": "n5",
+   "from_socket": "result",
+   "to_node": "n14",
+   "to_socket": "k"
+  }
+ ],
+ "groups": [
+  {
+   "title": "1 \u00b7 IL PAESAGGIO \u2014 la funzione di costo f(x, y)",
+   "bounding": [
+    10,
+    140,
+    400,
+    640
+   ],
+   "color": "#3f589e"
+  },
+  {
+   "title": "2 \u00b7 LE MANOPOLE",
+   "bounding": [
+    10,
+    820,
+    400,
+    560
+   ],
+   "color": "#8a5a2c"
+  },
+  {
+   "title": "3 \u00b7 LA DISCESA \u2014 l'unico ciclo",
+   "bounding": [
+    440,
+    820,
+    460,
+    380
+   ],
+   "color": "#7a2c5a"
+  },
+  {
+   "title": "4 \u00b7 LE FIGURE \u2014 cammino, pallina, numeri",
+   "bounding": [
+    910,
+    780,
+    900,
+    430
+   ],
+   "color": "#2c7a52"
+  }
+ ]
+}
