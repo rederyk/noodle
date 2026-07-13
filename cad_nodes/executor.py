@@ -128,12 +128,18 @@ _QUALITY = {
 
 
 def build_script(code: str, stl_path: Path, view_path: Path,
-                 quality: str = "live", write_stl: bool = True) -> str:
+                 quality: str = "live", write_stl: bool = True,
+                 progress_path: Path | None = None) -> str:
     lin, ang = _QUALITY.get(quality, _QUALITY["live"])
+    # The PREAMBLE guards __PROGRESS_PATH__ with try/except NameError (same idiom
+    # as __MEMO__), so assigning it *before* the transpiled code sticks: the node
+    # _ev() calls then append to this file while the run is still going, and the
+    # editor tails it. No header = progress is a no-op.
+    head = f"__PROGRESS_PATH__ = {str(progress_path)!r}\n" if progress_path else ""
     # write_stl=False (live runs) skips the STL export in the epilogue — an empty
     # path makes extract_and_write no-op it. The STL is regenerated on demand by
     # the download/render routes, saving ~0.9s on every live re-run.
-    return code + _EPILOGUE.format(
+    return head + code + _EPILOGUE.format(
         repo_root=_REPO_ROOT, stl=(str(stl_path) if write_stl else ""),
         view=str(view_path), lin=lin, ang=ang,
     )
@@ -339,11 +345,17 @@ def execute_code(code: str, workdir: Path, timeout: int = 120,
     stl_path = workdir / "output.stl"
     view_path = workdir / "view.json"
     script_path = workdir / "_run.py"
+    progress_path = workdir / "progress.jsonl"
 
     if view_path.exists():
         view_path.unlink()
+    # Truncate rather than unlink: a tailer already attached (the editor opens the
+    # stream before it POSTs) sees the size drop below its offset and knows a new
+    # run started, instead of replaying the previous one's events.
+    progress_path.write_text("")
 
-    script_text = build_script(code, stl_path, view_path, quality, write_stl)
+    script_text = build_script(code, stl_path, view_path, quality, write_stl,
+                               progress_path=progress_path)
     script_path.write_text(script_text)
 
     # --- warm path -------------------------------------------------------

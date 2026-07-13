@@ -132,6 +132,7 @@ def _annot(node) -> str:
     return f"  # @node:{node.id} ({node.type})"
 
 PREAMBLE = """\
+import json as _json
 import math
 import os
 import random
@@ -158,6 +159,39 @@ except NameError:
     __MEMO__ = None
 
 _MEMO_CAP = 256      # LRU entries (node outputs + preview meshes + views)
+
+# Live progress. The executor points __PROGRESS_PATH__ at a per-run NDJSON file
+# (see executor.build_script) and the editor tails it WHILE the run is still going,
+# so nodes light up as they execute instead of being replayed afterwards. It is the
+# only channel that works on BOTH paths: the warm worker redirects stdout into a
+# buffer during exec, and the cold subprocess has no pipe home at all. No path set
+# (the /ui code view, tests) = every _ev is a no-op.
+try:
+    __PROGRESS_PATH__
+except NameError:
+    __PROGRESS_PATH__ = None
+
+_PROG_F = None
+
+
+def _ev(_kind, _nid, _dt=None, _cached=False, _err=None):
+    global _PROG_F
+    if not __PROGRESS_PATH__:
+        return
+    try:
+        if _PROG_F is None:
+            _PROG_F = open(__PROGRESS_PATH__, "a")
+        _e = {"k": _kind, "n": _nid}
+        if _dt is not None:
+            _e["t"] = round(_dt, 4)
+        if _cached:
+            _e["c"] = True
+        if _err:
+            _e["x"] = True
+        _PROG_F.write(_json.dumps(_e) + "\\n")
+        _PROG_F.flush()      # the tailer reads this file while we're still running
+    except Exception:
+        pass                 # progress is a nicety: never let it break a run
 
 
 def _memo_get(_k):
@@ -2072,12 +2106,15 @@ class Transpiler:
         is recorded in __errors__ and doesn't abort the rest of the workflow.
         In memo mode, also wrap the body in a cache lookup: on a hit the node's
         output vars are restored from the persistent store and the body is
-        skipped entirely (preview assignments still run)."""
+        skipped entirely (preview assignments still run), and the node brackets
+        itself in _ev() progress events so the editor can light it up live."""
         key = wrapped = None
         if self._memo:
             key, wrapped = self._memo_plan(node, body, key_src)
         lines.append("try:")
         lines.append("    _t0 = _perf()")
+        if self._memo:
+            lines.append(f"    _ev('s', {node.id!r})")
         if wrapped:
             outs = self._body_outputs(body)
             tail = [bl for bl in body if bl.startswith("__previews__[")]
@@ -2099,8 +2136,17 @@ class Transpiler:
                 if bl:
                     lines.append("    " + bl)
         lines.append(f"    __timings__[{node.id!r}] = _perf() - _t0")
+        if self._memo:
+            lines.append(
+                f"    _ev('e', {node.id!r}, __timings__[{node.id!r}], "
+                f"__cached__.get({node.id!r}, False))"
+            )
         lines.append("except Exception as _e:")
         lines.append(f"    __timings__[{node.id!r}] = _perf() - _t0")
+        if self._memo:
+            lines.append(
+                f"    _ev('e', {node.id!r}, __timings__[{node.id!r}], False, True)"
+            )
         var = self.var_of.get(node.id)
         if var:
             lines.append(f"    {var} = None")

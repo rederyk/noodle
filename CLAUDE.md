@@ -72,7 +72,14 @@ server.py            FastAPI HTTP API (port 8090). Routes under /api/* :
                        keep it in sync when the API surface changes),
                        /api/agent/tags (ToAgent provenance index, §7b),
                        /api/graph/{name}/slice_summary|section_outline (§7b),
+                       /api/graph/{name}/progress (SSE: per-node execution events
+                       of the run in flight, tailed from the workdir's
+                       progress.jsonl — see transpiler `_ev`),
                        /api/system/health|logs|restart.
+                       NOTE /execute runs via `asyncio.to_thread`: a graph run is
+                       seconds of blocking CPU and must NOT hold the event loop,
+                       or nothing else can be served meanwhile (the progress
+                       stream included). Keep any new long route off the loop.
 mcp_server.py        MCP server exposing the same cad_nodes.api operations.
 webui/
   viewer.js          ★ the SHARED Three.js viewport (ES module served at
@@ -94,16 +101,13 @@ webui/
                        WIRE_COLORS; INPUT_ACCEPTS is fetched at boot from
                        /api/wiretypes (derived from casts.py, §5 — the inline
                        literal is only an offline fallback).
-                       Execution glow (startExecGlow/drawExecGlow): a finished run
-                       replays itself as a wave of glow over the nodes, in the key
-                       order of node_timings (= topological execution order). A node
-                       the memo cache served (node_cached) gets a dim cold-blue
-                       flash; one that really re-ran glows amber→green for a span
-                       scaled to its wall-clock — so the dirty subtree, and the slow
-                       nodes in it, are visible at a glance. In live mode (re-runs on
-                       every slider tick) the wave would never finish, so it collapses
-                       to a short pulse on the recomputed nodes only. It's a replay,
-                       not live progress: /execute is one blocking POST.
+                       Execution glow (beginExecGlow/glowEvent/drawExecGlow): the nodes
+                       light up AS THEY RUN. openProgress() subscribes to the SSE
+                       /api/graph/{name}/progress BEFORE POSTing /execute, so no start
+                       event is missed; each event opens or closes a node's span. A
+                       node executing right now breathes amber; when it finishes it
+                       settles and fades — green if it really recomputed, cold blue if
+                       the memo cache served it, red if it threw.
                        Cost badges (drawCostBadge, toolbar "Costi" toggle, remembered
                        in localStorage `noodle:settings:showCost`): the same story made
                        to stay — last run's wall-clock on each node's title bar, same
@@ -147,6 +151,14 @@ cad_nodes/
                        to var renumbering); non-deterministic nodes (Import*,
                        open(), random.) poison their lineage, display/export
                        side-effect nodes stay keyed but re-run. tests/test_memo.py.
+                       In memo mode each node also brackets itself in `_ev()`
+                       (PREAMBLE): a start/end NDJSON line appended+flushed to
+                       __PROGRESS_PATH__ = the workdir's progress.jsonl (injected by
+                       executor.build_script). That file is the ONLY progress channel
+                       that works on BOTH paths — the warm worker redirects stdout
+                       into a buffer during exec, and the cold subprocess has no pipe
+                       home at all. The editor tails it over SSE and lights each node
+                       AS IT RUNS.
   executor.py        Runs the generated script in a worker subprocess; captures
                        STL + view JSON + per-node errors. execute_graph(graph, workdir).
   worker.py / mesh_extractor.py   the subprocess + meshing. The warm worker owns
