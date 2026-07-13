@@ -62,6 +62,14 @@ the canvas side.
   a dict, a closure. It rides the `data` bus whole (no fan-out, since a CodeBlock
   is not a list producer). That is how one node can own a function and hand it to
   three others.
+- Socket names bite: `Extrude` takes `sketch` (not `profile`), `MakeFace` takes
+  `edges`, `Bounds` *outputs* `domain`. Validate the graph before writing it —
+  `Graph.validate()` names the offending connection.
+- **Composition is part of the lesson.** An arrow drawn along a cube's edge is
+  invisible inside the solid (draw it ~1.35× long so it pokes out, and look at the
+  origin corner); a flat scene (epicycles, k-means) is read from above, so its
+  labels must lie *on* the XY plane, while a scene with height (bars, a loss
+  surface) wants labels standing on `Plane.XZ`, facing the camera.
 
 ---
 
@@ -86,15 +94,22 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` planned.
   reshape `f` and the descent still works. **New idiom:** one node owns `f` and
   sends the *callable itself* down a `data` wire (`result = {"f": f, ...}`) to the
   surface, the descent and the labels — one definition, three consumers.
-- [ ] **Linear algebra: a matrix as a deformation** — 9 sliders apply a 3×3 matrix to
-  a unit cube. The `Volume` node reads the **determinant**; det = 0 flattens the
-  cube into a plane. Eigenvectors are the edges that do not rotate.
+- [x] **Linear algebra: a matrix as a deformation** — `examples/matrix-determinant.json`.
+  Nine sliders apply a 3×3 matrix to a unit cube via `Shape.transform_geometry`
+  (a *non-rigid* transform: it may stretch and mirror). The catalog's `Volume` node,
+  pointed at the deformed solid, reads |det| × L³ — the determinant is not a formula
+  to memorise, it is that volume. Shear it and the volume does not move; zero a row
+  and it flattens to a plane (det = 0 *is* "not invertible"); flip a sign and space
+  turns inside out. The three arrows are the matrix's columns. 10 nodes.
 - [ ] **Attention** — QKᵀ as a grid of columns, then softmax *per row*: the rows
   normalise one by one. Extends to top-k / nucleus sampling = cutting the pie at
   cumulative 0.9. Natural sequel to the softmax example.
-- [ ] **K-means** — points from `Random`, centroids as spheres, and `Voronoi2D` on
-  the centroids gives the decision regions for free (already a catalog node).
-  Sliders: `k`, `iteration`.
+- [x] **K-means** — `examples/kmeans-voronoi.json`. Lloyd's algorithm, and `Voronoi2D`
+  on the centroids gives the decision regions for free. `iterazioni` = 0 shows the
+  random init; drag it up and the centroids migrate into the clusters while the
+  regions settle. The inertia readout is the number the algorithm minimises — it
+  never goes back up. Wrong `k` still "finds" groups: k-means does not tell you how
+  many there are, it asks. 16 nodes.
 - [ ] **Perceptron / decision boundary** — two clouds of points, the boundary as a
   plane that tilts with the weights. With a small MLP the boundary becomes a curved
   surface.
@@ -108,8 +123,14 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` planned.
 
 ### Statistics & numerics
 
-- [ ] **Central limit theorem** — a histogram of bars; slider `n` = how many uniforms
-  are summed. Flat at n=1, a bell by n=5.
+- [x] **Central limit theorem** — `examples/central-limit.json`. Average `n` uniform
+  numbers — a perfectly flat distribution, nothing gaussian anywhere — 4000 times,
+  and count where the averages land. n=1 is flat; n=2 is a triangle; by **n=3 the
+  bell is there**. Two things happen at once, and together they are the theorem: the
+  shape becomes a bell regardless of what you summed, and the width shrinks as
+  1/√n. The yellow curve is the gaussian the theorem *predicts* (same μ, same σ),
+  not a fit — at n=1 it misses the bars entirely, which is the honest picture.
+  13 nodes.
 - [ ] **Riemann sums** — bars under a curve, slider `n`; `Volume`/`Area` reads the
   convergence error.
 - [ ] **Sampling & aliasing** — a sine and its samples; below Nyquist the ghost wave
@@ -121,8 +142,14 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` planned.
   algorithm's state at step k.
 - [ ] **Cellular automata** — Game of Life / Rule 30, with generations **stacked
   along Z**: a printable tower of time.
-- [ ] **Fourier series / epicycles** — circles on circles drawing a curve; slider
-  `harmonics`. Fan-out was made for this.
+- [x] **Fourier series / epicycles** — `examples/fourier-epicycles.json`. Each harmonic
+  is a circle riding on the tip of the last; the pen (a red sphere) traces the wave,
+  unrolled in time to the right — one `Circle` node draws all N circles by fanning out
+  over a list of radii and centres. Drag `t` and the wheels turn. One circle = a pure
+  sine, and it can do nothing else; add harmonics and the square wave's corners
+  sharpen but **never** arrive (the ripples that stay are Gibbs). `forma` swaps square
+  / sawtooth / triangle by changing only *which* circles you take and how big they
+  are — the machine is the same. 18 nodes.
 - [ ] **De Casteljau** — the Bézier construction at parameter `t`, the interpolation
   lines collapsing onto the point. Almost obligatory in a CAD app.
 - [ ] **L-systems / fractal trees** — a recursive CodeBlock, slider `depth`. The

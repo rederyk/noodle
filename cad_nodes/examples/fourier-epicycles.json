@@ -1,0 +1,422 @@
+{
+ "name": "fourier-epicycles",
+ "nodes": [
+  {
+   "id": "n1",
+   "type": "IntegerSlider",
+   "params": {
+    "value": 5,
+    "_ui": {
+     "value": {
+      "min": 1,
+      "max": 40,
+      "step": 1
+     }
+    }
+   },
+   "position": [
+    40,
+    200
+   ],
+   "preview": false
+  },
+  {
+   "id": "n2",
+   "type": "NumberSlider",
+   "params": {
+    "value": 0.25,
+    "_ui": {
+     "value": {
+      "min": 0,
+      "max": 1,
+      "step": 0.005
+     }
+    }
+   },
+   "position": [
+    40,
+    330
+   ],
+   "preview": false
+  },
+  {
+   "id": "n3",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# LA SERIE DI FOURIER: ogni cerchio e' un'armonica. Raggio = quanto conta,\n# velocita' = la sua frequenza. Sommali e ottieni QUALSIASI onda periodica.\narmoniche = 5   #@param int min=1 max=40\nt = 0.25        #@param float min=0 max=1 step=0.005\nforma = 0       #@param int min=0 max=2\nscala = 30.0    #@param float min=10 max=60 step=1\n# forma: 0 = onda QUADRA, 1 = DENTE DI SEGA, 2 = TRIANGOLARE.\n# Cambia solo QUALI armoniche prendi e con che raggio. Nient'altro.\ntermini = []\nfor i in range(int(armoniche)):\n    if forma == 0:\n        k, r = 2 * i + 1, 1.0 / (2 * i + 1)          # solo dispari, raggio 1/k\n    elif forma == 1:\n        k, r = i + 1, 1.0 / (i + 1)                  # tutte, raggio 1/k\n    else:\n        k, r = 2 * i + 1, 1.0 / (2 * i + 1) ** 2     # dispari, raggio 1/k^2\n    termini.append((k, scala * r))\n\ndef somma(tt):\n    \"\"\"dove sta la punta al tempo tt: la catena di cerchi, sommata.\"\"\"\n    a = 2 * math.pi * tt\n    p = Vector(0, 0, 0)\n    for k, R in termini:\n        p = p + Vector(R * math.cos(k * a), R * math.sin(k * a), 0)\n    return p\n\n# la catena di cerchi al tempo t: centro di ognuno = punta del precedente\ncentri, raggi, p, ang = [], [], Vector(0, 0, 0), 2 * math.pi * t\nfor k, R in termini:\n    centri.append(Vector(p.X, p.Y, 0))\n    raggi.append(max(R, 0.15))          # un cerchio di raggio 0 e' degenere\n    p = p + Vector(R * math.cos(k * ang), R * math.sin(k * ang), 0)\npunta = Vector(p.X, p.Y, 0)\n\n# L'ONDA: la coordinata Y della punta, srotolata nel tempo verso destra.\n# Al bordo sinistro del grafico l'onda vale ESATTAMENTE quanto la punta adesso:\n# per questo il filo orizzontale che le unisce e' dritto.\nX0, LUN = 46.0, 130.0\nonda = [Vector(X0 + s / 200 * LUN, somma(t + s / 200).Y, 0) for s in range(201)]\nfilo = [punta, Vector(X0, punta.Y, 0)]\nresult = {\"centri\": centri, \"raggi\": raggi, \"punta\": punta, \"onda\": onda,\n          \"filo\": filo, \"n\": len(termini), \"forma\": int(forma), \"t\": t}\n"
+   },
+   "position": [
+    40,
+    470
+   ],
+   "preview": false,
+   "size": [
+    380,
+    460
+   ]
+  },
+  {
+   "id": "n4",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = in_0[\"centri\"]"
+   },
+   "position": [
+    500,
+    200
+   ],
+   "preview": false,
+   "size": [
+    300,
+    110
+   ]
+  },
+  {
+   "id": "n5",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = in_0[\"raggi\"]"
+   },
+   "position": [
+    500,
+    340
+   ],
+   "preview": false,
+   "size": [
+    300,
+    110
+   ]
+  },
+  {
+   "id": "n6",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    840,
+    200
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n7",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    840,
+    340
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n8",
+   "type": "Circle",
+   "params": {},
+   "position": [
+    1080,
+    260
+   ],
+   "preview": true,
+   "color": "#5a7fb8"
+  },
+  {
+   "id": "n9",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = in_0[\"onda\"]"
+   },
+   "position": [
+    500,
+    490
+   ],
+   "preview": false,
+   "size": [
+    300,
+    110
+   ]
+  },
+  {
+   "id": "n10",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    840,
+    490
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n11",
+   "type": "Polyline",
+   "params": {},
+   "position": [
+    1080,
+    490
+   ],
+   "preview": true,
+   "color": "#ffd166"
+  },
+  {
+   "id": "n12",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = in_0[\"filo\"]"
+   },
+   "position": [
+    500,
+    640
+   ],
+   "preview": false,
+   "size": [
+    300,
+    110
+   ]
+  },
+  {
+   "id": "n13",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    840,
+    640
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n14",
+   "type": "Polyline",
+   "params": {},
+   "position": [
+    1080,
+    640
+   ],
+   "preview": true,
+   "color": "#7a8899"
+  },
+  {
+   "id": "n15",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = in_0[\"punta\"]"
+   },
+   "position": [
+    500,
+    790
+   ],
+   "preview": false,
+   "size": [
+    300,
+    110
+   ]
+  },
+  {
+   "id": "n16",
+   "type": "Sphere",
+   "params": {
+    "radius": 2.2
+   },
+   "position": [
+    840,
+    790
+   ],
+   "preview": true,
+   "color": "#e94560"
+  },
+  {
+   "id": "n17",
+   "type": "CodeBlock",
+   "params": {
+    "code": "corpo = 4.0  #@param float min=2 max=12 step=0.5\nD = in_0\nnomi = {0: \"onda QUADRA\", 1: \"DENTE DI SEGA\", 2: \"TRIANGOLARE\"}\ndef _t(s, x, y, size):        # sdraiato: questa scena si guarda dall'alto\n    return extrude(Pos(x, y, 0) * Text(s, font_size=size), amount=0.8)\nresult = [_t(\"SERIE DI FOURIER\", -18, 62, corpo * 1.7),\n          _t(f\"{D['n']} cerchi  ->  {nomi.get(D['forma'], '?')}\", -18, 50, corpo * 1.2),\n          _t(f\"t = {D['t']:.2f}\", 100, 50, corpo * 1.2),\n          _t(\"l'onda, srotolata nel tempo ->\", 108, -48, corpo)]\n"
+   },
+   "position": [
+    1080,
+    790
+   ],
+   "preview": true,
+   "color": "#e8e8e8",
+   "size": [
+    340,
+    200
+   ]
+  },
+  {
+   "id": "n18",
+   "type": "Note",
+   "params": {
+    "text": "QUALSIASI ONDA E' UNA SOMMA DI CERCHI.\n\nOgni cerchio gira a una sua velocita' (l'armonica k) e ha un suo raggio (quanto quell'armonica conta). Il centro di ognuno e' attaccato alla punta del precedente. La pallina rossa e' la penna.\n\nA destra c'e' la stessa cosa, srotolata nel tempo: l'ALTEZZA della penna, istante per istante. Quella e' l'onda.\n\nDA PROVARE\n1. Trascina `t` da 0 a 1: i cerchi girano e la penna disegna. Un giro completo = un periodo dell'onda.\n2. Metti `armoniche` a 1: un cerchio solo, e l'onda e' una sinusoide perfetta. Non sa fare altro.\n3. Sali a 3, 7, 20: gli angoli dell'onda quadra si formano sotto i tuoi occhi. Non arrivano MAI perfetti \u2014 servirebbero infiniti cerchi. Le ondine che restano sugli spigoli hanno un nome: fenomeno di Gibbs.\n4. Cambia `forma` (0 quadra, 1 dente di sega, 2 triangolare): cambiano solo QUALI cerchi prendi e quanto sono grandi. La macchina e' la stessa."
+   },
+   "position": [
+    40,
+    990
+   ],
+   "size": [
+    600,
+    380
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "id": "l1",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n3",
+   "to_socket": "armoniche"
+  },
+  {
+   "id": "l2",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n3",
+   "to_socket": "t"
+  },
+  {
+   "id": "l3",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n4",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l4",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n5",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l5",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n6",
+   "to_socket": "items"
+  },
+  {
+   "id": "l6",
+   "from_node": "n5",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "items"
+  },
+  {
+   "id": "l7",
+   "from_node": "n7",
+   "from_socket": "result",
+   "to_node": "n8",
+   "to_socket": "radius"
+  },
+  {
+   "id": "l8",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n8",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l9",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n9",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l10",
+   "from_node": "n9",
+   "from_socket": "result",
+   "to_node": "n10",
+   "to_socket": "items"
+  },
+  {
+   "id": "l11",
+   "from_node": "n10",
+   "from_socket": "result",
+   "to_node": "n11",
+   "to_socket": "points"
+  },
+  {
+   "id": "l12",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n12",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l13",
+   "from_node": "n12",
+   "from_socket": "result",
+   "to_node": "n13",
+   "to_socket": "items"
+  },
+  {
+   "id": "l14",
+   "from_node": "n13",
+   "from_socket": "result",
+   "to_node": "n14",
+   "to_socket": "points"
+  },
+  {
+   "id": "l15",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n15",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l16",
+   "from_node": "n15",
+   "from_socket": "result",
+   "to_node": "n16",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l17",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n17",
+   "to_socket": "in_0"
+  }
+ ],
+ "groups": [
+  {
+   "title": "1 \u00b7 LE MANOPOLE",
+   "bounding": [
+    10,
+    140,
+    400,
+    220
+   ],
+   "color": "#3f589e"
+  },
+  {
+   "title": "2 \u00b7 LA SERIE \u2014 i coefficienti",
+   "bounding": [
+    10,
+    400,
+    400,
+    560
+   ],
+   "color": "#8a5a2c"
+  },
+  {
+   "title": "3 \u00b7 I CERCHI E L'ONDA",
+   "bounding": [
+    470,
+    140,
+    960,
+    900
+   ],
+   "color": "#2c7a52"
+  }
+ ]
+}

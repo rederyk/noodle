@@ -1,0 +1,381 @@
+{
+ "name": "kmeans-voronoi",
+ "nodes": [
+  {
+   "id": "n1",
+   "type": "IntegerSlider",
+   "params": {
+    "value": 3,
+    "_ui": {
+     "value": {
+      "min": 1,
+      "max": 8,
+      "step": 1
+     }
+    }
+   },
+   "position": [
+    40,
+    200
+   ],
+   "preview": false
+  },
+  {
+   "id": "n2",
+   "type": "IntegerSlider",
+   "params": {
+    "value": 8,
+    "_ui": {
+     "value": {
+      "min": 0,
+      "max": 20,
+      "step": 1
+     }
+    }
+   },
+   "position": [
+    40,
+    330
+   ],
+   "preview": false
+  },
+  {
+   "id": "n3",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# I DATI: nuvole di punti. L'algoritmo NON sa quali sono i gruppi veri \u2014\n# li deve trovare. Noi qui li generiamo, ma poi glieli diamo mescolati.\ngruppi_veri = 3   #@param int min=1 max=6\nper_gruppo = 45   #@param int min=5 max=200\nsparpaglio = 7.0  #@param float min=1 max=20 step=0.5\nseme = 22         #@param int min=1 max=999\nrng = random.Random(int(seme))\nW, H = 110.0, 80.0                      # il campo, in mm\ncentri_veri = [(rng.uniform(-W / 2 + 15, W / 2 - 15), rng.uniform(-H / 2 + 12, H / 2 - 12))\n               for _ in range(int(gruppi_veri))]\npts = []\nfor cx, cy in centri_veri:\n    for _ in range(int(per_gruppo)):\n        pts.append((rng.gauss(cx, sparpaglio), rng.gauss(cy, sparpaglio)))\nresult = {\"pts\": pts, \"W\": W, \"H\": H}\n"
+   },
+   "position": [
+    40,
+    470
+   ],
+   "preview": false,
+   "size": [
+    360,
+    300
+   ]
+  },
+  {
+   "id": "n4",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# i punti da disegnare. Il dict passa INTERO sul filo (un CodeBlock non produce\n# liste, quindi niente fan-out); qui lo apriamo in una lista vera.\nresult = [Vector(x, y, 0) for x, y in in_0[\"pts\"]]\n"
+   },
+   "position": [
+    470,
+    200
+   ],
+   "preview": false,
+   "size": [
+    340,
+    160
+   ]
+  },
+  {
+   "id": "n5",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    820,
+    200
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n6",
+   "type": "Sphere",
+   "params": {
+    "radius": 1.6
+   },
+   "position": [
+    1040,
+    200
+   ],
+   "preview": true,
+   "color": "#e8e8e8"
+  },
+  {
+   "id": "n7",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# K-MEANS (algoritmo di Lloyd), due mosse ripetute:\n#   1. ASSEGNA  ogni punto al centroide piu' vicino\n#   2. SPOSTA   ogni centroide nella media dei suoi punti\n# Ripeti. Si ferma da solo quando nessuno cambia piu' squadra.\nk = 3           #@param int min=1 max=8\niterazioni = 8  #@param int min=0 max=20\nseme = 11       #@param int min=1 max=999\nD = in_0\npts, W, H = D[\"pts\"], D[\"W\"], D[\"H\"]\nrng = random.Random(int(seme))\nK = max(1, min(int(k), len(pts)))\n# partenza: K punti a caso fra i dati stessi (e' l'inizializzazione classica)\ncent = [list(p) for p in rng.sample(pts, K)]\nfor _ in range(int(iterazioni)):\n    gruppi = [[] for _ in range(K)]\n    for x, y in pts:\n        i = min(range(K), key=lambda j: (x - cent[j][0]) ** 2 + (y - cent[j][1]) ** 2)\n        gruppi[i].append((x, y))\n    for i, g in enumerate(gruppi):\n        if g:                                   # un centroide senza punti resta dov'e'\n            cent[i] = [sum(p[0] for p in g) / len(g), sum(p[1] for p in g) / len(g)]\n# inerzia: la somma delle distanze al quadrato dal proprio centroide.\n# E' il NUMERO che k-means minimizza \u2014 scende a ogni iterazione, mai risale.\ninerzia = sum(min((x - c[0]) ** 2 + (y - c[1]) ** 2 for c in cent) for x, y in pts)\nresult = {\"cent\": cent, \"inerzia\": inerzia, \"k\": K, \"it\": int(iterazioni),\n          \"W\": W, \"H\": H}\n"
+   },
+   "position": [
+    470,
+    420
+   ],
+   "preview": false,
+   "size": [
+    380,
+    380
+   ]
+  },
+  {
+   "id": "n8",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = [Vector(x, y, 0) for x, y in in_0[\"cent\"]]"
+   },
+   "position": [
+    900,
+    420
+   ],
+   "preview": false,
+   "size": [
+    320,
+    110
+   ]
+  },
+  {
+   "id": "n9",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    1180,
+    420
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n10",
+   "type": "Sphere",
+   "params": {
+    "radius": 4.0
+   },
+   "position": [
+    1400,
+    420
+   ],
+   "preview": true,
+   "color": "#e94560"
+  },
+  {
+   "id": "n11",
+   "type": "Rectangle",
+   "params": {
+    "width": 110,
+    "height": 80
+   },
+   "position": [
+    900,
+    700
+   ],
+   "preview": false
+  },
+  {
+   "id": "n12",
+   "type": "MakeFace",
+   "params": {},
+   "position": [
+    1120,
+    700
+   ],
+   "preview": false
+  },
+  {
+   "id": "n13",
+   "type": "Voronoi2D",
+   "params": {
+    "scale": 0.97
+   },
+   "position": [
+    1330,
+    700
+   ],
+   "preview": false
+  },
+  {
+   "id": "n14",
+   "type": "Extrude",
+   "params": {
+    "amount": 0.8
+   },
+   "position": [
+    1560,
+    700
+   ],
+   "preview": true,
+   "color": "#2c9c8a"
+  },
+  {
+   "id": "n15",
+   "type": "CodeBlock",
+   "params": {
+    "code": "corpo = 4.0  #@param float min=2 max=12 step=0.5\nD = in_0\ndef _t(s, x, y, size):        # sdraiato: questa scena si guarda dall'alto\n    return extrude(Pos(x, y, 0) * Text(s, font_size=size), amount=0.8)\nstato = \"PARTENZA (centroidi a caso)\" if D[\"it\"] == 0 else f\"iterazione {D['it']}\"\nresult = [_t(\"K-MEANS\", 0, 62, corpo * 1.8),\n          _t(stato, 0, 51, corpo * 1.2),\n          _t(f\"k = {D['k']}\", -34, -52, corpo * 1.2),\n          _t(f\"inerzia = {D['inerzia']:.0f}\", 26, -52, corpo * 1.2)]\n"
+   },
+   "position": [
+    1400,
+    180
+   ],
+   "preview": true,
+   "color": "#ffd166",
+   "size": [
+    340,
+    200
+   ]
+  },
+  {
+   "id": "n16",
+   "type": "Note",
+   "params": {
+    "text": "K-MEANS: trovare i gruppi che nessuno ti ha detto.\n\nI punti bianchi sono i dati. Le palline rosse sono i centroidi. Le lastre sotto sono il VORONOI dei centroidi: la mappa di chi vince dove.\n\nL'algoritmo e' due mosse, ripetute: assegna ogni punto al centroide piu' vicino, poi sposta ogni centroide nella media dei suoi punti.\n\nDA PROVARE\n1. Metti `iterazioni` a 0: i centroidi sono buttati a caso e le regioni sono assurde. Ora sali 1, 2, 3...: li vedi MIGRARE nel cuore dei gruppi e le regioni assestarsi. Dopo 5-6 passi non si muove piu' niente.\n2. Guarda l'inerzia (la somma dei quadrati delle distanze dal proprio centroide): e' il numero che l'algoritmo minimizza. Scende a ogni iterazione e non risale MAI. E' tutto qui il k-means.\n3. Cambia `k`: con k sbagliato l'algoritmo trova comunque dei gruppi, e sono senza senso. K-means non ti dice quanti gruppi ci sono: te lo chiede.\n4. Cambia il `seme` del k-means (non della nuvola): partenze diverse possono dare risultati diversi. Anche questo cade in minimi locali.\n\nLe celle di Voronoi non le abbiamo calcolate: e' un nodo del catalogo, gia' li'. Il confine fra due centroidi E' la regola di decisione."
+   },
+   "position": [
+    40,
+    830
+   ],
+   "size": [
+    620,
+    460
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "id": "l1",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n4",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l2",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n5",
+   "to_socket": "items"
+  },
+  {
+   "id": "l3",
+   "from_node": "n5",
+   "from_socket": "result",
+   "to_node": "n6",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l4",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l5",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "k"
+  },
+  {
+   "id": "l6",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "iterazioni"
+  },
+  {
+   "id": "l7",
+   "from_node": "n7",
+   "from_socket": "result",
+   "to_node": "n8",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l8",
+   "from_node": "n8",
+   "from_socket": "result",
+   "to_node": "n9",
+   "to_socket": "items"
+  },
+  {
+   "id": "l9",
+   "from_node": "n9",
+   "from_socket": "result",
+   "to_node": "n10",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l10",
+   "from_node": "n11",
+   "from_socket": "result",
+   "to_node": "n12",
+   "to_socket": "edges"
+  },
+  {
+   "id": "l11",
+   "from_node": "n9",
+   "from_socket": "result",
+   "to_node": "n13",
+   "to_socket": "points"
+  },
+  {
+   "id": "l12",
+   "from_node": "n12",
+   "from_socket": "result",
+   "to_node": "n13",
+   "to_socket": "boundary"
+  },
+  {
+   "id": "l13",
+   "from_node": "n13",
+   "from_socket": "cells",
+   "to_node": "n14",
+   "to_socket": "sketch"
+  },
+  {
+   "id": "l14",
+   "from_node": "n7",
+   "from_socket": "result",
+   "to_node": "n15",
+   "to_socket": "in_0"
+  }
+ ],
+ "groups": [
+  {
+   "title": "1 \u00b7 MANOPOLE",
+   "bounding": [
+    10,
+    140,
+    400,
+    220
+   ],
+   "color": "#3f589e"
+  },
+  {
+   "title": "2 \u00b7 I DATI",
+   "bounding": [
+    10,
+    400,
+    400,
+    400
+   ],
+   "color": "#8a5a2c"
+  },
+  {
+   "title": "3 \u00b7 L'ALGORITMO",
+   "bounding": [
+    440,
+    360,
+    420,
+    460
+   ],
+   "color": "#7a2c5a"
+  },
+  {
+   "title": "4 \u00b7 CENTROIDI + REGIONI DI DECISIONE",
+   "bounding": [
+    880,
+    140,
+    840,
+    700
+   ],
+   "color": "#2c7a52"
+  }
+ ]
+}

@@ -46,6 +46,10 @@ _EXAMPLE_DESCRIPTIONS = {
                     "surface, shelled into a thin-walled vase.",
     "parametric-curves": "Parametric curves — a Spline through points, an "
                          "ArcCenter and a Line as building blocks for wire geometry.",
+    "predicate-selectors": "Selecting by RULE, not by clicking — EdgesByType picks "
+                           "every circular edge and fillets it, so the selection "
+                           "survives a change of geometry that a hand-picked list "
+                           "would not.",
     "lego-brick": "Array fan-out showcase — one stud becomes a grid via two "
                   "Linear Arrays, fused with Union and rounded into a "
                   "recognizable LEGO brick. Grouped into 4 labelled stages.",
@@ -61,6 +65,27 @@ _EXAMPLE_DESCRIPTIONS = {
                         "gizmo) into the wrong basin and watch it settle in a local "
                         "minimum. The gradient is numeric, so the algorithm knows "
                         "nothing about f — change f and it still works.",
+    "matrix-determinant": "Linear algebra you can hold — a 3x3 matrix (nine sliders) "
+                          "deforms a unit cube, and the catalog's Volume node reads "
+                          "the DETERMINANT off the solid. Shear it and the volume "
+                          "does not move; flatten a row and det hits 0; flip a sign "
+                          "and space turns inside out. The three arrows are the "
+                          "matrix's columns.",
+    "central-limit": "Why the bell curve shows up uninvited — average n uniform "
+                     "numbers (a perfectly flat distribution), 4000 times, and plot "
+                     "the histogram. n=1 is flat; by n=3 it is a bell. The width "
+                     "shrinks as 1/sqrt(n). The yellow curve is the gaussian the "
+                     "theorem predicts, not a fit.",
+    "fourier-epicycles": "Any wave is a sum of circles — each harmonic is a circle "
+                         "riding on the tip of the last one, and the pen traces the "
+                         "wave, unrolled in time on the right. Drag `t` to turn the "
+                         "wheels; add harmonics and watch a square wave sharpen (the "
+                         "ripples that never leave are Gibbs).",
+    "kmeans-voronoi": "Finding groups nobody labelled — Lloyd's algorithm: assign "
+                      "each point to the nearest centroid, move each centroid to the "
+                      "mean of its points, repeat. Drag `iterations` from 0 and watch "
+                      "them migrate. The catalog's Voronoi2D on the centroids gives "
+                      "the decision regions for free.",
     "mesh-lane": "The mesh lane — a Box and a Sphere tessellate into triangles just "
                  "by touching a mesh input, get cut with a mesh boolean (manifold3d: "
                  "0.1s where the B-Rep kernel needs 81s), simplified within a bounded "

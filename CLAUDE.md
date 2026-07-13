@@ -185,6 +185,10 @@ cad_nodes/
 projects/            saved graphs (written as uid 1000 — host-editable).
 tests/               test_engine.py, test_api.py — pure-Python (no build123d).
 PLAN_NODE_CAD.md     the full design doc + node roadmap (~150 planned nodes).
+PLAN_VIZ_ALGORITHMS.md  the "algorithms as geometry" example family (softmax,
+                     gradient descent, determinant, CLT, Fourier, k-means…): the
+                     pattern they share, the idioms, the gotchas, and what's next.
+                     Read it before adding an explanatory example.
 ```
 
 ## 4. Data model

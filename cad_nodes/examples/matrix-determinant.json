@@ -1,0 +1,257 @@
+{
+ "name": "matrix-determinant",
+ "nodes": [
+  {
+   "id": "n1",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# LA MATRICE: 9 numeri. Ogni COLONNA dice dove finisce un lato del cubo.\n# colonna 1 = dove va il lato X, colonna 2 = il lato Y, colonna 3 = il lato Z.\na11 = 1.0   #@param float min=-2 max=2 step=0.05\na12 = 0.6   #@param float min=-2 max=2 step=0.05\na13 = 0.0   #@param float min=-2 max=2 step=0.05\na21 = 0.0   #@param float min=-2 max=2 step=0.05\na22 = 1.0   #@param float min=-2 max=2 step=0.05\na23 = 0.0   #@param float min=-2 max=2 step=0.05\na31 = 0.0   #@param float min=-2 max=2 step=0.05\na32 = 0.0   #@param float min=-2 max=2 step=0.05\na33 = 1.0   #@param float min=-2 max=2 step=0.05\nlato = 24.0 #@param float min=10 max=60 step=1\nm = [[a11, a12, a13], [a21, a22, a23], [a31, a32, a33]]\ndet = (a11 * (a22 * a33 - a23 * a32)\n       - a12 * (a21 * a33 - a23 * a31)\n       + a13 * (a21 * a32 - a22 * a31))\nresult = {\"m\": m, \"L\": lato, \"det\": det}\n"
+   },
+   "position": [
+    40,
+    200
+   ],
+   "preview": false,
+   "size": [
+    340,
+    420
+   ]
+  },
+  {
+   "id": "n2",
+   "type": "Box",
+   "params": {
+    "width": 24,
+    "height": 24,
+    "depth": 24,
+    "centered": false
+   },
+   "position": [
+    40,
+    720
+   ],
+   "preview": true,
+   "color": "#9fb3c8",
+   "wireframe": true
+  },
+  {
+   "id": "n3",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# IL CUBO DEFORMATO: la matrice applicata allo spazio, non al cubo.\n# transform_geometry fa una trasformazione NON rigida: puo' stirare e ribaltare.\nM = in_0\nm, L = M[\"m\"], M[\"L\"]\ncubo = Box(L, L, L, align=(Align.MIN, Align.MIN, Align.MIN))\nT = Matrix([[m[0][0], m[0][1], m[0][2], 0],\n            [m[1][0], m[1][1], m[1][2], 0],\n            [m[2][0], m[2][1], m[2][2], 0]])\nresult = cubo.transform_geometry(T)\n"
+   },
+   "position": [
+    470,
+    200
+   ],
+   "preview": true,
+   "color": "#4a9de0",
+   "size": [
+    340,
+    240
+   ]
+  },
+  {
+   "id": "n4",
+   "type": "Volume",
+   "params": {},
+   "position": [
+    900,
+    200
+   ],
+   "preview": false
+  },
+  {
+   "id": "n5",
+   "type": "Display",
+   "params": {},
+   "position": [
+    900,
+    320
+   ],
+   "preview": false
+  },
+  {
+   "id": "n6",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# UNA COLONNA DELLA MATRICE, come freccia: e' l'immagine del versore.\nquale = 0   #@param int min=0 max=2\nM = in_0\nm, L = M[\"m\"], M[\"L\"]\nv = Vector(m[0][quale], m[1][quale], m[2][quale]) * L\nif v.length < 1e-6:\n    result = Sphere(1.8)          # colonna nulla: lo spazio l'ha schiacciata via\nelse:\n    # 1.35: la freccia corre lungo lo SPIGOLO del cubo, quindi la disegniamo un po'\n    # piu' lunga \u2014 se no resta sepolta dentro il solido e non la vedi.\n    lung = v.length * 1.35\n    asta = Cylinder(1.1, lung, align=(Align.CENTER, Align.CENTER, Align.MIN))\n    punta = Pos(0, 0, lung) * Cone(3.2, 0, 7, align=(Align.CENTER, Align.CENTER, Align.MIN))\n    result = Plane(origin=(0, 0, 0), z_dir=v) * (asta + punta)\n",
+    "_cb": {
+     "quale": 0
+    }
+   },
+   "position": [
+    470,
+    520
+   ],
+   "preview": true,
+   "color": "#e94560",
+   "size": [
+    340,
+    220
+   ]
+  },
+  {
+   "id": "n7",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# UNA COLONNA DELLA MATRICE, come freccia: e' l'immagine del versore.\nquale = 0   #@param int min=0 max=2\nM = in_0\nm, L = M[\"m\"], M[\"L\"]\nv = Vector(m[0][quale], m[1][quale], m[2][quale]) * L\nif v.length < 1e-6:\n    result = Sphere(1.8)          # colonna nulla: lo spazio l'ha schiacciata via\nelse:\n    # 1.35: la freccia corre lungo lo SPIGOLO del cubo, quindi la disegniamo un po'\n    # piu' lunga \u2014 se no resta sepolta dentro il solido e non la vedi.\n    lung = v.length * 1.35\n    asta = Cylinder(1.1, lung, align=(Align.CENTER, Align.CENTER, Align.MIN))\n    punta = Pos(0, 0, lung) * Cone(3.2, 0, 7, align=(Align.CENTER, Align.CENTER, Align.MIN))\n    result = Plane(origin=(0, 0, 0), z_dir=v) * (asta + punta)\n",
+    "_cb": {
+     "quale": 1
+    }
+   },
+   "position": [
+    470,
+    760
+   ],
+   "preview": true,
+   "color": "#3fb87f",
+   "size": [
+    340,
+    220
+   ]
+  },
+  {
+   "id": "n8",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# UNA COLONNA DELLA MATRICE, come freccia: e' l'immagine del versore.\nquale = 0   #@param int min=0 max=2\nM = in_0\nm, L = M[\"m\"], M[\"L\"]\nv = Vector(m[0][quale], m[1][quale], m[2][quale]) * L\nif v.length < 1e-6:\n    result = Sphere(1.8)          # colonna nulla: lo spazio l'ha schiacciata via\nelse:\n    # 1.35: la freccia corre lungo lo SPIGOLO del cubo, quindi la disegniamo un po'\n    # piu' lunga \u2014 se no resta sepolta dentro il solido e non la vedi.\n    lung = v.length * 1.35\n    asta = Cylinder(1.1, lung, align=(Align.CENTER, Align.CENTER, Align.MIN))\n    punta = Pos(0, 0, lung) * Cone(3.2, 0, 7, align=(Align.CENTER, Align.CENTER, Align.MIN))\n    result = Plane(origin=(0, 0, 0), z_dir=v) * (asta + punta)\n",
+    "_cb": {
+     "quale": 2
+    }
+   },
+   "position": [
+    470,
+    1000
+   ],
+   "preview": true,
+   "color": "#5a7fb8",
+   "size": [
+    340,
+    220
+   ]
+  },
+  {
+   "id": "n9",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# I NUMERI: det calcolato a mano, e il volume MISURATO sul solido dal nodo Volume.\n# Devono coincidere. E' questo il senso del determinante.\ncorpo = 4.5  #@param float min=2 max=12 step=0.5\nM, volume = in_0, in_1\ndet, L = M[\"det\"], M[\"L\"]\ndef _t(s, x, z, size):        # in piedi, sopra il cubo, rivolto alla camera\n    return extrude(Pos(x + 12, -42, z) * (Plane.XZ * Text(s, font_size=size)), amount=0.8)\nsegno = \"lo spazio si e' RIBALTATO\" if det < 0 else (\"SCHIACCIATO: e' piatto\" if abs(det) < 1e-3 else \"\")\nresult = [_t(\"IL DETERMINANTE E' UN VOLUME\", 0, 84, corpo * 1.6),\n          _t(f\"det = {det:.3f}\", -34, 71, corpo * 1.3),\n          _t(f\"volume / lato^3 = {volume / (L ** 3):.3f}\", 34, 71, corpo * 1.3),\n          _t(segno, 0, 59, corpo * 1.1)]\n"
+   },
+   "position": [
+    900,
+    520
+   ],
+   "preview": true,
+   "color": "#e8e8e8",
+   "size": [
+    340,
+    220
+   ]
+  },
+  {
+   "id": "n10",
+   "type": "Note",
+   "params": {
+    "text": "LA MATRICE E' UNA DEFORMAZIONE DELLO SPAZIO.\n\nIl cubo di filo di ferro e' lo spazio di partenza (un cubo di lato 1, qui disegnato lato 24). Il cubo pieno e' dove la matrice lo manda.\n\nLe tre frecce sono le COLONNE della matrice: dove finiscono i tre lati del cubo. Rosso = la prima colonna, verde = la seconda, blu = la terza. Guarda gli slider: stai spostando le frecce.\n\nE il DETERMINANTE? Non e' una formula da imparare: e' il VOLUME del cubo deformato (diviso il volume di partenza). Il nodo Volume, che e' un nodo qualsiasi del catalogo, lo misura sul solido \u2014 e coincide con il conto.\n\nDA PROVARE\n1. Alza a12: il cubo si inclina, ma il volume NON cambia (det resta 1). Uno scorrimento non crea ne' distrugge spazio.\n2. Porta a22 a 0: il cubo si schiaccia in un piano. det = 0. La matrice ha perso una dimensione \u2014 e' esattamente cosa vuol dire 'non invertibile'.\n3. Porta a11 a -1: det diventa negativo. Il volume resta positivo (un volume lo e' sempre): il segno dice che lo spazio si e' RIBALTATO, come un guanto rovesciato.\n4. Raddoppia a11, a22, a33: il volume fa x8, non x2 \u2014 sono tre dimensioni."
+   },
+   "position": [
+    900,
+    760
+   ],
+   "size": [
+    560,
+    460
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "id": "l1",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n3",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l2",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n4",
+   "to_socket": "shape"
+  },
+  {
+   "id": "l3",
+   "from_node": "n4",
+   "from_socket": "volume",
+   "to_node": "n5",
+   "to_socket": "value"
+  },
+  {
+   "id": "l4",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n6",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l5",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l6",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n8",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l7",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n9",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l8",
+   "from_node": "n4",
+   "from_socket": "volume",
+   "to_node": "n9",
+   "to_socket": "in_1"
+  }
+ ],
+ "groups": [
+  {
+   "title": "1 \u00b7 LA MATRICE \u2014 nove numeri",
+   "bounding": [
+    10,
+    140,
+    400,
+    1120
+   ],
+   "color": "#3f589e"
+  },
+  {
+   "title": "2 \u00b7 LO SPAZIO DEFORMATO",
+   "bounding": [
+    440,
+    140,
+    400,
+    1160
+   ],
+   "color": "#7a2c5a"
+  },
+  {
+   "title": "3 \u00b7 LA MISURA \u2014 il volume E' il determinante",
+   "bounding": [
+    870,
+    140,
+    620,
+    1100
+   ],
+   "color": "#2c7a52"
+  }
+ ]
+}
