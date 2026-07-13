@@ -2798,6 +2798,24 @@ function showGizmoHint(node){
   el.style.display = 'block';
 }
 
+// Live per-node execution events for the run we're about to ask for. Feeds the glow.
+function openProgress(){
+  if (!window.EventSource) return null;
+  try {
+    const es = new EventSource(`${API}/api/graph/${currentName}/progress`);
+    es._seen = 0;
+    es.onmessage = (m)=>{ es._seen++; try { glowEvent(JSON.parse(m.data)); } catch(e){} };
+    es.onerror = ()=>{};    // a dropped stream costs us the glow, never the run
+    return es;
+  } catch(e){ return null; }
+}
+function closeProgress(es){
+  endExecGlow();
+  if (!es) return;
+  if (!es._seen) log('no live progress for this run (glow unavailable)', 'warn');
+  es.close();
+}
+
 window.runGraph = async function(){
   await window.saveGraph();
   if(!currentName) return;
@@ -2805,22 +2823,25 @@ window.runGraph = async function(){
   runAbort = new AbortController();
   const signal = runAbort.signal;
   clearHighlights();
-  clearExecGlow();
   const _rt0 = performance.now();
   const _elapsed = ()=> ((performance.now()-_rt0)/1000).toFixed(1)+'s';
   const _verb = liveMode ? 'live' : 'running';
   setStatus(_verb+'…');
   // live ticking clock so a long run visibly reads as "thinking", not frozen
   const _tick = setInterval(()=> setStatus(_verb+'… '+_elapsed()), 250);
+  // Subscribe BEFORE asking for the run, so no node's start event is missed. The
+  // worker appends one per node as it goes; the server tails the file to us.
+  beginExecGlow();
+  const es = openProgress();
   let res;
   try {
     res = await fetch(`${API}/api/graph/${currentName}/execute`, {method:'POST', signal});
   } catch(e){
-    clearInterval(_tick);
+    clearInterval(_tick); closeProgress(es);
     if(e.name === 'AbortError') return;    // a newer change took over
     setStatus('execution failed','err'); log('execute: '+e.message,'err'); return;
   }
-  clearInterval(_tick);
+  clearInterval(_tick); closeProgress(es);
   if(!res.ok){
     const e = await res.json();
     const d = e.detail || e;
@@ -2861,7 +2882,6 @@ window.runGraph = async function(){
   const tim = data.node_timings || {};
   const hits = data.node_cached || [];
   recordCost(tim, hits, nids);      // keep the numbers on the nodes (cost badges)
-  startExecGlow(tim, hits, nids);   // replay the run as a glow wave (nids = threw)
   const tent = Object.entries(tim).sort((a,b)=>b[1]-a[1]);
   if (tent.length){
     const tot = tent.reduce((s,[,v])=>s+v,0);
@@ -3191,21 +3211,18 @@ function highlightNode(graphId){
 }
 
 // ── execution glow ──
-// A finished run replays itself as a wave of glow across the nodes. The order is
-// Object.keys(node_timings): the transpiler assigns __timings__[id] as it walks
-// the graph, so the key order IS the execution (topological) order. A node the
-// memo cache served (node_cached) gets a brief cold-blue flash; one that really
-// re-ran glows amber->green for a span scaled to its wall-clock, so the dirty
-// subtree and the slow nodes in it are visible at a glance.
-// This is a replay, not live progress — /execute is one blocking POST.
+// The nodes light up AS THEY RUN. The generated code emits a start/end event per
+// node (transpiler `_ev` -> progress.jsonl); the editor opens an EventSource on
+// /api/graph/{name}/progress before it POSTs /execute and feeds those events here.
+// A node that is executing breathes amber; when it finishes it settles and fades —
+// green if it really recomputed, cold blue if the memo cache served it, red if it
+// threw. So a slow node is one you watch glow, not one you read about afterwards.
 const GLOW_HOT = [251, 191, 36], GLOW_COOL = [74, 222, 128], GLOW_CACHED = [56, 189, 248];
 const GLOW_FAIL = [233, 69, 96];   // matches the error highlight — a node that threw
-const GLOW_MIN = 150, GLOW_MAX = 700, GLOW_HIT = 80, GLOW_PULSE = 260;   // ms per node
-const GLOW_TAIL = 420, GLOW_ATTACK = 90, GLOW_TOTAL = 1800;
-let execGlow = null;      // {t0, spans: [{node, start, end, cached, failed}], end}
+const GLOW_TAIL = 420, GLOW_ATTACK = 90;
+let execGlow = null;      // {byId: Map(graphId -> {node, t0, tEnd, cached, failed}), open}
 let glowRAF = 0;
-// A user who asked the OS for less motion gets the information without the wave:
-// every node lights up at once, briefly.
+// Reduced motion: still light the nodes (that IS the information), just don't breathe.
 const glowStill = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 function clearExecGlow(){
@@ -3214,48 +3231,48 @@ function clearExecGlow(){
   if (lcanvas) lcanvas.setDirty(true, true);
 }
 
-function startExecGlow(timings, cachedIds, failedIds){
+function beginExecGlow(){
   clearExecGlow();
-  const ids = Object.keys(timings || {});
-  if (!ids.length || !lcanvas) return;
-  const cached = new Set(cachedIds || []);
-  const failed = new Set(failedIds || []);
-  // Live mode re-runs on every slider tick, so a full wave would restart before it
-  // ever finished — a permanent shimmer. There it collapses to a short pulse on
-  // just the nodes that actually recomputed (the dirty subtree); the full
-  // topological wave is for an explicit run. Reduced-motion does the same, for
-  // every run.
-  const wave = !liveMode && !glowStill;
-  // Scale each span by sqrt(t/peak): a 3s fillet reads as clearly slower than a
-  // 30ms box without the fast nodes collapsing to an invisible blip.
-  const peak = Math.max(1e-6, ...ids.filter(id => !cached.has(id)).map(id => timings[id] || 0));
-  const spans = [];
-  let cursor = 0;
-  for (const id of ids){
-    const node = nodeByGraphId[id] || nodeIndex[id];
-    const hit = cached.has(id), bad = failed.has(id);
-    if (!node || (!wave && hit && !bad)) continue;   // pulse: only what recomputed/threw
-    if (!wave){ spans.push({node, start: 0, end: GLOW_PULSE, cached: false, failed: bad}); continue; }
-    const dur = hit ? GLOW_HIT
-                    : GLOW_MIN + (GLOW_MAX - GLOW_MIN) * Math.sqrt(Math.min(1, (timings[id] || 0) / peak));
-    spans.push({node, start: cursor, end: cursor + dur, cached: hit, failed: bad});
-    cursor += dur * 0.62;      // overlap: the wave flows instead of stepping
-  }
-  if (!spans.length) return;
-  let end = Math.max(...spans.map(s => s.end));
-  if (end > GLOW_TOTAL){       // long runs compress; the relative rhythm survives
-    const k = GLOW_TOTAL / end;
-    for (const s of spans){ s.start *= k; s.end *= k; }
-    end = GLOW_TOTAL;
-  }
-  execGlow = {t0: performance.now(), spans, end: end + GLOW_TAIL};
+  if (!lcanvas) return;
+  execGlow = {byId: new Map(), open: true};
   const step = () => {
     if (!execGlow){ glowRAF = 0; return; }
     lcanvas.setDirty(true, true);
-    if (performance.now() - execGlow.t0 > execGlow.end){ clearExecGlow(); return; }
+    const now = performance.now();
+    let busy = execGlow.open;
+    if (!busy){
+      for (const sp of execGlow.byId.values()){
+        if (sp.tEnd === null || now - sp.tEnd < GLOW_TAIL){ busy = true; break; }
+      }
+    }
+    if (!busy){ clearExecGlow(); return; }   // run over and every ring faded out
     glowRAF = requestAnimationFrame(step);
   };
   glowRAF = requestAnimationFrame(step);
+}
+
+// One progress event from the running worker: 's' = this node started, 'e' = it's
+// done (c = the cache served it, x = it threw).
+function glowEvent(ev){
+  if (!execGlow || !ev || !ev.n) return;
+  if (ev.k === 's'){
+    const node = nodeByGraphId[ev.n] || nodeIndex[ev.n];
+    if (!node) return;                       // not on this canvas (stale id)
+    execGlow.byId.set(ev.n, {node, t0: performance.now(), tEnd: null,
+                             cached: false, failed: false});
+  } else if (ev.k === 'e'){
+    const sp = execGlow.byId.get(ev.n);
+    if (!sp) return;
+    sp.tEnd = performance.now(); sp.cached = !!ev.c; sp.failed = !!ev.x;
+  }
+}
+
+// The run returned: stop expecting events, let the last rings fade out.
+function endExecGlow(){
+  if (!execGlow) return;
+  execGlow.open = false;
+  const now = performance.now();
+  for (const sp of execGlow.byId.values()) if (sp.tEnd === null) sp.tEnd = now;
 }
 
 // ── cost badge (the glow's numbers, made to stay) ──
@@ -3328,29 +3345,20 @@ function strokeGlow(ctx, n, rgb, a, s){
 
 function drawExecGlow(ctx, s){
   if (!execGlow) return;
-  const now = performance.now() - execGlow.t0;
-  for (const sp of execGlow.spans){
-    if (now < sp.start) continue;                       // not reached yet
-    if (!sp.node.graph) continue;                       // deleted mid-replay
+  const now = performance.now();
+  for (const sp of execGlow.byId.values()){
+    if (!sp.node.graph) continue;                        // deleted mid-run
     let a, rgb;
-    if (sp.failed){                                     // threw: red, never "settles"
-      a = now <= sp.end ? Math.min(1, (now - sp.start) / GLOW_ATTACK)
-                        : 1 - (now - sp.end) / GLOW_TAIL;
+    if (sp.tEnd === null){                               // still executing, right now
+      a = Math.min(1, (now - sp.t0) / GLOW_ATTACK);      // ramp in
+      if (!glowStill) a *= 0.78 + 0.22 * Math.sin(now / 90);   // breathe: it's working
+      rgb = GLOW_HOT;
+    } else {                                             // settled: fade out in its colour
+      a = 1 - (now - sp.tEnd) / GLOW_TAIL;
       if (a <= 0) continue;
-      strokeGlow(ctx, sp.node, GLOW_FAIL, a, s);
-      continue;
+      rgb = sp.failed ? GLOW_FAIL : sp.cached ? GLOW_CACHED : GLOW_COOL;
+      if (sp.cached) a *= 0.5;    // a cache hit is a hint, not an event
     }
-    if (now <= sp.end){
-      a = Math.min(1, (now - sp.start) / GLOW_ATTACK);  // ramp in
-      const p = (now - sp.start) / Math.max(1, sp.end - sp.start);
-      rgb = sp.cached ? GLOW_CACHED
-                      : GLOW_HOT.map((c, i) => Math.round(c + (GLOW_COOL[i] - c) * p));
-    } else {
-      a = 1 - (now - sp.end) / GLOW_TAIL;               // fade out
-      if (a <= 0) continue;
-      rgb = sp.cached ? GLOW_CACHED : GLOW_COOL;
-    }
-    if (sp.cached) a *= 0.5;      // a cache hit is a hint, not an event
     strokeGlow(ctx, sp.node, rgb, a, s);
   }
 }
