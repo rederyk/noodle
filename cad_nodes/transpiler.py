@@ -15,6 +15,7 @@ The generated module exposes `__result__` (the shape to preview) and
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 from . import catalog
@@ -131,6 +132,7 @@ def _annot(node) -> str:
     return f"  # @node:{node.id} ({node.type})"
 
 PREAMBLE = """\
+import json as _json
 import math
 import os
 import random
@@ -143,6 +145,71 @@ __panels__ = {}
 __previews__ = {}
 __errors__ = {}
 __timings__ = {}     # per-node wall-clock seconds, keyed by node id
+__hashes__ = {}      # node id -> content key (memo mode; drives the mesh cache)
+__cached__ = {}      # node id -> True when the memo store served it (no re-run)
+
+# Persistent memo store. The warm worker injects __MEMO__ (a plain dict that
+# survives across runs) into the script globals; a cold subprocess has none, so
+# every _memo_get misses and the graph executes exactly as before. Entries are
+# content-addressed (see Transpiler._memo_plan), so a param edit re-runs ONLY
+# the dirty subtree — everything upstream/sideways is restored from the cache.
+try:
+    __MEMO__
+except NameError:
+    __MEMO__ = None
+
+_MEMO_CAP = 256      # LRU entries (node outputs + preview meshes + views)
+
+# Live progress. The executor points __PROGRESS_PATH__ at a per-run NDJSON file
+# (see executor.build_script) and the editor tails it WHILE the run is still going,
+# so nodes light up as they execute instead of being replayed afterwards. It is the
+# only channel that works on BOTH paths: the warm worker redirects stdout into a
+# buffer during exec, and the cold subprocess has no pipe home at all. No path set
+# (the /ui code view, tests) = every _ev is a no-op.
+try:
+    __PROGRESS_PATH__
+except NameError:
+    __PROGRESS_PATH__ = None
+
+_PROG_F = None
+
+
+def _ev(_kind, _nid, _dt=None, _cached=False, _err=None):
+    global _PROG_F
+    if not __PROGRESS_PATH__:
+        return
+    try:
+        if _PROG_F is None:
+            _PROG_F = open(__PROGRESS_PATH__, "a")
+        _e = {"k": _kind, "n": _nid}
+        if _dt is not None:
+            _e["t"] = round(_dt, 4)
+        if _cached:
+            _e["c"] = True
+        if _err:
+            _e["x"] = True
+        _PROG_F.write(_json.dumps(_e) + "\\n")
+        _PROG_F.flush()      # the tailer reads this file while we're still running
+    except Exception:
+        pass                 # progress is a nicety: never let it break a run
+
+
+def _memo_get(_k):
+    if __MEMO__ is None:
+        return None
+    _v = __MEMO__.get(_k)
+    if _v is not None:
+        __MEMO__.pop(_k, None)   # LRU touch (dict keeps insertion order)
+        __MEMO__[_k] = _v
+    return _v
+
+
+def _memo_put(_k, _v):
+    if __MEMO__ is None:
+        return
+    while len(__MEMO__) >= _MEMO_CAP:
+        __MEMO__.pop(next(iter(__MEMO__)))
+    __MEMO__[_k] = _v
 
 
 def _out(_path):
@@ -639,12 +706,390 @@ def _section(_shape, _plane=None):
     return section(_shape, section_by=pl)
 
 
+# ===========================================================================
+# The mesh lane (PLAN_MESH_LANE.md)
+#
+# build123d/OCCT cannot model meshes — `import_stl` yields a Face with only a
+# triangulation and no surface (booleans on it are refused outright), and
+# `Mesher.read` sews every triangle into a planar B-Rep face: 300s to open a
+# 147k-triangle part, 81s per boolean. So triangles get their own lane, with
+# trimesh as the engine (MIT — noodle stays MIT; see THIRD_PARTY_NOTICES.md).
+# ===========================================================================
+_TRIMESH = None
+
+
+def _tm():
+    \"\"\"Import trimesh lazily — a graph with no mesh node must not pay for it.\"\"\"
+    global _TRIMESH
+    if _TRIMESH is None:
+        import trimesh as _t
+        _TRIMESH = _t
+    return _TRIMESH
+
+
+class Mesh:
+    \"\"\"A triangle mesh flowing on a `mesh` wire.
+
+    Wraps a trimesh.Trimesh so the engine stays an implementation detail (it is
+    swappable) and so the transforms and the preview extractor can dispatch on a
+    named type instead of duck-typing a third-party class.\"\"\"
+
+    # Duck-type marker. mesh_extractor runs as an imported module and cannot see
+    # this class (it is defined in the generated script's globals), so it sniffs
+    # for this attribute rather than using isinstance.
+    _noodle_mesh = True
+    __slots__ = ("tm",)
+
+    def __init__(self, tm):
+        self.tm = tm
+
+    @property
+    def volume(self):
+        try:
+            return float(self.tm.volume)
+        except Exception:
+            return 0.0
+
+    @property
+    def area(self):
+        try:
+            return float(self.tm.area)
+        except Exception:
+            return 0.0
+
+    @property
+    def n_tris(self):
+        return int(len(self.tm.faces))
+
+    @property
+    def watertight(self):
+        try:
+            return bool(self.tm.is_watertight)
+        except Exception:
+            return False
+
+    def arrays(self):
+        \"\"\"(vertices, triangles) as plain nested lists — what the viewer wants.\"\"\"
+        return self.tm.vertices.tolist(), self.tm.faces.tolist()
+
+    def transformed(self, _m):
+        \"\"\"Apply a 4x4 matrix to the vertices — this is what a transform IS on a
+        mesh, and it is why Move/Rotate/Scale stay ONE node across both lanes.\"\"\"
+        t = self.tm.copy()
+        t.apply_transform(_m)
+        return Mesh(t)
+
+    def __repr__(self):
+        return "Mesh(%d tris, watertight=%s)" % (self.n_tris, self.watertight)
+
+
+def _is_mesh(_x):
+    return getattr(_x, "_noodle_mesh", False)
+
+
+def _mesh_concat(_items):
+    ms = [m for m in _items if m is not None]
+    if not ms:
+        return None
+    if len(ms) == 1:
+        return ms[0]
+    return Mesh(_tm().util.concatenate([m.tm for m in ms]))
+
+
+def _to_mesh(_x, _tol=None):
+    \"\"\"Cast a B-Rep shape onto the mesh lane (the solid->mesh / surface->mesh cast
+    in casts.py — applied automatically at the wire boundary). Tessellates with
+    build123d, then hands the triangles to trimesh.\"\"\"
+    if _x is None or _is_mesh(_x):
+        return _x
+    if isinstance(_x, (list, tuple)):
+        return _mesh_concat([_to_mesh(i, _tol) for i in _x])
+    if _tol is None:                       # scale the deflection to the part
+        try:
+            bb = _x.bounding_box(optimal=False)
+            diag = (bb.size.X ** 2 + bb.size.Y ** 2 + bb.size.Z ** 2) ** 0.5
+            _tol = max(diag * 0.005, 0.01)
+        except Exception:
+            _tol = 0.1
+    verts, tris = _x.tessellate(float(_tol), 0.3)
+    return Mesh(_tm().Trimesh(vertices=[[v.X, v.Y, v.Z] for v in verts],
+                              faces=[list(t) for t in tris], process=True))
+
+
+def _as_mesh(_x):
+    \"\"\"Coerce whatever landed on a mesh input to a Mesh: a Mesh passes through, a
+    B-Rep shape tessellates, a path loads.\"\"\"
+    if _x is None or _is_mesh(_x):
+        return _x
+    if isinstance(_x, str):
+        return _mesh_load(_x)
+    return _to_mesh(_x)
+
+
+def _mesh_load(_path):
+    \"\"\"Load an STL/OBJ/PLY/3MF as a Mesh — 0.16s on a 147k-triangle part, where
+    build123d's Mesher takes 300s for the same file.\"\"\"
+    if not _path:
+        return None
+    return Mesh(_tm().load(str(_path), force="mesh"))
+
+
+def _mesh_fix(_mesh, _min_body=16, _fill_holes=True):
+    \"\"\"Repair a mesh into something a boolean engine will accept: merge duplicate
+    vertices, drop duplicate and degenerate faces, drop stray shards (bodies under
+    `_min_body` triangles), fill holes, fix normals.
+
+    This is the node that finds what OCCT cannot even see. The raccordo STL's only
+    real defect was ONE stray triangle plus a duplicate face — no holes at all —
+    and OCCT reported it `is_valid=True` (PLAN_MESH_LANE.md §0).\"\"\"
+    _mesh = _as_mesh(_mesh)
+    if _mesh is None:
+        return None
+    tm = _mesh.tm.copy()
+    tm.merge_vertices()
+    tm.update_faces(tm.unique_faces())
+    tm.update_faces(tm.nondegenerate_faces())
+    try:
+        bodies = list(tm.split(only_watertight=False))
+    except Exception:
+        bodies = []
+    if len(bodies) > 1:
+        keep = [b for b in bodies if len(b.faces) >= int(_min_body)]
+        if keep:
+            tm = keep[0] if len(keep) == 1 else _tm().util.concatenate(keep)
+    if _fill_holes and not tm.is_watertight:
+        try:
+            _tm().repair.fill_holes(tm)
+        except Exception:
+            pass
+    try:
+        _tm().repair.fix_normals(tm)
+    except Exception:
+        pass
+    return Mesh(tm)
+
+
+def _mesh_inspect(_mesh):
+    \"\"\"A text report of a mesh's health — the mesh lane's perception tool (the
+    sibling of slice_summary for the retroeng flow). Wire it into a Panel.\"\"\"
+    _mesh = _as_mesh(_mesh)
+    if _mesh is None:
+        return "no mesh"
+    tm = _mesh.tm
+    try:
+        bodies = len(tm.split(only_watertight=False))
+    except Exception:
+        bodies = 1
+    try:
+        import numpy as _np
+        e = tm.edges_sorted
+        _u, _c = _np.unique(e, axis=0, return_counts=True)
+        boundary = int((_c == 1).sum())
+        nonmanifold = int((_c > 2).sum())
+    except Exception:
+        boundary = nonmanifold = -1
+    lines = [
+        "triangles   : %d" % len(tm.faces),
+        "vertices    : %d" % len(tm.vertices),
+        "watertight  : %s" % bool(tm.is_watertight),
+        "bodies      : %d" % bodies,
+        "boundary edges     : %d" % boundary,
+        "non-manifold edges : %d" % nonmanifold,
+        "euler       : %s" % tm.euler_number,
+        "volume      : %.3f" % _mesh.volume,
+        "area        : %.3f" % _mesh.area,
+    ]
+    return "\\n".join(lines)
+
+
+def _mesh_export(_mesh, _path):
+    \"\"\"Write a Mesh to STL/OBJ/PLY/3MF (the extension picks the format).\"\"\"
+    _mesh = _as_mesh(_mesh)
+    if _mesh is None or not _path:
+        return None
+    _mesh.tm.export(str(_path))
+    return _mesh
+
+
+_MANIFOLD = None
+
+
+def _mf():
+    \"\"\"Import manifold3d lazily (Apache-2.0) — the boolean/simplify engine.\"\"\"
+    global _MANIFOLD
+    if _MANIFOLD is None:
+        import manifold3d as _m
+        _MANIFOLD = _m
+    return _MANIFOLD
+
+
+def _to_manifold(_x, _who="this operation"):
+    \"\"\"Mesh -> manifold3d.Manifold, with the one error message that matters.
+
+    manifold3d only operates on a closed volume: hand it an open or non-manifold
+    mesh and it returns an EMPTY manifold whose status() says why. trimesh's own
+    wrapper surfaces that as "Not all meshes are volumes!", which tells the user
+    nothing actionable — so we translate it into what to actually do.\"\"\"
+    import numpy as _np
+    m = _as_mesh(_x)
+    if m is None:
+        return None
+    mf = _mf()
+    man = mf.Manifold(mf.Mesh(
+        vert_properties=_np.asarray(m.tm.vertices, dtype=_np.float32),
+        tri_verts=_np.asarray(m.tm.faces, dtype=_np.uint32)))
+    if man.is_empty() and m.n_tris:
+        raise ValueError(
+            "%s needs a closed (watertight) mesh — manifold3d reports %s. "
+            "Put a Mesh Fix node in front of it." % (_who, man.status()))
+    return man
+
+
+def _from_manifold(_man):
+    \"\"\"manifold3d.Manifold -> Mesh.
+
+    process=False is load-bearing: manifold3d already returns a welded, valid
+    manifold, and trimesh's default processing re-merges its vertices — which
+    silently BREAKS it. (Measured: simplify at 1.5mm came back non-watertight
+    with process=True and watertight with process=False. Same triangles.)\"\"\"
+    if _man is None or _man.is_empty():
+        return None
+    msh = _man.to_mesh()
+    return Mesh(_tm().Trimesh(vertices=msh.vert_properties[:, :3].astype(float),
+                              faces=msh.tri_verts, process=False))
+
+
+def _mesh_bool(_mode, *_items):
+    \"\"\"Boolean on the mesh lane (manifold3d): 0.107s on the 147k-triangle raccordo,
+    where the same cut through OCCT's B-Rep takes 81s.\"\"\"
+    ms = [_as_mesh(i) for i in _flatten(list(_items))]
+    ms = [m for m in ms if m is not None]
+    if not ms:
+        return None
+    who = "Mesh " + _mode
+    mans = [_to_manifold(m, who) for m in ms]
+    if len(mans) == 1:
+        return _from_manifold(mans[0])
+    mf = _mf()
+    op = {"union": mf.OpType.Add, "subtract": mf.OpType.Subtract,
+          "intersect": mf.OpType.Intersect}[_mode]
+    return _from_manifold(mf.Manifold.batch_boolean(mans, op))
+
+
+def _mesh_simplify(_mesh, _tolerance=0.05, _max_error=5.0):
+    \"\"\"Simplify to a BOUNDED geometric deviation (manifold3d): no surface moves
+    further than `tolerance`. On the raccordo: 0.07s, 147k -> 35k triangles, volume
+    off by -0.10%, still watertight.
+
+    Tolerance-driven rather than count-driven on purpose — in CAD you know how much
+    error you can accept, not how many triangles you want. (The MIT count-driven
+    decimators were measured and rejected: they break the part. PLAN_MESH_LANE.md §5.)
+
+    The sharp edge, and why this node checks its own work: a tolerance at or above
+    the part's feature size doesn't simplify it, it DESTROYS it — and quietly. The
+    raccordo is a thin-walled shell whose mean wall (volume/area) is 1.11mm, and
+    simplify tracks that exactly: 1 body and -0.2% volume at 0.5mm, still 1 body at
+    1.0mm, then it TEARS — 2 bodies at 1.2mm, 3 at 1.5mm, -22% volume at 3mm. You
+    cannot move a surface further than the wall is thick and still have a wall.
+
+    So we verify the outcome rather than trust the setting: if simplify moved the
+    volume more than `_max_error` percent, or broke the part into more pieces than it
+    started with, that is a failure and it is reported as one. `decompose()` makes the
+    piece count essentially free (~0.02s).\"\"\"
+    src = _as_mesh(_mesh)
+    man = _to_manifold(src, "Mesh Simplify")
+    if man is None:
+        return None
+    simple = man.simplify(float(_tolerance))
+    out = _from_manifold(simple)
+    if out is None:
+        return None
+    v0, v1 = man.volume(), simple.volume()
+    err = abs(v1 - v0) / abs(v0) * 100.0 if v0 else 0.0
+    bodies0, bodies1 = len(man.decompose()), len(simple.decompose())
+    if err > float(_max_error) or bodies1 > bodies0:
+        wall = abs(v0) / src.area if src.area else 0.0
+        raise ValueError(
+            "Mesh Simplify: tolerance %gmm is too coarse for this part — %s. Its mean "
+            "wall is %.2fmm (volume/area), and a tolerance near or above that collapses "
+            "it. Lower the tolerance%s."
+            % (float(_tolerance),
+               ("it tore the part into %d pieces" % bodies1) if bodies1 > bodies0
+               else ("it moved the volume by %.1f%% (limit %.1f%%)" % (err, float(_max_error))),
+               wall,
+               "" if bodies1 > bodies0 else " or raise `max error`"))
+    return out
+
+
+def _mesh_to_solid(_mesh, _max_tris=20000):
+    \"\"\"The ONE bridge back to the B-Rep lane: sew every triangle into a planar face,
+    then fix the shell into a solid.
+
+    It is a node and not a cast because it is brutally expensive — ~300s on a
+    147k-triangle part, and every downstream B-Rep boolean then costs ~80s on the
+    147k-FACE solid it produces. The guard refuses loudly instead of hanging the app
+    for five minutes; simplify first.\"\"\"
+    m = _as_mesh(_mesh)
+    if m is None:
+        return None
+    if m.n_tris > int(_max_tris):
+        raise ValueError(
+            "MeshToSolid refuses %d triangles (limit %d): sewing that many into a "
+            "B-Rep takes minutes, and every boolean after it tens of seconds. Put a "
+            "Mesh Simplify in front of it." % (m.n_tris, int(_max_tris)))
+    from OCP.BRepBuilderAPI import (BRepBuilderAPI_Sewing, BRepBuilderAPI_MakePolygon,
+                                    BRepBuilderAPI_MakeFace)
+    from OCP.ShapeFix import ShapeFix_Shape, ShapeFix_Solid
+    from OCP.TopoDS import TopoDS
+    from OCP.gp import gp_Pnt
+    verts = m.tm.vertices
+    sew = BRepBuilderAPI_Sewing(1e-6)
+    for tri in m.tm.faces:
+        pts = [gp_Pnt(float(verts[i][0]), float(verts[i][1]), float(verts[i][2]))
+               for i in tri]
+        poly = BRepBuilderAPI_MakePolygon(pts[0], pts[1], pts[2], True)
+        if not poly.IsDone():
+            continue
+        face = BRepBuilderAPI_MakeFace(poly.Wire())
+        if face.IsDone():
+            sew.Add(face.Face())
+    sew.Perform()
+    fixer = ShapeFix_Shape(ShapeFix_Solid().SolidFromShell(
+        TopoDS.Shell_s(sew.SewedShape())))
+    fixer.Perform()
+    return Solid(fixer.Shape())
+
+
+def _mesh_matrix(_kind, **_kw):
+    \"\"\"Build the 4x4 for a transform on the mesh lane. A Move/Rotate/Scale/Mirror
+    on triangles is exactly a matrix on the vertex array — the SAME operation the
+    B-Rep lane expresses as a Location, which is why one node serves both.\"\"\"
+    import numpy as _np
+    m = _np.eye(4)
+    if _kind == "move":
+        m[:3, 3] = [_kw["x"], _kw["y"], _kw["z"]]
+    elif _kind == "rotate":
+        d = _kw["axis"].direction
+        m = _tm().transformations.rotation_matrix(
+            math.radians(float(_kw["angle"])), [d.X, d.Y, d.Z], [0, 0, 0])
+    elif _kind == "scale":
+        m[0, 0], m[1, 1], m[2, 2] = _kw["x"], _kw["y"], _kw["z"]
+    elif _kind == "mirror":
+        p = _kw["plane"]
+        o, n = p.origin, p.z_dir
+        m = _tm().transformations.reflection_matrix([o.X, o.Y, o.Z], [n.X, n.Y, n.Z])
+    return m
+
+
 def _rotate(_obj, _axis, _angle):
-    \"\"\"Rotate any spatial object — Shape OR Plane — by _angle degrees about a
-    global axis. Uses Location algebra (Rot * obj) so it is polymorphic: a plane
-    rotates just like a solid (build123d Planes have no .rotate()).\"\"\"
+    \"\"\"Rotate any spatial object — Shape, Plane OR Mesh — by _angle degrees about
+    a global axis. Uses Location algebra (Rot * obj) so it is polymorphic: a plane
+    rotates just like a solid (build123d Planes have no .rotate()); a mesh takes
+    the equivalent 4x4 on its vertices.\"\"\"
     if _obj is None:
         return None
+    if _is_mesh(_obj):
+        return _obj.transformed(_mesh_matrix("rotate", axis=_axis, angle=_angle))
     d = _axis.direction
     return Rot(d.X * _angle, d.Y * _angle, d.Z * _angle) * _obj
 
@@ -655,6 +1100,9 @@ def _scale(_shape, _factor=1.0, _x=1.0, _y=1.0, _z=1.0):
     if _shape is None:
         return None
     f = float(_factor)
+    if _is_mesh(_shape):
+        return _shape.transformed(_mesh_matrix(
+            "scale", x=f * float(_x), y=f * float(_y), z=f * float(_z)))
     return scale(_shape, by=(f * float(_x), f * float(_y), f * float(_z)))
 
 
@@ -663,6 +1111,9 @@ def _mirror(_shape, _plane, _copy=False):
     result is symmetric (original + reflection).\"\"\"
     if _shape is None:
         return None
+    if _is_mesh(_shape):
+        m = _shape.transformed(_mesh_matrix("mirror", plane=_plane))
+        return _mesh_concat([_shape, m]) if _copy else m
     m = mirror(_shape, about=_plane)
     if not _copy:
         return m
@@ -914,7 +1365,7 @@ def _sort(_items, _by="X"):
 
 
 def _move(_shape, _offset, _x, _y, _z):
-    \"\"\"Translate a shape/plane. By the wired `offset` vector when present
+    \"\"\"Translate a shape/plane/mesh. By the wired `offset` vector when present
     (item-access: a list of vectors scatters the shape to each), else by the
     x/y/z widgets.\"\"\"
     if _shape is None:
@@ -925,6 +1376,8 @@ def _move(_shape, _offset, _x, _y, _z):
         v = _offset
     else:
         v = Vector(*list(_offset)[:3])
+    if _is_mesh(_shape):
+        return _shape.transformed(_mesh_matrix("move", x=v.X, y=v.Y, z=v.Z))
     return Pos(v.X, v.Y, v.Z) * _shape
 
 
@@ -1803,7 +2256,7 @@ def _export_2d(_shape, _path, _fmt="svg"):
 # Output wire types that yield a drawable preview (mesh for solids/sketches,
 # polylines for curves, dots for points). Mirrors the mesh_extractor render paths.
 _PREVIEWABLE = {catalog.WIRE_SOLID, catalog.WIRE_SURFACE, catalog.WIRE_CURVE,
-                catalog.WIRE_VECTOR}
+                catalog.WIRE_VECTOR, catalog.WIRE_MESH}
 
 # Node types whose output is always a Python list at runtime. Feeding one of
 # these into an item-access input makes the consumer fan out. (A fanned node is
@@ -1857,9 +2310,32 @@ def _substitute(template: str, values: dict) -> str:
     return _PLACEHOLDER.sub(repl, template)
 
 
+# --- memo cache (transpile(memo=True) — the execute path only) ---------------
+# A node's memo KEY is a content hash of its generated statement(s) with every
+# variable name replaced by the KEY of the node that produced it, so keys are
+# stable under var renumbering (adding an unrelated node never invalidates the
+# cache) and change exactly when the node's own params/code or ANY upstream
+# node changes. Keys address a store that the warm worker keeps alive across
+# runs (__MEMO__), so a param edit re-executes only the dirty subtree.
+_MEMO_VAR = re.compile(r"__(?:out|codeblock|ctx)_\d+(?:_vol)?\b")
+# Deterministic but with a display/export/warning side effect: keyable (lineage
+# stays cacheable downstream) yet re-executed every run so the side effect
+# happens (_select_subshapes records "selection stale" re-pick warnings).
+_MEMO_SIDEFX = ("_panel(", "_probe(", "_gate(", "_out(", "export_", "_export",
+                "_select_subshapes(")
+# Non-deterministic / reads external state: no key, poisons downstream too.
+_MEMO_NONDET = ("import_", "open(", "random.")
+
+
 class Transpiler:
-    def __init__(self, graph: Graph):
+    def __init__(self, graph: Graph, memo: bool = False):
         self.graph = graph
+        self._memo = memo
+        # var name -> memo key of the node output it carries (memo mode).
+        self._var_key: dict[str, str] = {}
+        # node id -> memo key (memo mode) — emitted as __hashes__ for the
+        # persistent preview-mesh / view cache in mesh_extractor.
+        self.key_of: dict[str, str] = {}
         self.var_of: dict[str, str] = {}
         # (node_id, output-socket name) -> var, for the rare node that emits
         # DISTINCT expressions per output (e.g. CenterOfMass: center + volume).
@@ -1958,17 +2434,105 @@ class Transpiler:
             "options": list(pdef.options) if pdef.options else None,
         }, formatted)
 
-    def _guard(self, lines: list[str], body: list[str], node) -> None:
+    @staticmethod
+    def _body_outputs(body: list[str]) -> list[str]:
+        """Ordered unique top-level assignment targets in a node's body."""
+        outs: list[str] = []
+        for bl in body:
+            m = re.match(r"(__\w+) = ", bl)
+            if m and m.group(1) not in outs:
+                outs.append(m.group(1))
+        return outs
+
+    def _memo_plan(self, node, body: list[str], key_src: str):
+        """(key, wrapped) for this node. key=None -> not cacheable (poisons
+        downstream); wrapped=False with a key -> lineage stays cacheable but the
+        body re-runs every time (display/export side effects)."""
+        outs = self._body_outputs(body)
+        # Hash the body WITHOUT preview lines, so toggling a node's eye reuses
+        # the cached shape (and the mesh cache keeps its key).
+        core = [bl for bl in body if not bl.startswith("__previews__[")]
+        text = "\n".join(core) + "\n" + key_src
+        if any(m in text for m in _MEMO_NONDET):
+            return None, False
+        own = {v: f"@o{i}" for i, v in enumerate(outs)}
+        poisoned = False
+
+        def sub(m: re.Match) -> str:
+            nonlocal poisoned
+            v = m.group(0)
+            if v in own:
+                return own[v]
+            # Node-LOCAL tokens that are not assignment targets: a CodeBlock's
+            # function name (its body is hashed via key_src) and a group's
+            # builder ctx. Never carry upstream values -> stable placeholders.
+            if v.startswith("__codeblock_"):
+                return "@fn"
+            if v.startswith("__ctx_"):
+                return "@ctx"
+            k = self._var_key.get(v)
+            if k is None:           # upstream not cacheable -> neither are we
+                poisoned = True
+                return "@x"
+            return k
+
+        norm = _MEMO_VAR.sub(sub, text)
+        if poisoned:
+            return None, False
+        key = hashlib.sha1(norm.encode()).hexdigest()[:16]
+        for i, v in enumerate(outs):
+            self._var_key[v] = f"{key}#{i}"
+        self.key_of[node.id] = key
+        wrapped = bool(outs) and not any(m in text for m in _MEMO_SIDEFX)
+        return key, wrapped
+
+    def _guard(self, lines: list[str], body: list[str], node,
+               key_src: str = "") -> None:
         """Wrap a node's statement(s) in try/except so one node's runtime error
-        is recorded in __errors__ and doesn't abort the rest of the workflow."""
+        is recorded in __errors__ and doesn't abort the rest of the workflow.
+        In memo mode, also wrap the body in a cache lookup: on a hit the node's
+        output vars are restored from the persistent store and the body is
+        skipped entirely (preview assignments still run), and the node brackets
+        itself in _ev() progress events so the editor can light it up live."""
+        key = wrapped = None
+        if self._memo:
+            key, wrapped = self._memo_plan(node, body, key_src)
         lines.append("try:")
         lines.append("    _t0 = _perf()")
-        for bl in body:
-            if bl:
+        if self._memo:
+            lines.append(f"    _ev('s', {node.id!r})")
+        if wrapped:
+            outs = self._body_outputs(body)
+            tail = [bl for bl in body if bl.startswith("__previews__[")]
+            core = [bl for bl in body if not bl.startswith("__previews__[")]
+            tup = ", ".join(outs) + ("," if len(outs) == 1 else "")
+            lines.append(f"    _m = _memo_get({key!r})")
+            lines.append("    if _m is None:")
+            for bl in core:
+                if bl:
+                    lines.append("        " + bl)
+            lines.append(f"        _memo_put({key!r}, ({tup}))")
+            lines.append("    else:")
+            lines.append(f"        ({tup}) = _m")
+            lines.append(f"        __cached__[{node.id!r}] = True")
+            for bl in tail:
                 lines.append("    " + bl)
+        else:
+            for bl in body:
+                if bl:
+                    lines.append("    " + bl)
         lines.append(f"    __timings__[{node.id!r}] = _perf() - _t0")
+        if self._memo:
+            lines.append(
+                f"    _ev('e', {node.id!r}, __timings__[{node.id!r}], "
+                f"__cached__.get({node.id!r}, False))"
+            )
         lines.append("except Exception as _e:")
         lines.append(f"    __timings__[{node.id!r}] = _perf() - _t0")
+        if self._memo:
+            lines.append(
+                f"    _ev('e', {node.id!r}, __timings__[{node.id!r}], False, True)"
+            )
         var = self.var_of.get(node.id)
         if var:
             lines.append(f"    {var} = None")
@@ -1997,6 +2561,10 @@ class Transpiler:
             if chosen is None:
                 chosen = v
         lines.append(f"{var} = {chosen or 'None'}{_annot(node)}  # bypassed")
+        # A bypass is a pure alias: it carries the SAME value as its source, so
+        # in memo mode its var inherits the upstream key (lineage continues).
+        if self._memo and chosen in self._var_key:
+            self._var_key[var] = self._var_key[chosen]
 
     def _emit_select(self, node, lines: list[str]) -> None:
         """Sub-shape selector (SelectEdge/Face/Vertex): resolve the picked set
@@ -2128,7 +2696,9 @@ class Transpiler:
         body = [f"{var} = {call}{_annot(node)}"]
         if self._previewed(node, ndef):
             body.append(f"__previews__[{node.id!r}] = {var}")
-        self._guard(lines, body, node)
+        # The def lines live outside the guarded body: hash the user code too,
+        # so editing the block's code invalidates its cache entry.
+        self._guard(lines, body, node, key_src=user_code)
 
     def _cast(self, src, sock, var: str) -> str:
         """Auto-apply a boundary cast when the effective upstream type needs one to
@@ -2248,7 +2818,7 @@ class Transpiler:
                 return True
         used_as_source = {c.from_node for c in self.graph.connections
                           if _has_outputs(c.to_node)}
-        geometry_like = {catalog.WIRE_SOLID, catalog.WIRE_SURFACE}
+        geometry_like = {catalog.WIRE_SOLID, catalog.WIRE_SURFACE, catalog.WIRE_MESH}
         candidates = []
         for nid in order:
             if nid not in self.var_of:
@@ -2337,15 +2907,26 @@ class Transpiler:
         out.append("")
         out.append("# --- result for preview ---")
         out.append(f"__result__ = {result_var}" if result_var else "__result__ = None")
+        if self._memo and self.key_of:
+            hashes = dict(self.key_of)
+            result_nid = next((nid for nid, v in self.var_of.items()
+                               if v == result_var), None)
+            if result_nid in hashes:
+                hashes["__result__"] = hashes[result_nid]
+            out.append("# node content keys -> persistent mesh/view cache")
+            out.append(f"__hashes__.update({hashes!r})")
         text = "\n".join(out) + "\n"
         if emit_map:
             return self._extract_spans(text)
         return text
 
 
-def transpile(graph: Graph) -> str:
-    """Convenience: transpile a Graph to build123d source."""
-    return Transpiler(graph).run()
+def transpile(graph: Graph, memo: bool = False) -> str:
+    """Convenience: transpile a Graph to build123d source. memo=True (the
+    execute path) wraps each cacheable node in a persistent-store lookup so a
+    warm worker re-runs only what changed; the default output stays clean for
+    the /ui code view."""
+    return Transpiler(graph, memo=memo).run()
 
 
 def transpile_with_map(graph: Graph) -> tuple[str, list[dict]]:

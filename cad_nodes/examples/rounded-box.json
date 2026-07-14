@@ -1,10 +1,54 @@
 {
-  "name": "rounded-box",
-  "nodes": [
-    {"id": "box", "type": "Box", "params": {"width": 40, "height": 25, "depth": 15}, "position": [0, 0]},
-    {"id": "fil", "type": "Fillet", "params": {"radius": 4}, "position": [220, 0], "preview": true}
-  ],
-  "connections": [
-    {"id": "k1", "from_node": "box", "from_socket": "result", "to_node": "fil", "to_socket": "part"}
-  ]
+ "name": "rounded-box",
+ "nodes": [
+  {
+   "id": "box",
+   "type": "Box",
+   "params": {
+    "width": 40,
+    "height": 25,
+    "depth": 15
+   },
+   "position": [
+    0,
+    0
+   ]
+  },
+  {
+   "id": "fil",
+   "type": "Fillet",
+   "params": {
+    "radius": 4
+   },
+   "position": [
+    220,
+    0
+   ],
+   "preview": true
+  },
+  {
+   "id": "n1",
+   "type": "Note",
+   "params": {
+    "text": "Hello world\n\nThe smallest graph that makes a shape: a Box, then a Fillet that rounds every edge. Drag the Fillet radius and watch it re-run \u2014 this is the whole loop of noodle in two nodes.\n\nPush the radius past half the smallest side and the node turns red: OCCT cannot round more than the geometry has to give."
+   },
+   "position": [
+    0,
+    -260
+   ],
+   "size": [
+    520,
+    230
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "id": "k1",
+   "from_node": "box",
+   "from_socket": "result",
+   "to_node": "fil",
+   "to_socket": "part"
+  }
+ ]
 }

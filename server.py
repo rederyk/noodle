@@ -3,6 +3,7 @@ noodle — Unified API server for AI + webui CAD modeling.
 Engine: node graphs transpiled to build123d and run in an isolated worker.
 """
 
+import asyncio
 import collections
 import itertools
 import json
@@ -16,7 +17,12 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    PlainTextResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -64,6 +70,11 @@ _BOOT_TIME = time.time()
 _LOG_BUFFER: "collections.deque[dict]" = collections.deque(maxlen=2000)
 _LOG_SEQ = itertools.count(1)
 _LOG_LOCK = threading.Lock()
+
+# A progress stream with nothing to say for this long gives up, so an editor tab left
+# open overnight doesn't hold a generator forever. Comfortably longer than the 120s
+# execute timeout, so a slow-but-alive run is never cut off mid-flight.
+_PROGRESS_MAX_IDLE = 180.0
 
 logger = logging.getLogger("noodle")
 
@@ -717,7 +728,11 @@ async def execute_graph_project(name: str):
     logger.info("execute graph '%s' (%d nodes)", name, len(graph.nodes))
     try:
         # Live run: skip the STL export (regenerated on demand by /download).
-        result = execute_graph(graph, d, write_stl=False)
+        # OFF THE EVENT LOOP: a graph run is seconds of blocking CPU, and while it
+        # held the loop nothing else could be served — including the progress stream
+        # that reports on this very run. The warm worker is already serialised by its
+        # own lock, so concurrent runs queue rather than collide.
+        result = await asyncio.to_thread(execute_graph, graph, d, write_stl=False)
     except ValidationError as e:
         logger.error("execute '%s' invalid graph: %s", name, e)
         raise HTTPException(400, str(e)) from e
@@ -739,9 +754,65 @@ async def execute_graph_project(name: str):
         "code": result["code"],
         "warnings": result.get("warnings", []),
         "node_errors": result.get("node_errors", {}),
+        # Per-node wall-clock + which ids the memo store served: the editor keeps
+        # them on the nodes as cost badges (cache hit vs real re-run).
+        "node_timings": result.get("node_timings", {}),
+        "node_cached": result.get("node_cached", []),
         # Always offered — /download regenerates the STL on demand if it's stale.
         "stl": f"/api/projects/{name}/download",
     }
+
+
+async def _tail_progress(path: Path):
+    """Yield SSE events from a run's progress.jsonl as the worker appends to it.
+
+    The editor opens this stream BEFORE it POSTs /execute, so we start at the file's
+    current end (a previous run's events are not ours to replay) and treat a size
+    drop as "the executor truncated it — a new run just started".
+    """
+    offset = path.stat().st_size if path.exists() else 0
+    quiet = 0.0
+    while quiet < _PROGRESS_MAX_IDLE:
+        await asyncio.sleep(0.05)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            quiet += 0.05
+            continue
+        if size < offset:      # truncated: this is the run we're here for
+            offset = 0
+        if size == offset:
+            quiet += 0.05
+            continue
+        quiet = 0.0
+        with path.open() as f:
+            f.seek(offset)
+            chunk = f.read()
+            offset = f.tell()
+        if not chunk.endswith("\n"):
+            # A half-written line: rewind past it and pick it up whole next poll.
+            head, _, tail = chunk.rpartition("\n")
+            offset -= len(tail)
+            chunk = head
+        for line in chunk.splitlines():
+            if line.strip():
+                yield f"data: {line}\n\n"
+
+
+@app.get("/api/graph/{name}/progress")
+async def graph_progress(name: str):
+    """Live per-node execution events (SSE) for the run in flight on this graph.
+
+    Emitted by the generated code itself (transpiler `_ev`), so it works on the warm
+    worker AND the cold subprocess. The client closes the stream when its POST to
+    /execute resolves.
+    """
+    d = require_project(name)
+    return StreamingResponse(
+        _tail_progress(d / "progress.jsonl"),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/agent/help")

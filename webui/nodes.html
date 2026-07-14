@@ -293,6 +293,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
     <div class="tb-zone">
       <button class="tb-btn primary" id="btn-run" onclick="runGraph()" title="Run the graph (Ctrl+Enter)">▶ Run</button>
       <button class="tb-btn toggle js-live-btn" id="btn-live" onclick="toggleLive()" title="Auto-run on every change">Live</button>
+      <button class="tb-btn toggle js-cost-btn" id="btn-cost" onclick="toggleCost()" title="Show each node's cost from the last run (blue = served by the cache)">Costi</button>
       <div class="status-pill" id="status">Ready</div>
       <span class="health-dot" id="health" title="Backend health"></span>
     </div>
@@ -479,9 +480,14 @@ let lgraph, lcanvas;
 // verification (playwright) needs one deliberate peephole. Not used by the app.
 window._noodle = { get lgraph(){ return lgraph; }, get lcanvas(){ return lcanvas; },
   get viewer(){ return viewer; }, get picker(){ return picker; },
+  get execGlow(){ return execGlow; }, get lastCost(){ return lastCost; },
+  get showCost(){ return showCost; },
   togglePick(i){ return togglePick(i); } };
 let currentName = null;
 let lastNodeErrors = {};   // last execution's node_id -> error, for feedback reports
+let lastCost = null;       // last run's per-node cost: Map(node -> {t, cached, failed, heat})
+const COST_FLAG = 'noodle:settings:showCost';
+let showCost = localStorage.getItem(COST_FLAG) === '1';   // cost badges on the nodes
 let nodeIndex = {};        // our graph node-id -> Litegraph node (set on serialize)
 let nodeByGraphId = {};    // on-disk graph id -> node, for cross-view linking (/ui)
 let highlighted = [];      // nodes currently flagged with an error
@@ -524,7 +530,7 @@ let sketchRaycaster = null;    // reused THREE.Raycaster for plane intersection 
 const WIRE_COLORS = {
   solid:'#2dd4a0', surface:'#3b82f6', curve:'#f59e0b',
   data:'#8a93a3', tree:'#a855f7', plane:'#fb923c', vector:'#ef4444',
-  selection:'#e879f9',
+  selection:'#e879f9', mesh:'#14b8a6',   // the mesh lane (PLAN_MESH_LANE.md)
 };
 // for an input of type T, which output types may feed it.
 // This is the SINGLE-SOURCE-OF-TRUTH derived from the backend cast registry
@@ -535,11 +541,12 @@ let INPUT_ACCEPTS = {
   solid:['solid','surface','plane','data'],   // transforms treat a plane like a solid
   surface:['surface','curve','data'],   // a closed curve (Circle/Rectangle…) fills a surface input
   curve:['curve','data'],
-  data:['solid','surface','curve','data','tree','plane','vector','selection'],
+  data:['solid','surface','curve','data','tree','plane','vector','selection','mesh'],
   tree:['tree','data'],
   plane:['plane','solid','data'],               // a transformed plane flows back into a plane input
   vector:['vector','selection','data'],
   selection:['selection'],
+  mesh:['mesh','solid','surface'],   // B-Rep tessellates INTO the mesh lane; never back (PLAN_MESH_LANE.md)
 };
 
 function log(msg, cls=''){
@@ -769,6 +776,7 @@ function registerNodes(defs){
           if (inlineEditor && inlineEditor.node === this) positionInlineEditor();
         }
         if (this.cadType === 'Display') drawDisplayBody(ctx, this);   // wired value on the body
+        drawCostBadge(ctx, this);                         // last run's ms, title-bar right
         if (!this.bypassed) return;
         ctx.save();
         ctx.fillStyle = 'rgba(11,14,20,.45)';
@@ -2084,6 +2092,7 @@ function fromGraphJSON(data){
   if (sketchNode) exitCurveDrawMode();
   closeInlineNoteEditor(false);   // drop any open note editor before the canvas is rebuilt
   loadingGraph = true;
+  lastCost = null;                // costs belong to the graph that produced them
   lgraph.clear();
   const map = {};
   // legacy migration: the old dual-mode Panel is gone. A Panel with an incoming
@@ -2249,6 +2258,12 @@ window.toggleLive = function(){
   liveMode = !liveMode;
   document.querySelectorAll('.js-live-btn').forEach(b=>b.classList.toggle('on', liveMode));
   if(liveMode) scheduleLive();
+};
+window.toggleCost = function(){
+  showCost = !showCost;
+  localStorage.setItem(COST_FLAG, showCost ? '1' : '0');
+  document.querySelectorAll('.js-cost-btn').forEach(b=>b.classList.toggle('on', showCost));
+  if (lcanvas) lcanvas.setDirty(true, true);
 };
 window.toggleFastDrag = function(){
   fastDrag = !fastDrag;
@@ -2784,6 +2799,24 @@ function showGizmoHint(node){
   el.style.display = 'block';
 }
 
+// Live per-node execution events for the run we're about to ask for. Feeds the glow.
+function openProgress(){
+  if (!window.EventSource) return null;
+  try {
+    const es = new EventSource(`${API}/api/graph/${currentName}/progress`);
+    es._seen = 0;
+    es.onmessage = (m)=>{ es._seen++; try { glowEvent(JSON.parse(m.data)); } catch(e){} };
+    es.onerror = ()=>{};    // a dropped stream costs us the glow, never the run
+    return es;
+  } catch(e){ return null; }
+}
+function closeProgress(es){
+  endExecGlow();
+  if (!es) return;
+  if (!es._seen) log('no live progress for this run (glow unavailable)', 'warn');
+  es.close();
+}
+
 window.runGraph = async function(){
   await window.saveGraph();
   if(!currentName) return;
@@ -2797,15 +2830,19 @@ window.runGraph = async function(){
   setStatus(_verb+'…');
   // live ticking clock so a long run visibly reads as "thinking", not frozen
   const _tick = setInterval(()=> setStatus(_verb+'… '+_elapsed()), 250);
+  // Subscribe BEFORE asking for the run, so no node's start event is missed. The
+  // worker appends one per node as it goes; the server tails the file to us.
+  beginExecGlow();
+  const es = openProgress();
   let res;
   try {
     res = await fetch(`${API}/api/graph/${currentName}/execute`, {method:'POST', signal});
   } catch(e){
-    clearInterval(_tick);
+    clearInterval(_tick); closeProgress(es);
     if(e.name === 'AbortError') return;    // a newer change took over
     setStatus('execution failed','err'); log('execute: '+e.message,'err'); return;
   }
-  clearInterval(_tick);
+  clearInterval(_tick); closeProgress(es);
   if(!res.ok){
     const e = await res.json();
     const d = e.detail || e;
@@ -2844,13 +2881,17 @@ window.runGraph = async function(){
   for (const w of (data.warnings || [])) log('⚠ '+w, 'warn');
   // per-node timing: total + the few slowest, so a slow run tells you WHICH node
   const tim = data.node_timings || {};
+  const hits = data.node_cached || [];
+  recordCost(tim, hits, nids);      // keep the numbers on the nodes (cost badges)
   const tent = Object.entries(tim).sort((a,b)=>b[1]-a[1]);
   if (tent.length){
     const tot = tent.reduce((s,[,v])=>s+v,0);
     const nm = id => { const n = nodeByGraphId[id] || nodeIndex[id]; return n ? (n.title||n.cadType||id) : id; };
-    const top = tent.slice(0,5).filter(([,v])=>v>=0.005)
+    const ran = tent.filter(([id]) => !hits.includes(id));
+    const top = ran.sort((a,b)=>b[1]-a[1]).slice(0,5).filter(([,v])=>v>=0.005)
       .map(([id,v])=>`${nm(id)} ${Math.round(v*1000)}ms`).join(' · ');
-    log(`⏱ ${_elapsed()} wall · ${tot.toFixed(2)}s compute${top?' · slowest: '+top:''}`);
+    const cache = hits.length ? ` · ${hits.length}/${tent.length} cached` : '';
+    log(`⏱ ${_elapsed()} wall · ${tot.toFixed(2)}s compute${cache}${top?' · slowest: '+top:''}`);
   }
   if (nids.length){ setStatus(`done · ${nids.length} node error(s) · ${_elapsed()}`, 'err'); }
   else if ((data.warnings||[]).length){ setStatus(`done ⚠ · ${_elapsed()}`,'err'); }
@@ -3168,6 +3209,159 @@ function highlightNode(graphId){
   highlighted.push(n);
   lcanvas.setDirty(true, true);
   return true;
+}
+
+// ── execution glow ──
+// The nodes light up AS THEY RUN. The generated code emits a start/end event per
+// node (transpiler `_ev` -> progress.jsonl); the editor opens an EventSource on
+// /api/graph/{name}/progress before it POSTs /execute and feeds those events here.
+// A node that is executing breathes amber; when it finishes it settles and fades —
+// green if it really recomputed, cold blue if the memo cache served it, red if it
+// threw. So a slow node is one you watch glow, not one you read about afterwards.
+const GLOW_HOT = [251, 191, 36], GLOW_COOL = [74, 222, 128], GLOW_CACHED = [56, 189, 248];
+const GLOW_FAIL = [233, 69, 96];   // matches the error highlight — a node that threw
+const GLOW_TAIL = 420, GLOW_ATTACK = 90;
+let execGlow = null;      // {byId: Map(graphId -> {node, t0, tEnd, cached, failed}), open}
+let glowRAF = 0;
+// Reduced motion: still light the nodes (that IS the information), just don't breathe.
+const glowStill = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function clearExecGlow(){
+  execGlow = null;
+  if (glowRAF){ cancelAnimationFrame(glowRAF); glowRAF = 0; }
+  if (lcanvas) lcanvas.setDirty(true, true);
+}
+
+function beginExecGlow(){
+  clearExecGlow();
+  if (!lcanvas) return;
+  execGlow = {byId: new Map(), open: true};
+  const step = () => {
+    if (!execGlow){ glowRAF = 0; return; }
+    lcanvas.setDirty(true, true);
+    const now = performance.now();
+    let busy = execGlow.open;
+    if (!busy){
+      for (const sp of execGlow.byId.values()){
+        if (sp.tEnd === null || now - sp.tEnd < GLOW_TAIL){ busy = true; break; }
+      }
+    }
+    if (!busy){ clearExecGlow(); return; }   // run over and every ring faded out
+    glowRAF = requestAnimationFrame(step);
+  };
+  glowRAF = requestAnimationFrame(step);
+}
+
+// One progress event from the running worker: 's' = this node started, 'e' = it's
+// done (c = the cache served it, x = it threw).
+function glowEvent(ev){
+  if (!execGlow || !ev || !ev.n) return;
+  if (ev.k === 's'){
+    const node = nodeByGraphId[ev.n] || nodeIndex[ev.n];
+    if (!node) return;                       // not on this canvas (stale id)
+    execGlow.byId.set(ev.n, {node, t0: performance.now(), tEnd: null,
+                             cached: false, failed: false});
+  } else if (ev.k === 'e'){
+    const sp = execGlow.byId.get(ev.n);
+    if (!sp) return;
+    sp.tEnd = performance.now(); sp.cached = !!ev.c; sp.failed = !!ev.x;
+  }
+}
+
+// The run returned: stop expecting events, let the last rings fade out.
+function endExecGlow(){
+  if (!execGlow) return;
+  execGlow.open = false;
+  const now = performance.now();
+  for (const sp of execGlow.byId.values()) if (sp.tEnd === null) sp.tEnd = now;
+}
+
+// ── cost badge (the glow's numbers, made to stay) ──
+// The wave tells you what re-ran, then fades. These badges keep the same story on
+// screen: last run's wall-clock per node, in the same colour vocabulary — cold blue
+// = the memo cache served it, amber→green = it really recomputed (hue by cost, the
+// sqrt(t/peak) ramp startExecGlow uses), red = it threw. Toggled from the toolbar.
+function recordCost(timings, cachedIds, failedIds){
+  const ids = Object.keys(timings || {});
+  if (!ids.length){ lastCost = null; return; }
+  const cached = new Set(cachedIds || []), failed = new Set(failedIds || []);
+  const peak = Math.max(1e-6, ...ids.filter(id => !cached.has(id)).map(id => timings[id] || 0));
+  const byNode = new Map();
+  for (const id of ids){
+    const node = nodeByGraphId[id] || nodeIndex[id];
+    if (!node) continue;
+    const t = timings[id] || 0;
+    byNode.set(node, {t, cached: cached.has(id), failed: failed.has(id),
+                      heat: Math.sqrt(Math.min(1, t / peak))});
+  }
+  lastCost = byNode;
+}
+
+function costLabel(t){
+  return t < 0.9995 ? Math.round(t * 1000) + 'ms' : t.toFixed(1) + 's';
+}
+
+function drawCostBadge(ctx, n){
+  if (!showCost || !lastCost) return;
+  const c = lastCost.get(n);
+  if (!c) return;                       // added after the run — nothing to report
+  const rgb = c.failed ? GLOW_FAIL
+            : c.cached ? GLOW_CACHED
+            : GLOW_HOT.map((v, i) => Math.round(v + (GLOW_COOL[i] - v) * (1 - c.heat)));
+  const col = `${rgb[0]},${rgb[1]},${rgb[2]}`;
+  // A cache hit didn't cost anything this run — "0ms" on two thirds of the graph is
+  // noise. Say what actually happened; the number is for what really recomputed.
+  const txt = c.cached ? 'cache' : costLabel(c.t);
+  const th = LiteGraph.NODE_TITLE_HEIGHT || 20;
+  ctx.save();
+  ctx.font = 'bold 9px sans-serif';
+  const w = ctx.measureText(txt).width + 8, h = 12, x = n.size[0] - w - 4, y = -th + 4;
+  ctx.fillStyle = `rgba(${col},.18)`;
+  ctx.strokeStyle = `rgba(${col},.55)`;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, 3); else ctx.rect(x, y, w, h);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = `rgb(${col})`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(txt, x + w / 2, y + h / 2 + 0.5);
+  ctx.restore();
+}
+
+// Paint one node's glow ring. `a` is intensity 0..1, `rgb` the colour.
+function strokeGlow(ctx, n, rgb, a, s){
+  const th = LiteGraph.NODE_TITLE_HEIGHT || 20;
+  const col = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.strokeStyle = col; ctx.shadowColor = col;
+  ctx.lineWidth = (1.6 + 1.4 * a) / s;
+  ctx.shadowBlur = (8 + 16 * a) / s;
+  const x = n.pos[0] - 3, y = n.pos[1] - th - 3, w = n.size[0] + 6, h = n.size[1] + th + 6;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, 9); else ctx.rect(x, y, w, h);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawExecGlow(ctx, s){
+  if (!execGlow) return;
+  const now = performance.now();
+  for (const sp of execGlow.byId.values()){
+    if (!sp.node.graph) continue;                        // deleted mid-run
+    let a, rgb;
+    if (sp.tEnd === null){                               // still executing, right now
+      a = Math.min(1, (now - sp.t0) / GLOW_ATTACK);      // ramp in
+      if (!glowStill) a *= 0.78 + 0.22 * Math.sin(now / 90);   // breathe: it's working
+      rgb = GLOW_HOT;
+    } else {                                             // settled: fade out in its colour
+      a = 1 - (now - sp.tEnd) / GLOW_TAIL;
+      if (a <= 0) continue;
+      rgb = sp.failed ? GLOW_FAIL : sp.cached ? GLOW_CACHED : GLOW_COOL;
+      if (sp.cached) a *= 0.5;    // a cache hit is a hint, not an event
+    }
+    strokeGlow(ctx, sp.node, rgb, a, s);
+  }
 }
 
 // ── Three.js viewer (same setup as the code UI) ──
@@ -4334,8 +4528,10 @@ function initGraph(){
   // node, so it never clashes with the error-red or the preview boxcolor dot.
   const SELECT_HL = '#22d3ee';
   lcanvas.onDrawForeground = function(ctx){
+    const s0 = this.ds.scale || 1;
+    drawExecGlow(ctx, s0);        // execution replay, under the selection ring
     const sel = this.selected_nodes; if (!sel) return;
-    const th = LiteGraph.NODE_TITLE_HEIGHT || 20, s = this.ds.scale || 1;
+    const th = LiteGraph.NODE_TITLE_HEIGHT || 20, s = s0;
     ctx.save();
     ctx.strokeStyle = SELECT_HL; ctx.shadowColor = SELECT_HL;
     ctx.lineWidth = 2.2 / s; ctx.shadowBlur = 10 / s;
@@ -4734,9 +4930,17 @@ window.openSettings = function(){
       `<small style="color:var(--txt-dim)">Adds a 🐞 button to the top bar. It saves a local report `+
       `(your text + technical context + optional graph snapshot &amp; recent logs) under `+
       `<code>feedback/</code> so a coding agent can pick it up and fix it.</small></span></label>`+
+    `<label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;margin-top:12px">`+
+      `<input type="checkbox" id="set-cost" ${showCost?'checked':''} style="margin-top:3px">`+
+      `<span><b>Show node costs</b><br>`+
+      `<small style="color:var(--txt-dim)">Puts the last run's wall-clock on each node. `+
+      `Blue means the memo cache served it without re-running; amber&rarr;green is a real `+
+      `recompute, hue by cost; red means it threw.</small></span></label>`+
     `<div class="modal-actions"><button class="tb-btn primary" id="set-ok">Done</button></div>`);
   const cb=m.ov.querySelector('#set-fb');
   cb.addEventListener('change', ()=>{ localStorage.setItem(FEEDBACK_FLAG, cb.checked?'1':'0'); applyFeedbackSetting(); });
+  const cc=m.ov.querySelector('#set-cost');
+  cc.addEventListener('change', ()=>{ if (cc.checked !== showCost) toggleCost(); });
   m.ov.querySelector('#set-ok').onclick=()=>m.close();
 };
 
@@ -4879,6 +5083,7 @@ function paletteCommands(){
     {ic:'⛌', label:'Open backend console', k:'', run:()=>openConsole()},
     {ic:'⟳', label:'Restart backend…', k:'', run:()=>confirmRestart()},
     {ic:'🐞',label:'Send feedback / report…', k:'', run:()=>openFeedback()},
+    {ic:'⏱', label:'Toggle node costs', k:'', run:()=>toggleCost()},
     {ic:'⚙', label:'Settings…', k:'', run:()=>openSettings()},
     {ic:'?', label:'Keyboard shortcuts', k:'', run:()=>openShortcuts()},
   ];
@@ -4937,6 +5142,7 @@ document.addEventListener('keydown', e=>{
   // or graph editing — the editor must stay usable even without the 3D preview.
   try { initViewer(); } catch(e){ log('3D viewer disabled: '+(e.message||e), 'err'); }
   applyFeedbackSetting();
+  document.querySelectorAll('.js-cost-btn').forEach(b=>b.classList.toggle('on', showCost));
   setHealth('busy'); setDocState('none');
   try{
     // wire-type compatibility from the backend cast registry (single source of

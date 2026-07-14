@@ -46,9 +46,129 @@ _EXAMPLE_DESCRIPTIONS = {
                     "surface, shelled into a thin-walled vase.",
     "parametric-curves": "Parametric curves — a Spline through points, an "
                          "ArcCenter and a Line as building blocks for wire geometry.",
+    "predicate-selectors": "Selecting by RULE, not by clicking — EdgesByType picks "
+                           "every circular edge and fillets it, so the selection "
+                           "survives a change of geometry that a hand-picked list "
+                           "would not.",
     "lego-brick": "Array fan-out showcase — one stud becomes a grid via two "
                   "Linear Arrays, fused with Union and rounded into a "
                   "recognizable LEGO brick. Grouped into 4 labelled stages.",
+    "softmax": "Maths made geometry — the softmax function wired node by node "
+               "(z/T → exp → sum → normalise), with three rows of bars and a pie "
+               "chart that redraw live as you drag the logits and the temperature. "
+               "Drag `t` with `onda` > 0 to animate the winner travelling between "
+               "classes.",
+    "gradient-descent": "How a machine learns, as geometry — a loss surface, and "
+                        "the descent path as a chain of spheres. Drag `k` to roll the "
+                        "ball down; raise the learning rate until the path zig-zags "
+                        "out of the valley; drag the starting point (it carries a "
+                        "gizmo) into the wrong basin and watch it settle in a local "
+                        "minimum. The gradient is numeric, so the algorithm knows "
+                        "nothing about f — change f and it still works.",
+    "perceptron": "The first machine that learned anything (1958) — it is never told "
+                  "the rule, only told when it guessed wrong, and it leans its line "
+                  "towards the point it missed. Drag `epochs` and the red mistakes "
+                  "wink out one by one until it converges and stops for good. Then add "
+                  "`noise`: no line can be right any more, and it never settles.",
+    "l-system": "One letter and one rewrite rule, and a tree grows — F -> F[+F]F[-F][F], "
+                "applied over and over, then read by a turtle. Drag `depth` and a whole "
+                "generation of twigs appears; drag `angle` and you change the species. "
+                "Every branch is a real tapered cone, so this one you can print.",
+    "convolution": "Nine numbers that can blur a picture, sharpen it, or find every edge "
+                   "in it — the image as a field of columns, the 3x3 kernel beside it, "
+                   "the answer on the right. Edge detect returns exactly zero wherever "
+                   "the picture is flat, so only the outline survives. It is what a "
+                   "vision network's first layer does; the network just learns the nine.",
+    "riemann-sums": "The integral, caught in the act of being invented — chop the area "
+                    "under a curve into n rectangles and read how wrong you are. Drag n "
+                    "and watch the error fall; switch from the left edge to the midpoint "
+                    "and it collapses at the same n. Even the 'exact' value is a "
+                    "staircase, just a very fine one.",
+    "attention": "The sequel to `softmax` — attention is the same function taken one "
+                 "ROW at a time. The blue grid is the raw scores q.k (negative bars "
+                 "hang below the plane); the green grid is after the softmax, where "
+                 "every row sums to exactly 1. Switch `causal` on and the upper "
+                 "triangle vanishes: a token may not look at the future — and each "
+                 "row still sums to 1.",
+    "cellular-automata": "Eight bits of program, and a universe — an elementary "
+                         "cellular automaton whose generations stack along Z into a "
+                         "printable tower of time. Rule 90 is a Sierpinski triangle, "
+                         "rule 30 is chaos used as a random generator, rule 110 is "
+                         "Turing complete. One live cell to start with.",
+    "de-casteljau": "How a Bezier is actually built: not a polynomial, just "
+                    "interpolation repeated until one point is left. Drag `t` and the "
+                    "ladder collapses onto the curve; drag a control point (they carry "
+                    "gizmos) and watch the curve get pulled towards it without ever "
+                    "passing through it.",
+    "matrix-determinant": "Linear algebra you can hold — a 3x3 matrix (nine sliders) "
+                          "deforms a unit cube, and the catalog's Volume node reads "
+                          "the DETERMINANT off the solid. Shear it and the volume "
+                          "does not move; flatten a row and det hits 0; flip a sign "
+                          "and space turns inside out. The three arrows are the "
+                          "matrix's columns.",
+    "central-limit": "Why the bell curve shows up uninvited — average n uniform "
+                     "numbers (a perfectly flat distribution), 4000 times, and plot "
+                     "the histogram. n=1 is flat; by n=3 it is a bell. The width "
+                     "shrinks as 1/sqrt(n). The yellow curve is the gaussian the "
+                     "theorem predicts, not a fit.",
+    "fourier-epicycles": "Any wave is a sum of circles — each harmonic is a circle "
+                         "riding on the tip of the last one, and the pen traces the "
+                         "wave, unrolled in time on the right. Drag `t` to turn the "
+                         "wheels; add harmonics and watch a square wave sharpen (the "
+                         "ripples that never leave are Gibbs).",
+    "kmeans-voronoi": "Finding groups nobody labelled — Lloyd's algorithm: assign "
+                      "each point to the nearest centroid, move each centroid to the "
+                      "mean of its points, repeat. Drag `iterations` from 0 and watch "
+                      "them migrate. The catalog's Voronoi2D on the centroids gives "
+                      "the decision regions for free.",
+    "nucleus-sampling": "How a language model picks the next word — softmax gives the "
+                        "probabilities, but someone still has to CHOOSE. Top-p walks "
+                        "down the sorted bars adding up probability and stops at p, so "
+                        "the number of words it keeps is decided by the model's "
+                        "confidence, not by you: same p, one word after 'the capital of "
+                        "France is', a dozen after 'she opened the door and saw'. "
+                        "Top-k cannot do that.",
+    "neural-network": "What 'a billion parameters' actually looks like — one sphere per "
+                      "neuron, one cylinder per weight, radius proportional to |w|. "
+                      "Double a layer's width and the wires QUADRUPLE (weights are a "
+                      "product, not a sum). Then drag `prune` and watch most of them "
+                      "vanish while the object still looks like itself: a trained "
+                      "network is mostly near-zero weights, which is why pruning works.",
+    "aliasing": "The wave that was never there — a sine, and a clock that looks at it fs "
+                "times a second. The ghost is the slowest wave through every sample, and "
+                "it agrees with the evidence EXACTLY, so nothing downstream can tell them "
+                "apart. Below fs/2 the ghost IS the wave (that congruence is the sampling "
+                "theorem); above it, 7 Hz arrives as a calm, innocent 3 Hz.",
+    "overfitting": "It knows the answers and not the question — a degree-d polynomial "
+                   "through noisy points. The error on what it was SHOWN falls forever; "
+                   "the error on what it was NOT shown bottoms out around degree 5 and "
+                   "then climbs. At degree = n-1 the curve hits every training point "
+                   "exactly, scores zero, and has learned nothing but the noise. Ridge "
+                   "tames the monster without taking a single coefficient away.",
+    "sorting": "The same answer, at four different prices — bubble, insertion, "
+               "selection and quicksort on the same twelve bars. `step` scrubs through "
+               "the run one COMPARISON at a time (the pair under the eye is drawn in its "
+               "own colour), and the four columns are the bill. At twelve numbers nobody "
+               "cares; the Panel quietly runs all four on 200 and the polite little gap "
+               "becomes 19,834 comparisons against 1,510.",
+    "dijkstra": "The same loop, with one line changed: which cell do you open next? "
+                "Dijkstra takes the cheapest so far and spreads in a circle (439 cells "
+                "of 484). A* adds a guess at what is left, opens a corridor instead — "
+                "187 cells — and finds the IDENTICAL path, because the guess never "
+                "over-promises. Greedy drops the cost-so-far, opens 43, and walks "
+                "straight over the mountain for a path 34% worse.",
+    "perlin-noise": "Random, but not RANDOM — white noise is static and always will be, "
+                    "because no two neighbouring points were ever made to agree. Perlin "
+                    "puts a random DIRECTION at each grid corner instead of a random "
+                    "number at each point, so nearby points are FORCED to agree, and out "
+                    "comes a landscape. Octaves add detail at half the height; the sea is "
+                    "just a plane. Built on the mesh lane, watertight, and printable.",
+    "mesh-lane": "The mesh lane — a Box and a Sphere tessellate into triangles just "
+                 "by touching a mesh input, get cut with a mesh boolean (manifold3d: "
+                 "0.1s where the B-Rep kernel needs 81s), simplified within a bounded "
+                 "tolerance and inspected. Note the Sphere rides the SAME Move node "
+                 "the B-Rep lane uses. build123d cannot model meshes at all — see "
+                 "PLAN_MESH_LANE.md.",
 }
 
 # A graph id is a single directory name under the store root. Rejecting

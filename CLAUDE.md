@@ -72,7 +72,14 @@ server.py            FastAPI HTTP API (port 8090). Routes under /api/* :
                        keep it in sync when the API surface changes),
                        /api/agent/tags (ToAgent provenance index, §7b),
                        /api/graph/{name}/slice_summary|section_outline (§7b),
+                       /api/graph/{name}/progress (SSE: per-node execution events
+                       of the run in flight, tailed from the workdir's
+                       progress.jsonl — see transpiler `_ev`),
                        /api/system/health|logs|restart.
+                       NOTE /execute runs via `asyncio.to_thread`: a graph run is
+                       seconds of blocking CPU and must NOT hold the event loop,
+                       or nothing else can be served meanwhile (the progress
+                       stream included). Keep any new long route off the loop.
 mcp_server.py        MCP server exposing the same cad_nodes.api operations.
 webui/
   viewer.js          ★ the SHARED Three.js viewport (ES module served at
@@ -94,6 +101,19 @@ webui/
                        WIRE_COLORS; INPUT_ACCEPTS is fetched at boot from
                        /api/wiretypes (derived from casts.py, §5 — the inline
                        literal is only an offline fallback).
+                       Execution glow (beginExecGlow/glowEvent/drawExecGlow): the nodes
+                       light up AS THEY RUN. openProgress() subscribes to the SSE
+                       /api/graph/{name}/progress BEFORE POSTing /execute, so no start
+                       event is missed; each event opens or closes a node's span. A
+                       node executing right now breathes amber; when it finishes it
+                       settles and fades — green if it really recomputed, cold blue if
+                       the memo cache served it, red if it threw.
+                       Cost badges (drawCostBadge, toolbar "Costi" toggle, remembered
+                       in localStorage `noodle:settings:showCost`): the same story made
+                       to stay — last run's wall-clock on each node's title bar, same
+                       colour vocabulary (blue "cache" = the memo store served it and it
+                       cost nothing, amber→green = a real recompute with the hue set by
+                       cost, red = it threw). The editor doubles as a profiler.
                        parseCbParams() mirrors transpiler.parse_codeblock_params:
                        a CodeBlock's `#@param`s become live widgets + dynamic
                        input sockets (overrides in the `_cb` param namespace),
@@ -125,9 +145,30 @@ cad_nodes/
                        each value appears once at the call site as an editable span
                        (override in node.params["_cb"], wired socket drives + fans
                        out). The body itself is an editable `code` span (kind=code).
+                       transpile(memo=True) — the execute path ONLY, /ui code stays
+                       clean — wraps each cacheable node in _memo_get/_memo_put
+                       keyed by a content hash (params+code+upstream keys, immune
+                       to var renumbering); non-deterministic nodes (Import*,
+                       open(), random.) poison their lineage, display/export
+                       side-effect nodes stay keyed but re-run. tests/test_memo.py.
+                       In memo mode each node also brackets itself in `_ev()`
+                       (PREAMBLE): a start/end NDJSON line appended+flushed to
+                       __PROGRESS_PATH__ = the workdir's progress.jsonl (injected by
+                       executor.build_script). That file is the ONLY progress channel
+                       that works on BOTH paths — the warm worker redirects stdout
+                       into a buffer during exec, and the cold subprocess has no pipe
+                       home at all. The editor tails it over SSE and lights each node
+                       AS IT RUNS.
   executor.py        Runs the generated script in a worker subprocess; captures
                        STL + view JSON + per-node errors. execute_graph(graph, workdir).
-  worker.py / mesh_extractor.py   the subprocess + meshing.
+  worker.py / mesh_extractor.py   the subprocess + meshing. The warm worker owns
+                       the persistent __MEMO__ store (LRU 256: node outputs,
+                       preview meshes, view stats) — on a repeat run only the
+                       dirty subtree re-executes/re-meshes (~8.5s -> ~0.5s on the
+                       lego brick; cache dies with the worker = ⚙ warm toggle).
+                       Live-path bboxes use optimal=False (~2s -> ~5ms each,
+                       ≤1% oversized, view.bbox carries approx:true); exports
+                       and picker signatures keep exact geometry.
   graph.py           Graph/Node/Connection dataclasses; from_dict/to_dict;
                        validate() (raises on incompatible wires / unknown sockets).
   api.py             High-level ops over a GraphStore: add_node, connect,
@@ -144,6 +185,10 @@ cad_nodes/
 projects/            saved graphs (written as uid 1000 — host-editable).
 tests/               test_engine.py, test_api.py — pure-Python (no build123d).
 PLAN_NODE_CAD.md     the full design doc + node roadmap (~150 planned nodes).
+PLAN_VIZ_ALGORITHMS.md  the "algorithms as geometry" example family (softmax,
+                     gradient descent, determinant, CLT, Fourier, k-means…): the
+                     pattern they share, the idioms, the gotchas, and what's next.
+                     Read it before adding an explanatory example.
 ```
 
 ## 4. Data model
@@ -194,13 +239,67 @@ longer drift — to change compatibility, edit `casts.py` only.
 
 Types (constants in `casts.py`): `solid` (3D B-Rep — the old `geometry`),
 `surface` (2D sketch/face — the old `sketch`), `curve`, `plane`, `vector`
-(points), `selection` (picked sub-shapes), `data`, `tree` (declared, unused).
+(points), `selection` (picked sub-shapes), `mesh` (triangles — §5c), `data`,
+`tree` (declared, unused).
 `data` is the universal bus (any output → a `data` input; a `data` output feeds
 everything except `selection`/`tree`). Registered casts: `surface→solid`,
 `solid↔plane` (transforms treat a plane like geometry), `curve→surface`
-(closed curve → face via `_face`), `selection→vector`. A `Socket` can also
-widen per-socket via `accepts=[…]`, carry an advisory `subtype` (legend only,
-not validation), or set `raw=True` to opt out of automatic boundary casts.
+(closed curve → face via `_face`), `selection→vector`, `solid/surface→mesh`
+(`_to_mesh`). A `Socket` can also widen per-socket via `accepts=[…]`, carry an
+advisory `subtype` (legend only, not validation), or set `raw=True` to opt out of
+automatic boundary casts. The transpiler applies a registered cast automatically
+at the wire boundary (`Transpiler._cast`).
+
+## 5c. The mesh lane (triangles)
+
+**build123d cannot model meshes** — it treats them as an I/O format. `import_stl`
+returns a `Face` with only a triangulation and no surface (`is_valid=False`,
+`volume=0`, booleans refused outright); `Mesher.read` sews every triangle into a
+planar B-Rep face — **300s** to open a 147k-triangle STL, **81s** per boolean. And
+OCCT has no remesh/decimate/mesh-repair at all. So triangles get their own lane,
+on **trimesh** (MIT — noodle stays MIT; pymeshlab is GPL-3 and is deliberately NOT
+a dependency). Full findings + measurements: **`PLAN_MESH_LANE.md`**.
+
+- Nodes (category `mesh`, `catalog.py` §12b): `ImportMesh`, `ToMesh`, `MeshFix`
+  (merge verts, drop dup/degenerate faces + stray shards, fill holes, fix normals),
+  `MeshInspect` (text health report → wire into a `Display`), `ExportMesh`,
+  `MeshUnion`/`MeshSubtract`/`MeshIntersect` + `MeshSimplify` (**manifold3d**,
+  Apache-2.0), and `MeshToSolid` — the only bridge back, guarded by `max_tris`.
+- **Two engine gotchas, both load-bearing** (measured — PLAN_MESH_LANE.md §9):
+  `trimesh.Trimesh(...)` defaults to `process=True`, which re-merges manifold3d's
+  already-welded output and **silently breaks the manifold** — `_from_manifold` must
+  pass `process=False`. And a simplify tolerance at/above the part's wall thickness
+  (volume/area) *tears the part apart* while the triangle count climbs, so
+  `MeshSimplify` verifies its own result (volume drift + `decompose()` piece count)
+  and raises rather than returning a broken mesh.
+- `Transpiler._cast` only fires on the **item-access** branch: `multiple` collectors
+  and `list_access` sockets skip it (as the B-Rep `Union`/`Subtract` already did), so
+  `_mesh_bool` coerces every item with `_as_mesh` itself. A solid reaches `MeshUnion`
+  uncast — by design, and there's a test pinning it.
+- Runtime: the `Mesh` class in the transpiler PREAMBLE wraps a `trimesh.Trimesh`.
+  It carries a `_noodle_mesh` marker because `mesh_extractor` runs as an imported
+  module and *cannot* import a class that lives in the generated script's globals —
+  so it duck-types instead of `isinstance`.
+- **Transforms are NOT duplicated.** `Move`/`Rotate`/`Scale`/`Mirror` take a mesh
+  directly: their `shape` socket lists `accepts=[…, WIRE_MESH]`, the PREAMBLE
+  helpers branch on `_is_mesh` and apply a 4×4 (`_mesh_matrix`) instead of a
+  `Location`, and `output_follows="shape"` carries the mesh type back out. There is
+  no `MeshMove` and there must not be. (Arrays/Align don't take meshes yet — their
+  templates still build `Pos(…) * shape` inline.)
+- **The cast is asymmetric on purpose.** `solid/surface → mesh` is automatic
+  (tessellation: milliseconds, safely lossy) — drop a `Box` straight into a mesh
+  input and it just works. `mesh → solid` is **not** a cast: rebuilding a B-Rep from
+  triangles costs ~300s, so it must stay an explicit guarded node (`MeshToSolid`,
+  phase 2), never an implicit coercion that hangs the app for five minutes because
+  someone wired a mesh into a `Fillet`.
+- Previews cost nothing: a mesh IS triangles, so `mesh_extractor` hands the arrays
+  straight to the viewer with no tessellation step.
+- Not yet built (phase 3): hull/smooth/split/refine, and meshes through
+  `ArrayLinear`/`ArrayPolar`/`Align` (their templates still build `Pos(…) * shape`
+  inline, so they need helpers first — the four core transforms already work).
+  Isotropic remesh has no non-GPL implementation that survives a real part — see
+  `PLAN_MESH_LANE.md` §5.
+- Example graph: `cad_nodes/examples/mesh-lane.json` (seeded into `projects/`). Tests: `tests/test_mesh_lane.py`.
 
 ## 5b. Lists & fan-out (Grasshopper-style)
 

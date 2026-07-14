@@ -1,0 +1,170 @@
+{
+ "name": "l-system",
+ "nodes": [
+  {
+   "id": "n1",
+   "type": "IntegerSlider",
+   "params": {
+    "value": 4,
+    "_ui": {
+     "value": {
+      "min": 0,
+      "max": 6,
+      "step": 1
+     }
+    }
+   },
+   "position": [
+    40,
+    200
+   ],
+   "preview": false
+  },
+  {
+   "id": "n2",
+   "type": "NumberSlider",
+   "params": {
+    "value": 25.0,
+    "_ui": {
+     "value": {
+      "min": 5,
+      "max": 60,
+      "step": 1
+     }
+    }
+   },
+   "position": [
+    40,
+    330
+   ],
+   "preview": false
+  },
+  {
+   "id": "n3",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# AN L-SYSTEM. Start with one letter. Replace every letter by a short string, over and\n# over. Then read the result as instructions for a turtle: F = draw forward, + and -\n# = turn, [ and ] = remember/restore where you were (that is what makes a BRANCH).\n#\n#   rule 0 (a tree):   F -> FF+[+F-F-F]-[-F+F+F]\n#\n# There is no picture of a tree anywhere in here. There is a rule, and the tree is\n# what the rule does when you let it run.\ndepth = 4        #@param int min=0 max=6\nangle = 25.0     #@param float min=5 max=60 step=1\nshape = 1        #@param int min=0 max=2\nmax_branches = 900  #@param int min=100 max=3000\nlength = 8.0     #@param float min=2 max=20 step=0.5\nshrink = 0.62    #@param float min=0.3 max=0.95 step=0.01\naxioms = [\"F\", \"F\", \"F-F-F-F\"]\nrules = [\"FF+[+F-F-F]-[-F+F+F]\",          # 0: a bush\n         \"F[+F]F[-F][F]\",                 # 1: a sparser tree\n         \"FF-F-F-F-FF\"]                   # 2: a Koch-ish plant\ns = int(shape) % 3\nseq = axioms[s]\nfor _ in range(int(depth)):\n    seq = \"\".join(rules[s] if c == \"F\" else c for c in seq)\n    if len(seq) > 200000:\n        break                     # the string EXPLODES: it multiplies every single pass\ndef turn(v, a):\n    \"\"\"swing the heading by `a` degrees in the XZ plane (the tree's own plane)\"\"\"\n    c, s_ = math.cos(math.radians(a)), math.sin(math.radians(a))\n    return Vector(v.X * c - v.Z * s_, v.Y, v.X * s_ + v.Z * c)\n\ndef lean(v):\n    \"\"\"tip the heading out of that plane, so the tree is a 3D object and not a cutout\"\"\"\n    return Vector(v.X, v.Z * 0.45 + v.Y * 0.9, v.Z * 0.9 - v.Y * 0.45)\n\n# the turtle. Its state is a position, a heading, a thickness, a step \u2014 and a stack.\npos, head, thick, step = Vector(0, 0, 0), Vector(0, 0, 1), 1.4, length\nstack, bars = [], []\nfor c in seq:\n    if c == \"F\":\n        nxt = pos + head * step\n        bars.append((pos, nxt, thick))\n        pos = nxt\n    elif c == \"+\":\n        head = turn(head, angle)\n    elif c == \"-\":\n        head = turn(head, -angle)\n    elif c == \"[\":                          # remember where we are, and start a branch\n        stack.append((pos, head, thick, step))\n        thick *= 0.72                       # a branch is thinner than what it grew from\n        step *= shrink                      # and shorter\n        head = lean(head)\n    elif c == \"]\":                          # branch over: go back to where we were\n        pos, head, thick, step = stack.pop()\n    if len(bars) >= int(max_branches):\n        break     # HARD CAP. Each branch is a real solid, and the rule grows them\n                  # exponentially: without a ceiling, depth 6 would ask the geometry\n                  # kernel for tens of thousands of cylinders and never come back.\nresult = {\"bars\": bars, \"n\": len(bars), \"depth\": int(depth), \"angle\": angle,\n          \"shape\": s, \"letters\": len(seq), \"capped\": len(bars) >= int(max_branches)}\n"
+   },
+   "position": [
+    40,
+    470
+   ],
+   "preview": false,
+   "size": [
+    400,
+    480
+   ]
+  },
+  {
+   "id": "n4",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# every stroke of the turtle becomes a real cylinder, tapering as the branches thin\n# out. The result is a solid: this tree is printable.\nD = in_0\nout = []\nfor a, bb, t in D[\"bars\"]:\n    v = bb - a\n    if v.length < 1e-6:\n        continue\n    out.append(Plane(origin=a, z_dir=v) * Cone(t, t * 0.78, v.length,\n                                               align=(Align.CENTER, Align.CENTER, Align.MIN)))\nresult = out\n"
+   },
+   "position": [
+    500,
+    470
+   ],
+   "preview": true,
+   "color": "#8a6a3c",
+   "size": [
+    360,
+    240
+   ]
+  },
+  {
+   "id": "n5",
+   "type": "CodeBlock",
+   "params": {
+    "code": "size = 4.0  #@param float min=2 max=12 step=0.5\nD = in_0\nnames = {0: \"F -> FF+[+F-F-F]-[-F+F+F]\", 1: \"F -> F[+F]F[-F][F]\", 2: \"F -> FF-F-F-F-FF\"}\ndef _tv(s, x, z, fs):        # standing, facing the camera\n    return extrude(Pos(x, -40, z) * (Plane.XZ * Text(s, font_size=fs)), amount=0.8)\ntail = \"  (capped: the rule wanted more)\" if D[\"capped\"] else \"\"\nresult = [_tv(\"L-SYSTEM\", 0, 108, size * 1.8),\n          _tv(names.get(D[\"shape\"], \"?\"), 0, 96, size),\n          _tv(f\"depth {D['depth']}   ->   {D['letters']} letters,  {D['n']} branches\" + tail,\n              0, 84, size * 1.1)]\n"
+   },
+   "position": [
+    900,
+    470
+   ],
+   "preview": true,
+   "color": "#e8e8e8",
+   "size": [
+    360,
+    220
+   ]
+  },
+  {
+   "id": "n6",
+   "type": "Note",
+   "params": {
+    "text": "A RULE, AND A TREE COMES OUT.\n\nThere is no tree in this program. There is one letter, F, and one rule that says what F becomes: F -> FF+[+F-F-F]-[-F+F+F]. Apply the rule to every letter, then do it again, and again. Then hand the resulting string to a turtle: F = draw forward, + and - = turn, [ and ] = remember and come back. The brackets are what make a branch.\n\nTRY THIS\n1. Walk `depth` from 0 up to 5, one step at a time. Every pass multiplies the string, and the tree grows a whole new generation of twigs \u2014 from one rule you could write on a napkin. Note `max_branches`: every branch is a real solid, and the rule breeds them exponentially, so there is a hard ceiling. When you hit it the label says so.\n2. Drag `angle`: 25 degrees is a shrub, 12 is a poplar, 45 is a fan. One number changes the species.\n3. Change `shape` (0, 1, 2) for a different rule, and `shrink` to control how fast the branches give up.\n\nEvery branch is a real tapered cylinder, so what comes out is a solid: unlike most things in this family of examples, this one you can actually print. Watch the cost badge as you raise depth \u2014 the geometry is exponential, and it will tell you so."
+   },
+   "position": [
+    500,
+    800
+   ],
+   "size": [
+    600,
+    420
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "id": "l1",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n3",
+   "to_socket": "depth"
+  },
+  {
+   "id": "l2",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n3",
+   "to_socket": "angle"
+  },
+  {
+   "id": "l3",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n4",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l4",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n5",
+   "to_socket": "in_0"
+  }
+ ],
+ "groups": [
+  {
+   "title": "1 - KNOBS",
+   "bounding": [
+    10,
+    140,
+    400,
+    300
+   ],
+   "color": "#3f589e"
+  },
+  {
+   "title": "2 - THE RULE, REWRITTEN",
+   "bounding": [
+    10,
+    440,
+    460,
+    540
+   ],
+   "color": "#8a5a2c"
+  },
+  {
+   "title": "3 - THE TURTLE'S TREE",
+   "bounding": [
+    480,
+    400,
+    820,
+    340
+   ],
+   "color": "#2c7a52"
+  }
+ ]
+}

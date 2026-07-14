@@ -1,0 +1,264 @@
+{
+  "name": "neural-network",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "IntegerSlider",
+      "params": {
+        "value": 8,
+        "_ui": {
+          "value": {
+            "min": 2,
+            "max": 16,
+            "step": 1
+          }
+        }
+      },
+      "position": [
+        40,
+        200
+      ],
+      "preview": false
+    },
+    {
+      "id": "n2",
+      "type": "IntegerSlider",
+      "params": {
+        "value": 2,
+        "_ui": {
+          "value": {
+            "min": 0,
+            "max": 5,
+            "step": 1
+          }
+        }
+      },
+      "position": [
+        40,
+        330
+      ],
+      "preview": false
+    },
+    {
+      "id": "n3",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE NETWORK, AS AN OBJECT. Not a diagram of one \u2014 the thing itself, with one cylinder\n# per weight and one sphere per neuron. Every number the network has ever learned is a\n# piece of geometry you can look at, and the parameter count stops being an abstraction:\n# it is how much stuff is on the screen.\nn_in = 4      #@param int min=1 max=10\nwidth = 8     #@param int min=2 max=16\ndepth = 2     #@param int min=0 max=5\nn_out = 3     #@param int min=1 max=8\nprune = 0.0   #@param float min=0 max=2 step=0.02\nseed = 3      #@param int min=1 max=999\nmax_wires = 1400  #@param int min=200 max=4000\nrng = random.Random(int(seed))\nlayers = [int(n_in)] + [int(width)] * int(depth) + [int(n_out)]\nDX, DZ, R = 40.0, 11.0, 2.6                 # layer pitch, neuron pitch, neuron radius\nX0 = -DX * (len(layers) - 1) / 2\npos = [[Vector(X0 + li * DX, 0.0, (i - (n - 1) / 2) * DZ)\n        for i in range(n)] for li, n in enumerate(layers)]\n\n# The weights. A real network learns them; here they come out of a random generator,\n# because the SHAPE of the object does not depend on their values \u2014 only on how many\n# there are. That is the point being made.\nparams = sum(a * b + b for a, b in zip(layers, layers[1:]))   # weights + one bias each\nwires, dropped = [], 0\nfor li in range(len(layers) - 1):\n    for i in range(layers[li]):\n        for j in range(layers[li + 1]):\n            w = rng.gauss(0, 0.6)\n            if abs(w) < float(prune):        # pruning: the small weights simply go\n                dropped += 1\n                continue\n            if len(wires) >= int(max_wires):\n                dropped += 1\n                continue\n            a, b = pos[li][i], pos[li + 1][j]\n            wires.append({\"a\": a, \"b\": b, \"w\": w})\ncapped = len(wires) >= int(max_wires)\nresult = {\"layers\": layers, \"pos\": pos, \"wires\": wires, \"params\": params, \"R\": R,\n          \"dropped\": dropped, \"prune\": float(prune), \"capped\": capped,\n          \"total_w\": sum(a * b for a, b in zip(layers, layers[1:]))}\n"
+      },
+      "position": [
+        330,
+        190
+      ],
+      "preview": false
+    },
+    {
+      "id": "n4",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE POSITIVE WEIGHTS \u2014 the connections that say \"yes, more of this\". A cylinder laid\n# along the line between two neurons, its radius set by |w|: a fat tube is a weight that\n# matters, a thread is one that barely does. There is no node for \"cylinder from A to B\",\n# so this is a Plane placed on the midpoint with its z_dir along the wire \u2014 the same\n# trick a CAD kernel uses to sweep anything anywhere.\nscale = 1.5   #@param float min=0.3 max=4 step=0.1\nout = []\nfor wr in in_0[\"wires\"]:\n    if wr[\"w\"] <= 0:\n        continue\n    a, b = wr[\"a\"], wr[\"b\"]\n    d = b - a\n    L = d.length\n    r = max(abs(wr[\"w\"]) * float(scale) * 0.36, 0.08)\n    out.append(Plane(origin=(a + b) * 0.5, z_dir=d) * Cylinder(r, L))\nresult = out\n"
+      },
+      "position": [
+        700,
+        90
+      ],
+      "preview": true
+    },
+    {
+      "id": "n5",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE NEGATIVE WEIGHTS \u2014 \"no, less of this\". Exactly the same geometry; only the sign of\n# the number differs, and a network needs both or it could only ever add.\nscale = 1.5   #@param float min=0.3 max=4 step=0.1\nout = []\nfor wr in in_0[\"wires\"]:\n    if wr[\"w\"] > 0:\n        continue\n    a, b = wr[\"a\"], wr[\"b\"]\n    d = b - a\n    L = d.length\n    r = max(abs(wr[\"w\"]) * float(scale) * 0.36, 0.08)\n    out.append(Plane(origin=(a + b) * 0.5, z_dir=d) * Cylinder(r, L))\nresult = out\n"
+      },
+      "position": [
+        700,
+        260
+      ],
+      "preview": true
+    },
+    {
+      "id": "n6",
+      "type": "CodeBlock",
+      "params": {
+        "code": "D = in_0\nresult = [p for layer in D[\"pos\"] for p in layer]\n"
+      },
+      "position": [
+        700,
+        430
+      ],
+      "preview": false
+    },
+    {
+      "id": "n7",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        950,
+        430
+      ],
+      "preview": false
+    },
+    {
+      "id": "n8",
+      "type": "Sphere",
+      "params": {
+        "radius": 2.6,
+        "arc": 360
+      },
+      "position": [
+        1120,
+        430
+      ],
+      "preview": true
+    },
+    {
+      "id": "n9",
+      "type": "CodeBlock",
+      "params": {
+        "code": "D = in_0\nkept = len(D[\"wires\"])\narch_s = \" x \".join(str(n) for n in D[\"layers\"])\nlines = [f\"architecture: {arch_s}\",\n         f\"parameters: {D['params']:,}   ({D['total_w']:,} weights + \"\n         f\"{D['params'] - D['total_w']:,} biases)\",\n         f\"wires drawn: {kept:,}\"]\nif D[\"prune\"] > 0:\n    pct = 100.0 * D[\"dropped\"] / max(D[\"total_w\"], 1)\n    lines.append(f\"pruned at |w| < {D['prune']:.2f}: {D['dropped']:,} weights gone \"\n                 f\"({pct:.0f}%) \u2014 and the shape of the thing survives\")\nif D[\"capped\"]:\n    lines.append(\"TRUNCATED: hit max_wires. Geometry is not free \u2014 raise the cap \"\n                 \"or shrink the net.\")\nresult = \"\\n\".join(lines)\n"
+      },
+      "position": [
+        700,
+        600
+      ],
+      "preview": false
+    },
+    {
+      "id": "n10",
+      "type": "Display",
+      "params": {},
+      "position": [
+        1000,
+        600
+      ],
+      "preview": false
+    },
+    {
+      "id": "n11",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# The numbers, standing at the back. Last on purpose: it is the node that always exists,\n# and __result__ is the last GEOMETRY node \u2014 prune hard enough and a wire row goes empty.\nsize = 3.4  #@param float min=2 max=10 step=0.2\nD = in_0\nL = D[\"layers\"]\nX0 = -40.0 * (len(L) - 1) / 2\ntop = max(L) * 11.0 / 2 + 14\ndef _up(s, x, z, fs):\n    return extrude(Pos(x, 16, z) * (Plane.XZ * Text(s, font_size=fs)), amount=0.6)\nout = [_up(\"A NEURAL NETWORK, AS AN OBJECT\", 0, top + 20, size * 1.8),\n       _up(f\"{' x '.join(str(n) for n in L)}   ->   {D['params']:,} parameters\",\n           0, top + 10, size * 1.3)]\nfor li, n in enumerate(L):\n    name = \"input\" if li == 0 else (\"output\" if li == len(L) - 1 else f\"hidden {li}\")\n    out.append(_up(f\"{name} ({n})\", X0 + li * 40.0, -top + 4, size * 0.85))\nif D[\"capped\"]:\n    out.append(_up(\"TRUNCATED at max_wires\", 0, top + 1, size))\nresult = out\n"
+      },
+      "position": [
+        1400,
+        300
+      ],
+      "preview": true
+    },
+    {
+      "id": "n12",
+      "type": "Note",
+      "params": {
+        "text": "WHAT \"175 BILLION PARAMETERS\" ACTUALLY LOOKS LIKE.\n\nOne sphere per neuron, one cylinder per weight, radius proportional to |w|. Nothing here is a diagram of a network \u2014 it IS the network, every learned number given a body. The blue tubes are the positive weights (\"more of this\"), the others the negative ones (\"less\"). A network needs both, or it could only ever add things up.\n\nTRY THIS \u2014 drag `width` from 8 to 16.\nThe neurons you added: 8. The wires you added: hundreds. Weights between two layers are the PRODUCT of their sizes, so doubling a layer quadruples what sits between it and the next one. The parameter count is right there in the label, and so is the reason it explodes: it is an area, not a length. `depth` adds layers, and each new one costs another width x width slab of tubes.\n\nThen drag `prune` up to about 0.4.\nMost of the tubes vanish, and the object still looks like itself \u2014 the thick ones, the ones that were carrying the signal, are almost all still there. That is not a trick of the drawing: a trained network really is mostly near-zero weights, and you can throw away 90% of them and keep most of the accuracy. Every quantized, pruned, \"distilled\" model you have ever run on a laptop is this picture with the threads deleted.\n\nThe weights here come out of a random generator, because the SHAPE does not depend on what they are \u2014 only on how MANY there are. Training moves the numbers; it does not move the geometry.\n\n`max_wires` caps the tube count and the label says so when it bites: 16 x 16 x 5 layers is over a thousand solids, and the kernel meshes every one of them."
+      },
+      "position": [
+        1400,
+        620
+      ],
+      "preview": false
+    }
+  ],
+  "connections": [
+    {
+      "id": "l1",
+      "from_node": "n1",
+      "from_socket": "result",
+      "to_node": "n3",
+      "to_socket": "width"
+    },
+    {
+      "id": "l2",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n3",
+      "to_socket": "depth"
+    },
+    {
+      "id": "l3",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n4",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l4",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n5",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l5",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n6",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l6",
+      "from_node": "n6",
+      "from_socket": "result",
+      "to_node": "n7",
+      "to_socket": "items"
+    },
+    {
+      "id": "l7",
+      "from_node": "n7",
+      "from_socket": "result",
+      "to_node": "n8",
+      "to_socket": "origin"
+    },
+    {
+      "id": "l8",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n9",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l9",
+      "from_node": "n9",
+      "from_socket": "result",
+      "to_node": "n10",
+      "to_socket": "value"
+    },
+    {
+      "id": "l10",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n11",
+      "to_socket": "in_0"
+    }
+  ],
+  "groups": [
+    {
+      "title": "1 - ARCHITECTURE",
+      "bounding": [
+        10,
+        140,
+        260,
+        340
+      ],
+      "color": "#3f589e"
+    },
+    {
+      "title": "2 - THE NET",
+      "bounding": [
+        300,
+        130,
+        350,
+        460
+      ],
+      "color": "#8a5a2c"
+    },
+    {
+      "title": "3 - WEIGHTS AND NEURONS, AS SOLIDS",
+      "bounding": [
+        670,
+        20,
+        640,
+        720
+      ],
+      "color": "#2c7a52"
+    }
+  ]
+}

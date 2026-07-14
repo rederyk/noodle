@@ -15,6 +15,8 @@ this project's source.
 | build123d | high-level modelling API | Apache-2.0 |
 | NumPy | numerics in the worker | BSD-3-Clause |
 | SciPy | spatial helpers (Voronoi, etc.) in the worker | BSD-3-Clause |
+| trimesh | the mesh lane — triangle I/O, repair, transforms (PLAN_MESH_LANE.md) | MIT |
+| manifold3d | the mesh lane — booleans + tolerance-bounded simplify | Apache-2.0 |
 | FastAPI | HTTP API framework | MIT |
 | Starlette | ASGI toolkit (FastAPI dependency) | BSD-3-Clause |
 | Uvicorn | ASGI server | BSD-3-Clause |
