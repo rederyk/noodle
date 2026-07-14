@@ -41,6 +41,9 @@ the canvas side.
 | a reduction (sum, product) | there is no Sum node: `ListItem` ×N + an `Add` chain — which is also the clearest way to *show* a summation. `Bounds` + `ListLast` gives max |
 | the position/size of a shape from data | `ConstructPoint` → `origin`; the value → the matching `_pin` socket (`Box.depth`, `Sphere.radius`) |
 | a draggable point in the 3D view | `ConstructPoint` carries a translate gizmo — the user drags the input *in the viewport* |
+| serious numerics (least squares, SVD…) | `import numpy as np` **inside** the CodeBlock body — numpy/scipy are in the worker; the PREAMBLE just doesn't import them for you |
+| a tube from point A to point B | there is no such node (`Cylinder` has an origin, not a direction): `Plane(origin=(a + b) * 0.5, z_dir=b - a) * Cylinder(r, (b - a).length)` |
+| two colours in one figure | colour is **per node**, so split the geometry into two nodes (kept bars / cut bars, positive weights / negative weights) — that is the only lever there is |
 
 ### Gotchas paid for already
 
@@ -73,6 +76,19 @@ the canvas side.
 - Geometry is not free: one `Box` fanned into ~500 cubes costs ~2 s, and an L-system
   breeds branches exponentially (8 per pass). Cap the count in the CodeBlock and *say
   so* on the node — a silent truncation reads as a wrong answer.
+- **Put two quantities on ONE scale and the figure argues for itself.** The probabilities
+  and their running total both live in [0,1], so drawing the staircase in the *same*
+  vertical scale as the bars (just in front of them, not in another row) turns the "line
+  at p" into a real intersection — the wall lands exactly where the staircase crossed it.
+  Two rows with two scales would have been the same numbers and no argument.
+- **Too many cycles in one frame is a hairball.** The aliasing scene opened at 2 s ×
+  7 Hz = 14 wiggles and read as noise; at 1 s it reads as a wave. Same for a
+  default that is *technically* the point but visually empty (the nucleus example first
+  opened on the prompt where the answer is certain — one bar, nothing to see). **Pick the
+  default that teaches**, and let the slider reach the extremes.
+- **Clip a wild function, and say that you clipped it** — a degree-12 polynomial reaches
+  10⁵ where the chart is 6 units tall. Clamp the drawn z and put "clipped" in the Note;
+  the printed error number carries the truth the geometry can't.
 - **Composition is part of the lesson.** An arrow drawn along a cube's edge is
   invisible inside the solid (draw it ~1.35× long so it pokes out, and look at the
   origin corner); a flat scene (epicycles, k-means) is read from above, so its
@@ -136,11 +152,31 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` planned.
   collapses and only its rim survives. Some answer columns hang *below* the plane: the
   sign says which side is brighter. It is what a vision network's first layer does —
   the network merely *learns* the nine numbers. 22 nodes.
-- [ ] **Overfitting** — noisy points and a degree-`d` polynomial fit; raise `d` and
-  watch the curve contort to touch every point.
-- [ ] **A network as an object** — neurons as spheres, weights as cylinders with
-  radius ∝ |w|. `Range` → fan-out builds the layers; the parameter count becomes
-  visible mass.
+- [x] **Nucleus sampling (top-p)** — `examples/nucleus-sampling.json`. The sequel to
+  `softmax`, and the thing that actually happens at the end of every LLM forward pass:
+  the probabilities are not an answer, someone still has to *choose*. The sorted bars,
+  the cumulative staircase **in the same vertical scale** so the line at `p` is a real
+  intersection, the wall where it crossed, the tail beyond it, and the pie of what
+  survives (renormalised, so it is exactly full again). The payoff is one drag: leave
+  `p` at 0.9 and change `context`. "The capital of France is ___" → the nucleus is ONE
+  word. "She opened the door and saw ___" → it swells to most of the vocabulary. Same p,
+  same algorithm; the cut moved because the model's confidence moved. Top-k (mode 1)
+  cannot do that, and fails at both ends. 23 nodes.
+- [x] **Overfitting** — `examples/overfitting.json`. A degree-`d` polynomial through
+  noisy points, plus 40 **held-out** points it never sees. Two bars: the error on what it
+  was shown falls forever (it must — that is what fitting means), the error on what it
+  was not shown bottoms out around d=5 and then climbs. That U is the bias–variance
+  trade-off, and the left bar can never tell you where its bottom is. At `d = n-1` the
+  curve passes through every training point, scores **exactly zero**, and has learned
+  nothing but the noise. Then `ridge` = 0.02 tames the monster *without removing a single
+  coefficient* — and beats every unregularised fit. 20 nodes.
+- [x] **A network as an object** — `examples/neural-network.json`. One sphere per neuron,
+  one cylinder per weight, radius ∝ |w|, positive and negative in two colours (two nodes:
+  colour is per-node). Drag `width` 8→16: you added 8 neurons and *hundreds* of wires —
+  weights between two layers are a **product**, so the parameter count is an area, not a
+  length. Then drag `prune` to 0.4: most of the tubes vanish and the object still looks
+  like itself, because a trained net really is mostly near-zero weights. That is every
+  pruned/quantised model you have ever run on a laptop. 12 nodes.
 
 ### Statistics & numerics
 
@@ -159,8 +195,14 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` planned.
   at the same n: a smarter place to look beats a bigger n, which is the whole of
   numerical analysis. Even the "exact" value is a staircase, just a very fine one.
   15 nodes.
-- [ ] **Sampling & aliasing** — a sine and its samples; below Nyquist the ghost wave
-  appears.
+- [x] **Sampling & aliasing** — `examples/aliasing.json`. A sine, a clock that looks at
+  it `fs` times a second, and the **ghost**: the slowest wave through every sample. It
+  agrees with the evidence *exactly*, not approximately, so nothing downstream can prefer
+  the true one — that is the entire problem, in one picture. Below `fs/2` the ghost takes
+  the shape of the original (the sampling theorem, as a congruence you can see); above it,
+  7 Hz arrives as a calm, innocent 3 Hz. At `f = fs` every sample catches the same phase
+  and the machine records a **flat line** while the wave is still out there. Wagon wheels,
+  moiré, and the analogue filter welded in front of every ADC. 20 nodes.
 
 ### Algorithms & geometry
 

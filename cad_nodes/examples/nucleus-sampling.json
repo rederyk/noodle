@@ -1,0 +1,480 @@
+{
+  "name": "nucleus-sampling",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "IntegerSlider",
+      "params": {
+        "value": 1,
+        "_ui": {
+          "value": {
+            "min": 0,
+            "max": 2,
+            "step": 1
+          }
+        }
+      },
+      "position": [
+        40,
+        200
+      ],
+      "preview": false
+    },
+    {
+      "id": "n2",
+      "type": "IntegerSlider",
+      "params": {
+        "value": 0,
+        "_ui": {
+          "value": {
+            "min": 0,
+            "max": 2,
+            "step": 1
+          }
+        }
+      },
+      "position": [
+        40,
+        330
+      ],
+      "preview": false
+    },
+    {
+      "id": "n3",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE MODEL'S GUESS. A language model never picks a word. It hands you a SCORE for\n# every word it knows, and someone else has to choose. Softmax turns the scores into\n# probabilities (that is the `softmax` example next door); the choosing is this one.\ncontext = 1        #@param int min=0 max=2\ntemperature = 1.0  #@param float min=0.1 max=2.5 step=0.05\nPROMPTS = [\n    (\"The capital of France is ___\", [\n        (\"Paris\", 9.6), (\"the\", 3.2), (\"a\", 3.0), (\"Lyon\", 2.7), (\"located\", 2.5),\n        (\"home\", 2.3), (\"famous\", 2.1), (\"Marseille\", 1.9), (\"known\", 1.7),\n        (\"one\", 1.5), (\"still\", 1.3), (\"also\", 1.1)]),\n    (\"I opened the fridge and took out a ___\", [\n        (\"beer\", 5.2), (\"bottle\", 5.0), (\"carton\", 4.6), (\"slice\", 4.3), (\"jar\", 4.1),\n        (\"cold\", 3.8), (\"piece\", 3.6), (\"tomato\", 3.3), (\"bag\", 3.1), (\"lemon\", 2.8),\n        (\"spoon\", 2.4), (\"brick\", 1.2)]),\n    (\"She opened the door and saw ___\", [\n        (\"a\", 4.4), (\"the\", 4.3), (\"him\", 4.2), (\"her\", 4.1), (\"nothing\", 4.0),\n        (\"what\", 3.9), (\"it\", 3.8), (\"two\", 3.7), (\"someone\", 3.6), (\"that\", 3.5),\n        (\"no\", 3.4), (\"three\", 3.3)]),\n]\nprompt, vocab = PROMPTS[int(context)]\nT = max(float(temperature), 1e-3)\nm = max(s for _, s in vocab)\nw = [math.exp((s - m) / T) for _, s in vocab]       # the usual shift, so exp never overflows\nZ = sum(w)\npairs = sorted(zip([t for t, _ in vocab], [x / Z for x in w]),\n               key=lambda tp: -tp[1])               # sorted: the tail must BE a tail\ntokens = [t for t, _ in pairs]\nprobs = [p for _, p in pairs]\nent = -sum(p * math.log(p + 1e-12) for p in probs)  # how unsure the model is, in nats\nresult = {\"prompt\": prompt, \"tokens\": tokens, \"probs\": probs, \"T\": T, \"ent\": ent,\n          \"W\": 116.0, \"H\": 34.0, \"Y\": -7.5}\n"
+      },
+      "position": [
+        330,
+        190
+      ],
+      "preview": false
+    },
+    {
+      "id": "n4",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE CUT. Sampling from the FULL distribution means that once in a while you draw the\n# word with probability 0.001 \u2014 and one absurd word derails the whole paragraph. So you\n# cut the tail off first. The question is where.\n#\n# mode 0 = TOP-P (nucleus): walk down the sorted list adding up probability, and stop\n#          the moment you have `p` of it. How many words that takes is not decided by\n#          you \u2014 it is decided by how sure the model is. THAT is the whole idea.\n# mode 1 = TOP-K: always keep exactly k words, however sure or unsure the model is.\n# mode 2 = no cut at all: the tail stays, and sooner or later you sample from it.\np = 0.90   #@param float min=0.05 max=1 step=0.01\nk = 5      #@param int min=1 max=12\nmode = 0   #@param int min=0 max=2\nD = in_0\nprobs = D[\"probs\"]\ncum, c = [], 0.0\nfor pr in probs:\n    c += pr\n    cum.append(c)\nif int(mode) == 0:\n    nstar = next((i + 1 for i, cc in enumerate(cum) if cc >= float(p)), len(probs))\nelif int(mode) == 1:\n    nstar = min(int(k), len(probs))\nelse:\n    nstar = len(probs)\nmass = cum[nstar - 1]\nrenorm = [pr / mass for pr in probs[:nstar]]        # the kept words, made a full pie again\nresult = dict(D, cum=cum, nstar=nstar, mass=mass, renorm=renorm,\n              p=float(p), k=int(k), mode=int(mode))\n"
+      },
+      "position": [
+        620,
+        190
+      ],
+      "preview": false
+    },
+    {
+      "id": "n5",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE TAIL \u2014 the words the cut throws away. Same height as they always had: they are\n# not less likely than they were a moment ago. They are simply no longer allowed.\nD = in_0\nresult = [max(pr * D[\"H\"], 0.25) for pr in D[\"probs\"][D[\"nstar\"]:]]\n"
+      },
+      "position": [
+        930,
+        330
+      ],
+      "preview": false
+    },
+    {
+      "id": "n6",
+      "type": "CodeBlock",
+      "params": {
+        "code": "D = in_0\nW, H, ns = D[\"W\"], D[\"H\"], D[\"nstar\"]\ncell = W / len(D[\"probs\"])\nresult = [Vector(-W / 2 + (ns + i + 0.5) * cell, 0, max(pr * H, 0.25) / 2)\n          for i, pr in enumerate(D[\"probs\"][ns:])]\n"
+      },
+      "position": [
+        930,
+        460
+      ],
+      "preview": false
+    },
+    {
+      "id": "n7",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        1180,
+        330
+      ],
+      "preview": false
+    },
+    {
+      "id": "n8",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        1180,
+        460
+      ],
+      "preview": false
+    },
+    {
+      "id": "n9",
+      "type": "Box",
+      "params": {
+        "width": 2.6,
+        "height": 2.6,
+        "depth": 10
+      },
+      "position": [
+        1350,
+        330
+      ],
+      "preview": true
+    },
+    {
+      "id": "n10",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# the kept bars. 0.25 is a floor, not decoration: a bar of height 0 is a degenerate\n# solid, and since the Box node fans out, that one error would kill the whole row.\nD = in_0\nresult = [max(pr * D[\"H\"], 0.25) for pr in D[\"probs\"][:D[\"nstar\"]]]\n"
+      },
+      "position": [
+        930,
+        60
+      ],
+      "preview": false
+    },
+    {
+      "id": "n11",
+      "type": "CodeBlock",
+      "params": {
+        "code": "D = in_0\nW, H = D[\"W\"], D[\"H\"]\ncell = W / len(D[\"probs\"])\nresult = [Vector(-W / 2 + (i + 0.5) * cell, 0, max(pr * H, 0.25) / 2)\n          for i, pr in enumerate(D[\"probs\"][:D[\"nstar\"]])]\n"
+      },
+      "position": [
+        930,
+        190
+      ],
+      "preview": false
+    },
+    {
+      "id": "n12",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        1180,
+        60
+      ],
+      "preview": false
+    },
+    {
+      "id": "n13",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        1180,
+        190
+      ],
+      "preview": false
+    },
+    {
+      "id": "n14",
+      "type": "Box",
+      "params": {
+        "width": 7.4,
+        "height": 8.0,
+        "depth": 10
+      },
+      "position": [
+        1350,
+        60
+      ],
+      "preview": true
+    },
+    {
+      "id": "n15",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE STAIRCASE: probability, added up left to right. It ends at exactly 1 \u2014 it has to.\n# Top-p reads this curve and nothing else: climb until you are at height p, then stop.\nD = in_0\nW, H, Y = D[\"W\"], D[\"H\"], D[\"Y\"]\ncell = W / len(D[\"probs\"])\npts = [Vector(-W / 2, Y, 0.3)]\nfor i, cc in enumerate(D[\"cum\"]):\n    x0 = -W / 2 + i * cell\n    pts.append(Vector(x0, Y, cc * H + 0.3))\n    pts.append(Vector(x0 + cell, Y, cc * H + 0.3))\nresult = pts\n"
+      },
+      "position": [
+        930,
+        600
+      ],
+      "preview": false
+    },
+    {
+      "id": "n16",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        1180,
+        600
+      ],
+      "preview": false
+    },
+    {
+      "id": "n17",
+      "type": "Polyline",
+      "params": {},
+      "position": [
+        1350,
+        600
+      ],
+      "preview": true
+    },
+    {
+      "id": "n18",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE LINE AT p, and THE WALL. The slab is the height p on the staircase; the wall is\n# where the staircase crossed it. Everything to the right of the wall is gone.\nD = in_0\nW, H, Y, ns = D[\"W\"], D[\"H\"], D[\"Y\"], D[\"nstar\"]\ncell = W / len(D[\"probs\"])\nout = []\nif D[\"mode\"] == 0:                       # only top-p has a height to cut at\n    out.append(Pos(0, Y, D[\"p\"] * H) * Box(W + 10, 1.2, 0.6))\nxw = -W / 2 + ns * cell\nout.append(Pos(xw, -3, H * 0.5) * Box(0.7, 15, H))\nresult = out\n"
+      },
+      "position": [
+        1350,
+        740
+      ],
+      "preview": true
+    },
+    {
+      "id": "n19",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# WHAT YOU ACTUALLY SAMPLE FROM. The kept words are divided by the mass they hold, so\n# they add up to 1 again: the pie is exactly full whatever you cut. The probability the\n# tail was holding did not evaporate \u2014 it was handed to the survivors.\nradius = 15.0     #@param float min=5 max=40 step=0.5\nthickness = 3.0   #@param float min=1 max=10 step=0.5\nexplode = 1.6     #@param float min=0 max=8 step=0.5\nD = in_0\nout, a0 = [], 0.0\nfor pr in D[\"renorm\"]:\n    sweep = min(max(360 * pr, 0.4), 359.4)      # 0 and 360 are both degenerate arcs\n    arc = CenterArc((0, 0), radius, a0, sweep)\n    face = make_face(Wire([Line((0, 0), arc @ 0).edge(), arc.edge(),\n                           Line(arc @ 1, (0, 0)).edge()]))\n    mid = math.radians(a0 + sweep / 2)\n    out.append(Pos(explode * math.cos(mid), -46 + explode * math.sin(mid), 0)\n               * extrude(face, amount=thickness))\n    a0 += sweep\nresult = out\n"
+      },
+      "position": [
+        1350,
+        880
+      ],
+      "preview": true
+    },
+    {
+      "id": "n20",
+      "type": "CodeBlock",
+      "params": {
+        "code": "D = in_0\nnames = {0: \"top-p (nucleus)\", 1: \"top-k\", 2: \"no cut\"}\nkept = \", \".join(D[\"tokens\"][:D[\"nstar\"]][:6]) + (\"...\" if D[\"nstar\"] > 6 else \"\")\nresult = (f\"{names[D['mode']]}  ->  {D['nstar']} of {len(D['probs'])} words kept, \"\n          f\"holding {D['mass']*100:.1f}% of the probability\\n\"\n          f\"kept: {kept}\\n\"\n          f\"the model's uncertainty (entropy): {D['ent']:.2f} nats  |  T = {D['T']:.2f}\")\n"
+      },
+      "position": [
+        620,
+        470
+      ],
+      "preview": false
+    },
+    {
+      "id": "n21",
+      "type": "Display",
+      "params": {},
+      "position": [
+        900,
+        780
+      ],
+      "preview": false
+    },
+    {
+      "id": "n22",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# The words themselves, lying flat under their bars, and the numbers standing up at the\n# back. This node is last on purpose: it always produces something, and __result__ is\n# the last GEOMETRY node \u2014 the tail can legitimately be empty (p = 1 keeps everything).\nsize = 3.6  #@param float min=2 max=10 step=0.2\nD = in_0\nW, H, Y, ns = D[\"W\"], D[\"H\"], D[\"Y\"], D[\"nstar\"]\ncell = W / len(D[\"probs\"])\ndef _flat(s, x, y, fs):\n    return extrude(Pos(x, y, 0) * Text(s, font_size=fs), amount=0.6)\ndef _up(s, x, z, fs):\n    return extrude(Pos(x, 18, z) * (Plane.XZ * Text(s, font_size=fs)), amount=0.6)\nout = [_up(\"NUCLEUS SAMPLING\", 0, H + 26, size * 1.7),\n       _up(D[\"prompt\"], 0, H + 15, size * 1.1),\n       _up(f\"kept {ns} of {len(D['probs'])}  ({D['mass']*100:.0f}% of the probability)\",\n           0, H + 6, size * 1.1),\n       _flat(\"thrown away\", (-W / 2 + ns * cell + W / 2) / 2 + 3, 22, size * 0.9),\n       _flat(\"cumulative probability, and the line at p\", 0, -19, size * 0.95),\n       _flat(\"what you sample from\", 0, -68, size * 0.95)]\nfor i, t in enumerate(D[\"tokens\"]):\n    out.append(_flat(t, -W / 2 + (i + 0.5) * cell, 13, size * 0.8))\nresult = out\n"
+      },
+      "position": [
+        1650,
+        400
+      ],
+      "preview": true
+    },
+    {
+      "id": "n23",
+      "type": "Note",
+      "params": {
+        "text": "HOW A LANGUAGE MODEL CHOOSES THE NEXT WORD.\n\nThe model hands you a probability for every word it knows (that is `softmax`). Now someone must PICK one. Always take the biggest? The text turns into a machine repeating itself. Sample from the whole list? Sooner or later you draw a word with probability 0.001, and one absurd word wrecks the paragraph. So you cut the tail off first \u2014 and the interesting question is where to cut.\n\nTOP-K cuts at a fixed count: always k words. TOP-P (nucleus) cuts at a fixed amount of PROBABILITY: walk down the sorted bars, add them up, stop when you have p of the total. How many words that turns out to be is not your decision \u2014 it is the model's.\n\nTRY THIS \u2014 leave p at 0.9 and drag `context`:\n0 \"The capital of France is ___\" \u2014 the model is certain. The nucleus is ONE word. Paris. Everything else is tail.\n2 \"She opened the door and saw ___\" \u2014 the model has no idea, and it is right not to. The nucleus swells to almost the whole vocabulary, because no small handful of words holds 90% of the answer.\nSame p. Same algorithm. The cut moved on its own, because the model's confidence moved. That is what top-k cannot do: k=5 lets four bad words in on the first prompt, and chokes off good ones on the third. Switch `mode` to 1 and watch it fail at both ends.\n\n`temperature` reshapes the bars before the cut (low = greedy and sure, high = flat and reckless), and the nucleus reacts to that too.\n\nThe pie is what you actually roll the dice on: the survivors, divided by the mass they hold, so they add to 1 again. The probability the tail was carrying did not evaporate \u2014 it was handed to the words that stayed."
+      },
+      "position": [
+        2010,
+        120
+      ],
+      "preview": false
+    }
+  ],
+  "connections": [
+    {
+      "id": "l1",
+      "from_node": "n1",
+      "from_socket": "result",
+      "to_node": "n3",
+      "to_socket": "context"
+    },
+    {
+      "id": "l2",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n4",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l3",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n4",
+      "to_socket": "mode"
+    },
+    {
+      "id": "l4",
+      "from_node": "n4",
+      "from_socket": "result",
+      "to_node": "n5",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l5",
+      "from_node": "n4",
+      "from_socket": "result",
+      "to_node": "n6",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l6",
+      "from_node": "n5",
+      "from_socket": "result",
+      "to_node": "n7",
+      "to_socket": "items"
+    },
+    {
+      "id": "l7",
+      "from_node": "n6",
+      "from_socket": "result",
+      "to_node": "n8",
+      "to_socket": "items"
+    },
+    {
+      "id": "l8",
+      "from_node": "n7",
+      "from_socket": "result",
+      "to_node": "n9",
+      "to_socket": "depth"
+    },
+    {
+      "id": "l9",
+      "from_node": "n8",
+      "from_socket": "result",
+      "to_node": "n9",
+      "to_socket": "origin"
+    },
+    {
+      "id": "l10",
+      "from_node": "n4",
+      "from_socket": "result",
+      "to_node": "n10",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l11",
+      "from_node": "n4",
+      "from_socket": "result",
+      "to_node": "n11",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l12",
+      "from_node": "n10",
+      "from_socket": "result",
+      "to_node": "n12",
+      "to_socket": "items"
+    },
+    {
+      "id": "l13",
+      "from_node": "n11",
+      "from_socket": "result",
+      "to_node": "n13",
+      "to_socket": "items"
+    },
+    {
+      "id": "l14",
+      "from_node": "n12",
+      "from_socket": "result",
+      "to_node": "n14",
+      "to_socket": "depth"
+    },
+    {
+      "id": "l15",
+      "from_node": "n13",
+      "from_socket": "result",
+      "to_node": "n14",
+      "to_socket": "origin"
+    },
+    {
+      "id": "l16",
+      "from_node": "n4",
+      "from_socket": "result",
+      "to_node": "n15",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l17",
+      "from_node": "n15",
+      "from_socket": "result",
+      "to_node": "n16",
+      "to_socket": "items"
+    },
+    {
+      "id": "l18",
+      "from_node": "n16",
+      "from_socket": "result",
+      "to_node": "n17",
+      "to_socket": "points"
+    },
+    {
+      "id": "l19",
+      "from_node": "n4",
+      "from_socket": "result",
+      "to_node": "n18",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l20",
+      "from_node": "n4",
+      "from_socket": "result",
+      "to_node": "n19",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l21",
+      "from_node": "n4",
+      "from_socket": "result",
+      "to_node": "n20",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l22",
+      "from_node": "n20",
+      "from_socket": "result",
+      "to_node": "n21",
+      "to_socket": "value"
+    },
+    {
+      "id": "l23",
+      "from_node": "n4",
+      "from_socket": "result",
+      "to_node": "n22",
+      "to_socket": "in_0"
+    }
+  ],
+  "groups": [
+    {
+      "title": "1 - THE PROMPT",
+      "bounding": [
+        10,
+        140,
+        260,
+        340
+      ],
+      "color": "#3f589e"
+    },
+    {
+      "title": "2 - SOFTMAX, THEN THE CUT",
+      "bounding": [
+        300,
+        130,
+        580,
+        460
+      ],
+      "color": "#8a5a2c"
+    },
+    {
+      "title": "3 - BARS, STAIRCASE, PIE",
+      "bounding": [
+        900,
+        10,
+        1080,
+        1010
+      ],
+      "color": "#2c7a52"
+    }
+  ]
+}

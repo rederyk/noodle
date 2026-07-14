@@ -121,6 +121,30 @@ _EXAMPLE_DESCRIPTIONS = {
                       "mean of its points, repeat. Drag `iterations` from 0 and watch "
                       "them migrate. The catalog's Voronoi2D on the centroids gives "
                       "the decision regions for free.",
+    "nucleus-sampling": "How a language model picks the next word — softmax gives the "
+                        "probabilities, but someone still has to CHOOSE. Top-p walks "
+                        "down the sorted bars adding up probability and stops at p, so "
+                        "the number of words it keeps is decided by the model's "
+                        "confidence, not by you: same p, one word after 'the capital of "
+                        "France is', a dozen after 'she opened the door and saw'. "
+                        "Top-k cannot do that.",
+    "neural-network": "What 'a billion parameters' actually looks like — one sphere per "
+                      "neuron, one cylinder per weight, radius proportional to |w|. "
+                      "Double a layer's width and the wires QUADRUPLE (weights are a "
+                      "product, not a sum). Then drag `prune` and watch most of them "
+                      "vanish while the object still looks like itself: a trained "
+                      "network is mostly near-zero weights, which is why pruning works.",
+    "aliasing": "The wave that was never there — a sine, and a clock that looks at it fs "
+                "times a second. The ghost is the slowest wave through every sample, and "
+                "it agrees with the evidence EXACTLY, so nothing downstream can tell them "
+                "apart. Below fs/2 the ghost IS the wave (that congruence is the sampling "
+                "theorem); above it, 7 Hz arrives as a calm, innocent 3 Hz.",
+    "overfitting": "It knows the answers and not the question — a degree-d polynomial "
+                   "through noisy points. The error on what it was SHOWN falls forever; "
+                   "the error on what it was NOT shown bottoms out around degree 5 and "
+                   "then climbs. At degree = n-1 the curve hits every training point "
+                   "exactly, scores zero, and has learned nothing but the noise. Ridge "
+                   "tames the monster without taking a single coefficient away.",
     "mesh-lane": "The mesh lane — a Box and a Sphere tessellate into triangles just "
                  "by touching a mesh input, get cut with a mesh boolean (manifold3d: "
                  "0.1s where the B-Rep kernel needs 81s), simplified within a bounded "

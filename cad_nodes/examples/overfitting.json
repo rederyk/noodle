@@ -1,0 +1,400 @@
+{
+  "name": "overfitting",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "IntegerSlider",
+      "params": {
+        "value": 3,
+        "_ui": {
+          "value": {
+            "min": 0,
+            "max": 14,
+            "step": 1
+          }
+        }
+      },
+      "position": [
+        40,
+        200
+      ],
+      "preview": false
+    },
+    {
+      "id": "n2",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE WORLD, AND WHAT YOU GET TO SEE OF IT. There is a true curve underneath (the smooth\n# one). You never see it. You see `n_train` points, each one nudged off it by noise you\n# cannot measure and must not believe. The whole of statistics is what you do next.\nn_train = 11   #@param int min=5 max=25\nnoise = 0.55   #@param float min=0 max=1.5 step=0.05\nseed = 12      #@param int min=1 max=999\nrng = random.Random(int(seed))\ndef truth(x):\n    return 1.7 * math.sin(1.05 * x) + 0.22 * x\nX0, X1 = -4.6, 4.6\n# a jittered grid, not pure chance: you did go and look right across the range. Two\n# training points landing on top of each other by luck would blow the fit up for a\n# reason that has nothing to teach anybody.\nstep = (X1 - X0) / int(n_train)\ntr = [X0 + (i + 0.5) * step + rng.uniform(-0.34, 0.34) * step for i in range(int(n_train))]\nte = sorted(rng.uniform(X0, X1) for _ in range(40))   # HELD OUT: the fit never sees these\ntrain = [(x, truth(x) + rng.gauss(0, float(noise))) for x in tr]\ntest = [(x, truth(x) + rng.gauss(0, float(noise))) for x in te]\nresult = {\"train\": train, \"test\": test, \"X0\": X0, \"X1\": X1,\n          \"SX\": 13.0, \"SZ\": 8.0, \"ZCAP\": 46.0}   # mm per unit x, mm per unit y, clip\n"
+      },
+      "position": [
+        330,
+        190
+      ],
+      "preview": false
+    },
+    {
+      "id": "n3",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE FIT. A polynomial of degree d, chosen to make the error on the TRAINING points as\n# small as possible \u2014 which is the only thing anyone can actually do, since the training\n# points are all you have.\n#\n# `ridge` adds a penalty for using big coefficients. It is not a hack: it is the machine\n# being told that a wild explanation should have to earn its wildness.\ndegree = 3     #@param int min=0 max=14\nridge = 0.0    #@param float min=0 max=1 step=0.01\nimport numpy as np\nD = in_0\nd = int(degree)\nxt = np.array([p[0] for p in D[\"train\"]]) / 4.6      # scaled: x**14 of a raw 4.6 is 10^9\nyt = np.array([p[1] for p in D[\"train\"]])\nA = np.vander(xt, d + 1)\nlam = float(ridge)\nW = np.linalg.solve(A.T @ A + lam * np.eye(d + 1), A.T @ yt) if lam > 0 \\\n    else np.linalg.lstsq(A, yt, rcond=None)[0]       # lstsq copes when d >= n\ndef poly(x):\n    return float(np.polyval(W, x / 4.6))\ndef rmse(pts):\n    return float(np.sqrt(np.mean([(poly(x) - y) ** 2 for x, y in pts])))\ne_train, e_test = rmse(D[\"train\"]), rmse(D[\"test\"])\nresult = dict(D, poly=poly, d=d, ridge=lam, e_train=e_train, e_test=e_test,\n              interp=(d >= len(D[\"train\"]) - 1 and lam == 0))\n"
+      },
+      "position": [
+        620,
+        190
+      ],
+      "preview": false
+    },
+    {
+      "id": "n4",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE TRUE CURVE \u2014 drawn here only because this is a demo. In real life this line does\n# not exist on the screen; it exists only in the world, and you are trying to guess it.\nD = in_0\nSX, SZ, X0, X1 = D[\"SX\"], D[\"SZ\"], D[\"X0\"], D[\"X1\"]\nresult = [Vector((X0 + (X1 - X0) * i / 240) * SX, 0,\n                 (1.7 * math.sin(1.05 * (X0 + (X1 - X0) * i / 240))\n                  + 0.22 * (X0 + (X1 - X0) * i / 240)) * SZ)\n          for i in range(241)]\n"
+      },
+      "position": [
+        930,
+        60
+      ],
+      "preview": false
+    },
+    {
+      "id": "n5",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        1180,
+        60
+      ],
+      "preview": false
+    },
+    {
+      "id": "n6",
+      "type": "Polyline",
+      "params": {},
+      "position": [
+        1350,
+        60
+      ],
+      "preview": true
+    },
+    {
+      "id": "n7",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE HELD-OUT POINTS. Same world, same noise, but the fit was never shown them. They are\n# the only honest question you can ask a model: not \"do you know this?\" but \"do you know\n# anything you were not told?\"\nD = in_0\nresult = [Vector(x * D[\"SX\"], 8, y * D[\"SZ\"]) for x, y in D[\"test\"]]\n"
+      },
+      "position": [
+        930,
+        200
+      ],
+      "preview": false
+    },
+    {
+      "id": "n8",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        1180,
+        200
+      ],
+      "preview": false
+    },
+    {
+      "id": "n9",
+      "type": "Sphere",
+      "params": {
+        "radius": 1.5,
+        "arc": 360
+      },
+      "position": [
+        1350,
+        200
+      ],
+      "preview": true
+    },
+    {
+      "id": "n10",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE FITTED CURVE, sampled densely enough to show what it does BETWEEN the points \u2014 which\n# is the whole crime. It is clipped at the top and bottom of the chart, because a degree-12\n# polynomial does not politely stay on the page.\nD = in_0\nSX, SZ, X0, X1, CAP = D[\"SX\"], D[\"SZ\"], D[\"X0\"], D[\"X1\"], D[\"ZCAP\"]\npoly = D[\"poly\"]\nout = []\nfor i in range(401):\n    x = X0 + (X1 - X0) * i / 400\n    z = max(min(poly(x) * SZ, CAP), -CAP)\n    out.append(Vector(x * SX, 0, z))\nresult = out\n"
+      },
+      "position": [
+        930,
+        340
+      ],
+      "preview": false
+    },
+    {
+      "id": "n11",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        1180,
+        340
+      ],
+      "preview": false
+    },
+    {
+      "id": "n12",
+      "type": "Polyline",
+      "params": {},
+      "position": [
+        1350,
+        340
+      ],
+      "preview": true
+    },
+    {
+      "id": "n13",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE TWO NUMBERS THAT MATTER, side by side. Left: the error on the points it was shown.\n# Right: the error on the points it was not. Only one of them is a promise about tomorrow.\nD = in_0\nS = 9.0\nout = []\nfor i, (e, x) in enumerate(((D[\"e_train\"], 84.0), (D[\"e_test\"], 100.0))):\n    h = max(min(e * S, 60.0), 0.25)            # clipped, or a blown-up test error leaves the room\n    out.append(Pos(x, 0, h / 2) * Box(9, 9, h))\nresult = out\n"
+      },
+      "position": [
+        930,
+        480
+      ],
+      "preview": true
+    },
+    {
+      "id": "n14",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE TRAINING POINTS: everything the fit is allowed to know. Push the degree up to\n# n_train - 1 and the curve will pass through every single one of them, exactly, with\n# zero error \u2014 and it will have learned nothing but the noise.\nD = in_0\nresult = [Vector(x * D[\"SX\"], 0, y * D[\"SZ\"]) for x, y in D[\"train\"]]\n"
+      },
+      "position": [
+        930,
+        620
+      ],
+      "preview": false
+    },
+    {
+      "id": "n15",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        1180,
+        620
+      ],
+      "preview": false
+    },
+    {
+      "id": "n16",
+      "type": "Sphere",
+      "params": {
+        "radius": 2.4,
+        "arc": 360
+      },
+      "position": [
+        1350,
+        620
+      ],
+      "preview": true
+    },
+    {
+      "id": "n17",
+      "type": "CodeBlock",
+      "params": {
+        "code": "D = in_0\nn = len(D[\"train\"])\nlines = [f\"degree {D['d']}  on  {n} training points\"\n         + (f\"   (ridge {D['ridge']:.2f})\" if D[\"ridge\"] > 0 else \"\"),\n         f\"error on what it was SHOWN:     {D['e_train']:.3f}\",\n         f\"error on what it was NOT shown: {D['e_test']:.3f}\"]\nif D[\"interp\"]:\n    lines.append(\"degree = n-1: the curve now passes through EVERY training point. \"\n                 \"Training error is zero. It has learned the noise.\")\nif D[\"e_test\"] > 2.2 * D[\"e_train\"] + 0.15:\n    lines.append(\"OVERFITTING: it knows the answers and not the question.\")\nresult = \"\\n\".join(lines)\n"
+      },
+      "position": [
+        620,
+        470
+      ],
+      "preview": false
+    },
+    {
+      "id": "n18",
+      "type": "Display",
+      "params": {},
+      "position": [
+        900,
+        780
+      ],
+      "preview": false
+    },
+    {
+      "id": "n19",
+      "type": "CodeBlock",
+      "params": {
+        "code": "size = 3.6  #@param float min=2 max=10 step=0.2\nD = in_0\ndef _up(s, x, z, fs):\n    return extrude(Pos(x, 14, z) * (Plane.XZ * Text(s, font_size=fs)), amount=0.6)\nhead = (\"the curve goes through every point it was shown \u2014 and knows nothing\"\n        if D[\"interp\"] else f\"degree {D['d']}\")\nout = [_up(\"OVERFITTING\", -10, 62, size * 1.9),\n       _up(head, -10, 52, size * 1.2),\n       _up(f\"shown: {D['e_train']:.3f}\", 84, -12, size * 0.95),\n       _up(f\"unseen: {D['e_test']:.3f}\", 100, -20, size * 0.95),\n       _up(\"error\", 92, 68, size * 1.1)]\nresult = out\n"
+      },
+      "position": [
+        1650,
+        400
+      ],
+      "preview": true
+    },
+    {
+      "id": "n20",
+      "type": "Note",
+      "params": {
+        "text": "IT KNOWS THE ANSWERS. IT DOES NOT KNOW THE QUESTION.\n\nThe big spheres are the data you were given. The small ones are points from the same world that the fit was never shown \u2014 the only honest exam there is. The smooth curve is the truth underneath, which in real life you never get to see. The other curve is what a degree-`d` polynomial makes of it all.\n\nTRY THIS \u2014 drag `degree` slowly from 0 up to 10 (n_train is 11).\nWatch the two bars on the right. The error on the points it was SHOWN falls the whole way \u2014 it always will, that is what fitting means. The error on the points it was NOT shown falls too, at first... and then, somewhere around degree 6, it turns around and climbs. It is lowest at about 5: there is a best complexity, and it is neither the simplest nor the most powerful model available. That U is the whole of the bias-variance trade-off, and the left-hand bar can never tell you where its bottom is.\n\nAt degree = n_train - 1 the curve passes through EVERY training point exactly. Training error: zero. A perfect score. And between the points it swings wildly to nowhere, and on unseen data it is worse than a straight line would have been. A model that gets 100% on what it was taught has told you nothing about what it knows.\n\nNow stay at degree 10 and drag `ridge` up to about 0.02.\nThe monster calms down, and the unseen-error bar drops BELOW anything the unregularised fit ever managed \u2014 a degree-10 polynomial, behaving better than the degree-3 one. Nothing was taken away: it still has every coefficient it had a second ago. It simply now has to PAY for using them, and it turns out it did not need them. That is regularisation, and it is why the biggest models on earth are trained with weight decay. Capacity is not the problem. Unpunished capacity is.\n\n`noise` is the honest knob. Turn it to zero and even degree 14 behaves \u2014 with no noise there is nothing to memorise. Every bit of overfitting you have ever seen is a machine memorising something that was never a fact."
+      },
+      "position": [
+        2010,
+        120
+      ],
+      "preview": false
+    }
+  ],
+  "connections": [
+    {
+      "id": "l1",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n3",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l2",
+      "from_node": "n1",
+      "from_socket": "result",
+      "to_node": "n3",
+      "to_socket": "degree"
+    },
+    {
+      "id": "l3",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n4",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l4",
+      "from_node": "n4",
+      "from_socket": "result",
+      "to_node": "n5",
+      "to_socket": "items"
+    },
+    {
+      "id": "l5",
+      "from_node": "n5",
+      "from_socket": "result",
+      "to_node": "n6",
+      "to_socket": "points"
+    },
+    {
+      "id": "l6",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n7",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l7",
+      "from_node": "n7",
+      "from_socket": "result",
+      "to_node": "n8",
+      "to_socket": "items"
+    },
+    {
+      "id": "l8",
+      "from_node": "n8",
+      "from_socket": "result",
+      "to_node": "n9",
+      "to_socket": "origin"
+    },
+    {
+      "id": "l9",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n10",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l10",
+      "from_node": "n10",
+      "from_socket": "result",
+      "to_node": "n11",
+      "to_socket": "items"
+    },
+    {
+      "id": "l11",
+      "from_node": "n11",
+      "from_socket": "result",
+      "to_node": "n12",
+      "to_socket": "points"
+    },
+    {
+      "id": "l12",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n13",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l13",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n14",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l14",
+      "from_node": "n14",
+      "from_socket": "result",
+      "to_node": "n15",
+      "to_socket": "items"
+    },
+    {
+      "id": "l15",
+      "from_node": "n15",
+      "from_socket": "result",
+      "to_node": "n16",
+      "to_socket": "origin"
+    },
+    {
+      "id": "l16",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n17",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l17",
+      "from_node": "n17",
+      "from_socket": "result",
+      "to_node": "n18",
+      "to_socket": "value"
+    },
+    {
+      "id": "l18",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n19",
+      "to_socket": "in_0"
+    }
+  ],
+  "groups": [
+    {
+      "title": "1 - THE DATA",
+      "bounding": [
+        10,
+        140,
+        260,
+        200
+      ],
+      "color": "#3f589e"
+    },
+    {
+      "title": "2 - THE FIT",
+      "bounding": [
+        300,
+        130,
+        580,
+        460
+      ],
+      "color": "#8a5a2c"
+    },
+    {
+      "title": "3 - THE PICTURE, AND THE TWO ERRORS",
+      "bounding": [
+        900,
+        10,
+        1080,
+        880
+      ],
+      "color": "#2c7a52"
+    }
+  ]
+}

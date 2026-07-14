@@ -1,0 +1,406 @@
+{
+  "name": "aliasing",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "IntegerSlider",
+      "params": {
+        "value": 10,
+        "_ui": {
+          "value": {
+            "min": 2,
+            "max": 30,
+            "step": 1
+          }
+        }
+      },
+      "position": [
+        40,
+        200
+      ],
+      "preview": false
+    },
+    {
+      "id": "n2",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE WAVE, AND THE CLOCK THAT LOOKS AT IT. `f` is how fast the world is wiggling; `fs`\n# is how often you bother to look. Everything that follows is a consequence of those two\n# numbers and nothing else.\nf = 7.0     #@param float min=0.2 max=20 step=0.1\nfs = 10     #@param int min=2 max=30\nseconds = 1.0   #@param float min=0.5 max=3 step=0.25\n# The ghost. Sampling at fs makes every frequency indistinguishable from itself plus any\n# multiple of fs: sin(2*pi*f*n/fs) == sin(2*pi*(f - m*fs)*n/fs) for whole m, exactly, for\n# every sample. So the wave you will SEE is the one whose frequency is nearest to zero:\nm = round(f / fs)\nf_alias = f - m * fs            # signed: a negative alias is the same wave, upside down\nnyq = fs / 2.0\nif abs(f_alias) < 0.05:\n    verdict = (\"THE WAVE DISAPPEARS: f is a whole multiple of fs, so every sample catches it at \"\n               \"the same phase. The wave is still out there. The machine records a flat line.\")\nelif abs(f) < nyq - 1e-9:\n    verdict = \"SAFE: f is below fs/2, and the samples carry the whole wave. The ghost you see IS the original.\"\nelif abs(abs(f) - nyq) < 1e-6:\n    verdict = \"EXACTLY AT NYQUIST: two samples per cycle. Land them on the zeros and the wave VANISHES.\"\nelse:\n    verdict = f\"ALIASED: you will see {abs(f_alias):.2f} Hz, a wave that was never there.\"\nresult = {\"f\": float(f), \"fs\": float(fs), \"T\": float(seconds), \"f_alias\": f_alias,\n          \"nyq\": nyq, \"verdict\": verdict, \"W\": 150.0, \"A\": 20.0}\n"
+      },
+      "position": [
+        330,
+        190
+      ],
+      "preview": false
+    },
+    {
+      "id": "n3",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE TRUTH: the wave as it actually is, drawn at 600 points because a computer cannot\n# draw a continuum either \u2014 it can only pretend harder than the sampler does. (Every\n# point here is a real B-Rep edge, so 'smooth enough' is also a bill: 360, not 3600.)\nD = in_0\nW, A, T, f = D[\"W\"], D[\"A\"], D[\"T\"], D[\"f\"]\nresult = [Vector(-W / 2 + (i / 360) * W, 0, A * math.sin(2 * math.pi * f * (i / 360) * T))\n          for i in range(361)]\n"
+      },
+      "position": [
+        700,
+        60
+      ],
+      "preview": false
+    },
+    {
+      "id": "n4",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        950,
+        60
+      ],
+      "preview": false
+    },
+    {
+      "id": "n5",
+      "type": "Polyline",
+      "params": {},
+      "position": [
+        1120,
+        60
+      ],
+      "preview": true
+    },
+    {
+      "id": "n6",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE GHOST: the slowest wave that goes through every sample. It agrees with the samples\n# EXACTLY \u2014 not approximately \u2014 so no amount of cleverness downstream can tell the two\n# apart. Below Nyquist it lies right on top of the true wave, and that congruence is what\n# \"sampling loses nothing\" means. Above it, it is a different wave entirely, and it is\n# the one you will hear, see, and believe.\nD = in_0\nW, A, T, fa = D[\"W\"], D[\"A\"], D[\"T\"], D[\"f_alias\"]\nresult = [Vector(-W / 2 + (i / 360) * W, -7,\n                 A * math.sin(2 * math.pi * fa * (i / 360) * T))\n          for i in range(361)]\n"
+      },
+      "position": [
+        700,
+        200
+      ],
+      "preview": false
+    },
+    {
+      "id": "n7",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        950,
+        200
+      ],
+      "preview": false
+    },
+    {
+      "id": "n8",
+      "type": "Polyline",
+      "params": {},
+      "position": [
+        1120,
+        200
+      ],
+      "preview": true
+    },
+    {
+      "id": "n9",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE STICKS: what the machine actually holds. Not a wave \u2014 a list of numbers, one every\n# 1/fs of a second. Everything between them is a guess.\nD = in_0\nn = max(int(D[\"fs\"] * D[\"T\"]) + 1, 2)\nresult = [max(abs(D[\"A\"] * math.sin(2 * math.pi * D[\"f\"] * (i / D[\"fs\"]))), 0.2)\n          for i in range(n)]\n"
+      },
+      "position": [
+        700,
+        340
+      ],
+      "preview": false
+    },
+    {
+      "id": "n10",
+      "type": "CodeBlock",
+      "params": {
+        "code": "D = in_0\nW, A, T, fs, f = D[\"W\"], D[\"A\"], D[\"T\"], D[\"fs\"], D[\"f\"]\nn = max(int(fs * T) + 1, 2)\nout = []\nfor i in range(n):\n    t = i / fs\n    v = A * math.sin(2 * math.pi * f * t)\n    out.append(Vector(-W / 2 + (t / T) * W, 0, v / 2))\nresult = out\n"
+      },
+      "position": [
+        700,
+        470
+      ],
+      "preview": false
+    },
+    {
+      "id": "n11",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        950,
+        340
+      ],
+      "preview": false
+    },
+    {
+      "id": "n12",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        950,
+        470
+      ],
+      "preview": false
+    },
+    {
+      "id": "n13",
+      "type": "Box",
+      "params": {
+        "width": 1.0,
+        "height": 1.0,
+        "depth": 10
+      },
+      "position": [
+        1120,
+        340
+      ],
+      "preview": true
+    },
+    {
+      "id": "n14",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE SAMPLES themselves. This is the whole of the evidence. Both curves go through every\n# one of these balls; that is precisely the trouble.\nD = in_0\nW, A, T, fs, f = D[\"W\"], D[\"A\"], D[\"T\"], D[\"fs\"], D[\"f\"]\nn = max(int(fs * T) + 1, 2)\nresult = [Vector(-W / 2 + ((i / fs) / T) * W, 0, A * math.sin(2 * math.pi * f * (i / fs)))\n          for i in range(n)]\n"
+      },
+      "position": [
+        700,
+        610
+      ],
+      "preview": false
+    },
+    {
+      "id": "n15",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        950,
+        610
+      ],
+      "preview": false
+    },
+    {
+      "id": "n16",
+      "type": "Sphere",
+      "params": {
+        "radius": 2.2,
+        "arc": 360
+      },
+      "position": [
+        1120,
+        610
+      ],
+      "preview": true
+    },
+    {
+      "id": "n17",
+      "type": "CodeBlock",
+      "params": {
+        "code": "D = in_0\nresult = (f\"f = {D['f']:.2f} Hz   |   fs = {D['fs']:.0f} Hz   |   Nyquist (fs/2) = {D['nyq']:.1f} Hz\\n\"\n          f\"{D['verdict']}\\n\"\n          f\"samples taken: {int(D['fs'] * D['T']) + 1} in {D['T']:.1f} s\")\n"
+      },
+      "position": [
+        700,
+        740
+      ],
+      "preview": false
+    },
+    {
+      "id": "n18",
+      "type": "Display",
+      "params": {},
+      "position": [
+        1000,
+        740
+      ],
+      "preview": false
+    },
+    {
+      "id": "n19",
+      "type": "CodeBlock",
+      "params": {
+        "code": "size = 3.6  #@param float min=2 max=10 step=0.2\nD = in_0\nA, W = D[\"A\"], D[\"W\"]\ndef _up(s, x, z, fs_):\n    return extrude(Pos(x, 12, z) * (Plane.XZ * Text(s, font_size=fs_)), amount=0.6)\nhead = (\"the machine records a flat line\" if abs(D[\"f_alias\"]) < 0.05 else\n        \"the ghost IS the wave \u2014 nothing was lost\"\n        if abs(D[\"f\"]) < D[\"nyq\"] - 1e-9 else\n        f\"the ghost: {abs(D['f_alias']):.2f} Hz, and it was never there\")\nout = [_up(\"SAMPLING, AND THE GHOST\", 0, A + 30, size * 1.8),\n       _up(f\"f = {D['f']:.2f} Hz    sampled {D['fs']:.0f} times a second\"\n           f\"    (Nyquist = {D['nyq']:.1f} Hz)\", 0, A + 20, size * 1.15),\n       _up(head, 0, A + 11, size * 1.15),\n       _up(\"the wave\", -W / 2 - 16, 0, size * 0.9),\n       _up(\"what the machine keeps\", 0, -A - 14, size * 0.95)]\nresult = out\n"
+      },
+      "position": [
+        1400,
+        400
+      ],
+      "preview": true
+    },
+    {
+      "id": "n20",
+      "type": "Note",
+      "params": {
+        "text": "THE WAVE THAT WAS NEVER THERE.\n\nA wave, and a clock that looks at it `fs` times a second. The balls are the samples: everything the machine will ever know about this wave. The sticks are how it stores them \u2014 a list of numbers, and nothing at all in between.\n\nThe second curve is the GHOST: the slowest wave that passes through every single sample. Not approximately through them. Exactly. And that is the whole problem \u2014 no cleverness downstream can prefer one curve over the other, because both agree with every scrap of evidence there is.\n\nIt opens aliased: 7 Hz sampled 10 times a second, and the ghost is a calm 3 Hz wave that looks entirely innocent. (It is drawn a few mm in front of the true wave, or the two would fight for the same pixels.)\n\nTRY THIS \u2014 leave fs at 10 and drag `f` down towards 3.\nBelow 5 Hz (that is fs/2, Nyquist) the ghost stops being a different wave: it takes exactly the shape of the true one. That congruence IS the sampling theorem \u2014 below half the sample rate the dots contain the whole wave and it can be recovered perfectly. Above it, drag `f` to 9 and you will see 1 Hz; the faster the truth, the slower the lie.\nAt f = 10 (exactly fs) every sample lands on the same phase: the ghost is a FLAT LINE. The wave is still there. The machine records silence.\nAt exactly 5 Hz, two samples per cycle, the balls can land on the zero crossings and the wave disappears as well. Two samples per cycle is the boundary, not a safe place to be.\n\nThis is why a wagon wheel spins backwards in a film (24 samples a second, and a spoke that goes further than half a turn between frames), why a striped shirt shimmers on video, and why every ADC on earth has an analogue low-pass filter welded in front of it: you cannot undo aliasing afterwards. You have to refuse to let the frequency in."
+      },
+      "position": [
+        1400,
+        700
+      ],
+      "preview": false
+    }
+  ],
+  "connections": [
+    {
+      "id": "l1",
+      "from_node": "n1",
+      "from_socket": "result",
+      "to_node": "n2",
+      "to_socket": "fs"
+    },
+    {
+      "id": "l2",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n3",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l3",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n4",
+      "to_socket": "items"
+    },
+    {
+      "id": "l4",
+      "from_node": "n4",
+      "from_socket": "result",
+      "to_node": "n5",
+      "to_socket": "points"
+    },
+    {
+      "id": "l5",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n6",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l6",
+      "from_node": "n6",
+      "from_socket": "result",
+      "to_node": "n7",
+      "to_socket": "items"
+    },
+    {
+      "id": "l7",
+      "from_node": "n7",
+      "from_socket": "result",
+      "to_node": "n8",
+      "to_socket": "points"
+    },
+    {
+      "id": "l8",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n9",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l9",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n10",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l10",
+      "from_node": "n9",
+      "from_socket": "result",
+      "to_node": "n11",
+      "to_socket": "items"
+    },
+    {
+      "id": "l11",
+      "from_node": "n10",
+      "from_socket": "result",
+      "to_node": "n12",
+      "to_socket": "items"
+    },
+    {
+      "id": "l12",
+      "from_node": "n11",
+      "from_socket": "result",
+      "to_node": "n13",
+      "to_socket": "depth"
+    },
+    {
+      "id": "l13",
+      "from_node": "n12",
+      "from_socket": "result",
+      "to_node": "n13",
+      "to_socket": "origin"
+    },
+    {
+      "id": "l14",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n14",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l15",
+      "from_node": "n14",
+      "from_socket": "result",
+      "to_node": "n15",
+      "to_socket": "items"
+    },
+    {
+      "id": "l16",
+      "from_node": "n15",
+      "from_socket": "result",
+      "to_node": "n16",
+      "to_socket": "origin"
+    },
+    {
+      "id": "l17",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n17",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l18",
+      "from_node": "n17",
+      "from_socket": "result",
+      "to_node": "n18",
+      "to_socket": "value"
+    },
+    {
+      "id": "l19",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n19",
+      "to_socket": "in_0"
+    }
+  ],
+  "groups": [
+    {
+      "title": "1 - THE CLOCK",
+      "bounding": [
+        10,
+        140,
+        260,
+        200
+      ],
+      "color": "#3f589e"
+    },
+    {
+      "title": "2 - WAVE AND GHOST",
+      "bounding": [
+        300,
+        130,
+        350,
+        340
+      ],
+      "color": "#8a5a2c"
+    },
+    {
+      "title": "3 - WHAT YOU SEE, AND WHAT IS THERE",
+      "bounding": [
+        670,
+        10,
+        640,
+        850
+      ],
+      "color": "#2c7a52"
+    }
+  ]
+}
