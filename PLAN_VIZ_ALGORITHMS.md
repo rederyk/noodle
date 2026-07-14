@@ -76,6 +76,25 @@ the canvas side.
 - Geometry is not free: one `Box` fanned into ~500 cubes costs ~2 s, and an L-system
   breeds branches exponentially (8 per pass). Cap the count in the CodeBlock and *say
   so* on the node — a silent truncation reads as a wrong answer.
+- **`Face.make_surface_from_array_of_points` INTERPOLATES — it rings on rough data.** It
+  fits a spline forced through every sample, so a 44×44 Perlin field (values inside ±13)
+  came back as a surface spanning **±45,000 mm**, with a needle in the viewport to prove
+  it. It is fine for a smooth analytic function (`gradient-descent`'s loss surface) and
+  wrong for anything noisy. A rough height field is triangles: build a `Mesh` in the
+  CodeBlock (`Mesh(trimesh.Trimesh(verts, faces, process=False))`, top skin + floor +
+  walls = watertight) and let the mesh lane carry it. `MeshInspect` will certify it, and
+  unlike a thickened B-Rep surface it prints.
+- **`data → mesh` did not exist until this batch** (`casts.py::_DATA_FEEDS`) — a CodeBlock
+  could *build* a Mesh and had no way to hand it to any mesh node. One line; the mesh
+  helpers already coerce with `_as_mesh`.
+- **`_pick_result` prefers geometry SINKS.** Wiring `MeshFix` into a `MeshInspect` stopped
+  it being a sink, and `__result__` silently fell back to the other geometry node in the
+  graph (the white-noise columns) — the terrain was on screen but was not the *result*,
+  and the STL export was the wrong object. Read the report off the node *upstream* of the
+  one you want as the result.
+- **`IntegerSlider` is hard-capped at 100 by the catalog.** An animation knob that needs
+  more (bubble sort on 20 numbers is 190 comparisons) cannot use one: put it on the
+  CodeBlock as a `#@param`, which sets its own bounds.
 - **Put two quantities on ONE scale and the figure argues for itself.** The probabilities
   and their running total both live in [0,1], so drawing the staircase in the *same*
   vertical scale as the bars (just in front of them, not in another row) turns the "line
@@ -206,8 +225,13 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` planned.
 
 ### Algorithms & geometry
 
-- [ ] **Sorting, animated** — bars of differing height, slider `step` replays the
-  algorithm's state at step k.
+- [x] **Sorting** — `examples/sorting.json`. Four algorithms, the same twelve bars, and
+  `step` scrubs the run one **comparison** at a time (the pair under the eye is a second
+  Box node, so it has its own colour). The four columns are the bill. At twelve numbers
+  nobody cares — bubble asks 66, quicksort 40 — so the node quietly runs all four on
+  **200** numbers as well, counted and never drawn, and there the polite gap is 19,834
+  against 1,510. That is what n² versus n log n means once it stops being a phrase: the
+  slow one does not get slower, it stops being an option. 17 nodes.
 - [x] **Cellular automata** — `examples/cellular-automata.json`. An elementary CA:
   one live cell, one byte of rule, and the generations **stacked along Z** into a
   printable tower of time (one `Box` node fans out into ~500 cubes, ~2 s). Rule 90
@@ -234,9 +258,25 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` planned.
   species. Every branch is a real tapered cone, so unlike the rest of this family the
   output is genuinely printable. Branches breed exponentially, so `max_branches` caps
   them and the label says when it bit.
-- [ ] **Dijkstra / A\*** — a grid of cells, height = cost, the found path lit up.
-- [ ] **Perlin noise** — procedural terrain, sliders for octaves and persistence; the
-  bridge to generative design proper.
+- [x] **Dijkstra / A\*** — `examples/dijkstra.json`. A landscape where each cell costs
+  what it is tall, and three searches that are **the same loop with one line changed**:
+  which cell do you open next? Dijkstra takes the cheapest-so-far and spreads in a disc
+  (439 of 484 cells); A* adds a guess at what is left and opens a **corridor** (187) —
+  and returns the identical path, because the guess never over-promises. Greedy drops the
+  cost-so-far, opens 43, and walks straight over the mountain for a path 34% worse. Two
+  design notes that make it teach: the map is mostly **cheap plain** (a hint is only
+  worth something while it is nearly right — flood the map with cost and A* slides back
+  into Dijkstra), and a **ridge with one pass** crosses the diagonal (without a barrier,
+  "towards the goal" and "the best way" coincide and greedy looks clever by accident).
+  Ties must break FIFO — break them by cost and greedy is secretly Dijkstra. 20 nodes.
+- [x] **Perlin noise** — `examples/perlin-noise.json`. White noise, drawn beside it, is
+  static and always will be: no two neighbouring points were ever made to agree. Perlin's
+  idea (1983, and an Oscar) is to put a random **direction** at each grid corner instead
+  of a random number at each point — nearby points share corners, so they are *forced* to
+  agree, and out comes a landscape. Octaves add the same noise at twice the frequency and
+  a fraction of the height (a Fourier series run backwards); the sea is just a plane, and
+  every coastline is an accident of where the noise crossed it. Built on the **mesh
+  lane** — watertight, 7,740 triangles, and it prints. 16 nodes.
 
 ---
 

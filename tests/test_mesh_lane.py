@@ -45,6 +45,24 @@ def test_mesh_reaches_the_universal_data_bus():
     assert wires_compatible(WIRE_MESH, catalog.WIRE_DATA)
 
 
+def test_a_codeblock_can_hand_a_mesh_to_the_mesh_lane():
+    # The data bus feeds a mesh input too (casts.py::_DATA_FEEDS). A CodeBlock is the
+    # escape hatch where a custom node is written, and one that BUILDS a Mesh — a height
+    # field, marching cubes, anything trimesh can make — had no way to hand it on.
+    # `examples/perlin-noise.json` is exactly that, and it is watertight and printable.
+    # No boundary cast is emitted: every mesh helper coerces its own input with _as_mesh.
+    assert wires_compatible(catalog.WIRE_DATA, WIRE_MESH)
+    g = _g(
+        [{"id": "cb", "type": "CodeBlock",
+          "params": {"code": "result = Mesh(trimesh.Trimesh(...))"}},
+         {"id": "f", "type": "MeshFix", "params": {}}],
+        [{"id": "c", "from_node": "cb", "from_socket": "result",
+          "to_node": "f", "to_socket": "mesh"}],
+    )
+    g.validate()                                  # the wire is legal…
+    assert _calls(transpile(g), "_mesh_fix")      # …and _mesh_fix takes it from there
+
+
 def test_wiring_a_mesh_into_a_solid_input_is_rejected():
     g = _g(
         [{"id": "m", "type": "ImportMesh", "params": {"path": "p.stl"}},

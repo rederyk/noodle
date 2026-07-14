@@ -145,6 +145,24 @@ _EXAMPLE_DESCRIPTIONS = {
                    "then climbs. At degree = n-1 the curve hits every training point "
                    "exactly, scores zero, and has learned nothing but the noise. Ridge "
                    "tames the monster without taking a single coefficient away.",
+    "sorting": "The same answer, at four different prices — bubble, insertion, "
+               "selection and quicksort on the same twelve bars. `step` scrubs through "
+               "the run one COMPARISON at a time (the pair under the eye is drawn in its "
+               "own colour), and the four columns are the bill. At twelve numbers nobody "
+               "cares; the Panel quietly runs all four on 200 and the polite little gap "
+               "becomes 19,834 comparisons against 1,510.",
+    "dijkstra": "The same loop, with one line changed: which cell do you open next? "
+                "Dijkstra takes the cheapest so far and spreads in a circle (439 cells "
+                "of 484). A* adds a guess at what is left, opens a corridor instead — "
+                "187 cells — and finds the IDENTICAL path, because the guess never "
+                "over-promises. Greedy drops the cost-so-far, opens 43, and walks "
+                "straight over the mountain for a path 34% worse.",
+    "perlin-noise": "Random, but not RANDOM — white noise is static and always will be, "
+                    "because no two neighbouring points were ever made to agree. Perlin "
+                    "puts a random DIRECTION at each grid corner instead of a random "
+                    "number at each point, so nearby points are FORCED to agree, and out "
+                    "comes a landscape. Octaves add detail at half the height; the sea is "
+                    "just a plane. Built on the mesh lane, watertight, and printable.",
     "mesh-lane": "The mesh lane — a Box and a Sphere tessellate into triangles just "
                  "by touching a mesh input, get cut with a mesh boolean (manifold3d: "
                  "0.1s where the B-Rep kernel needs 81s), simplified within a bounded "

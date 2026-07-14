@@ -68,8 +68,16 @@ CASTS: dict[tuple[str, str], str | None] = {
 
 # A `data` OUTPUT may feed these input types (a list from List/Sort/Item flowing
 # back into geometry/vector/plane…). It may NOT synthesise a selection or a tree.
+#
+# WIRE_MESH is in here for the same reason the others are: a CodeBlock is the escape
+# hatch where a user (or the copilot) writes a custom node, and one that BUILDS a Mesh
+# — a height field, a marching-cubes surface, anything trimesh can make — had no way to
+# hand it on. Every mesh helper already coerces its own input with `_as_mesh` (which
+# passes a Mesh through, tessellates a B-Rep, loads a path), so no boundary cast is
+# needed here: only the permission. Note the asymmetry survives — `mesh -> solid` is
+# still refused above, and still costs 300s if you want it.
 _DATA_FEEDS: set[str] = {
-    WIRE_SOLID, WIRE_SURFACE, WIRE_CURVE, WIRE_VECTOR, WIRE_PLANE, WIRE_DATA,
+    WIRE_SOLID, WIRE_SURFACE, WIRE_CURVE, WIRE_VECTOR, WIRE_PLANE, WIRE_MESH, WIRE_DATA,
 }
 
 
