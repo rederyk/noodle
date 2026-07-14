@@ -139,3 +139,37 @@ def test_a_mesh_may_not_be_wired_into_the_load():
     )
     with pytest.raises(ValidationError):
         g.validate()
+
+
+def test_support_volume_is_a_body_on_the_mesh_lane():
+    # Not a number, a BODY: you can preview it, inspect it, export it. That is the point —
+    # `area x height` gestures at the cost; a boolean IS the cost.
+    assert catalog.get("SupportVolume").outputs[0].wire_type == WIRE_MESH
+    g = _g(
+        [{"id": "m", "type": "ImportMesh", "params": {"path": "p.stl"}},
+         {"id": "s", "type": "SupportVolume", "params": {}},
+         {"id": "i", "type": "MeshInspect", "params": {}}],
+        [{"id": "c1", "from_node": "m", "from_socket": "result",
+          "to_node": "s", "to_socket": "mesh"},
+         {"id": "c2", "from_node": "s", "from_socket": "result",
+          "to_node": "i", "to_socket": "mesh"}],
+    )
+    g.validate()
+    assert _calls(transpile(g), "_support_body")
+
+
+def test_the_search_declares_which_support_number_it_used():
+    # All-or-nothing: ranking one pose by real volume and the next by a proxy would compare
+    # two different quantities and call it a decision. `exact_below` is the switch, and it
+    # reaches _orient_plan as an argument (not a silent default).
+    p = {p.name: p for p in catalog.get("OrientForPrint").params}
+    assert "exact_below" in p
+    g = _g(
+        [{"id": "m", "type": "ImportMesh", "params": {"path": "p.stl"}},
+         {"id": "o", "type": "OrientForPrint", "params": {"exact_below": 1234}}],
+        [{"id": "c", "from_node": "m", "from_socket": "result",
+          "to_node": "o", "to_socket": "mesh"}],
+    )
+    code = transpile(g)
+    call = next(l for l in code.splitlines() if "_orient_plan(__out_" in l)
+    assert "1234" in call

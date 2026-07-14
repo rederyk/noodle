@@ -1116,6 +1116,69 @@ def _print_metrics(_mesh, _angle=45.0, _layer=0.2, _nsec=48):
     }
 
 
+def _support_body(_mesh, _angle=45.0, _layer=0.2, _clearance=0.2):
+    \"\"\"The support material itself, as a body you can look at — not an estimate of it.
+
+    Under every overhanging triangle, drop a prism to the bed. Union the lot, subtract the
+    part (and the part shifted down by `clearance`, which is what carves the gap the
+    support must leave under the face, or it welds itself on). What is left IS the support:
+    its volume is grams, and you can preview it.
+
+    `area x height above the bed` — the cheap proxy the search falls back on — is not this
+    number and cannot be: it counts the column under an overhang even where the part
+    itself is already sitting in the way. On a sphere of r=20 on the bed this returns
+    1.63 cm3 against 1.73 cm3 worked out with a pencil (the rest is tessellation and the
+    clearance gap). It costs 0.58s on a 20k-triangle mesh, so it is affordable per node
+    and NOT free inside a search over every pose — hence the guard in _orient_plan.\"\"\"
+    import numpy as _np
+    m = _as_mesh(_mesh)
+    if m is None:
+        return None
+    tm = m.tm
+    met = _print_metrics(m, _angle, _layer, _nsec=2)
+    over = _np.where(met["over_mask"])[0]
+    z0 = float(tm.bounds[0][2])
+    if not len(over):
+        return None
+    mf = _mf()
+    prisms = []
+    for fi in over:
+        tri = tm.triangles[fi]
+        if float(tm.area_faces[fi]) < 1e-9 or float(tri[:, 2].max()) - z0 < 0.01:
+            continue                     # a degenerate face, or one already on the bed
+        v = _np.array([[p[0], p[1], p[2]] for p in tri]
+                      + [[p[0], p[1], z0] for p in tri], dtype=_np.float32)
+        # the face's own normal points DOWN (it is an overhang), so the prism's outward
+        # normal there points UP: the top triangle is the face, wound the other way.
+        f = _np.array([[0, 2, 1], [3, 4, 5],
+                       [0, 1, 4], [0, 4, 3],
+                       [1, 2, 5], [1, 5, 4],
+                       [2, 0, 3], [2, 3, 5]], dtype=_np.uint32)
+        prisms.append(mf.Manifold(mf.Mesh(v, f)))
+    if not prisms:
+        return None
+    col = mf.Manifold.batch_boolean(prisms, mf.OpType.Add)
+    part = _to_manifold(m, "the support volume")
+    blocker = part + part.translate((0.0, 0.0, -float(_clearance)))
+    return _from_manifold(col - blocker)
+
+
+def _support_report(_mesh, _angle=45.0, _layer=0.2, _clearance=0.2, _density=1.24):
+    \"\"\"The support body, in the units that hurt — and NOT pretending they are grams on the
+    spool. This is the ENVELOPE: a slicer fills it with a 10-20% lattice, so the plastic
+    that actually goes through the nozzle is a fraction of it. Quoting the solid mass as
+    the print cost would overstate it five-fold, and a number that flatters itself is
+    worse than no number.\"\"\"
+    s = _support_body(_mesh, _angle, _layer, _clearance)
+    if s is None:
+        return None, "support     : none at all — it prints as it stands"
+    cm3 = s.volume / 1000.0
+    return s, ("support     : %.2f cm3 of envelope  (%.1f g of PLA if it were solid; a "
+               "slicer fills it\\n              sparse, so scale by your support density — "
+               "and none of that touches\\n              the hour you will spend picking "
+               "it off)" % (cm3, cm3 * float(_density)))
+
+
 def _bed_drop(_shape, _center=True, _clearance=0.0):
     \"\"\"Sit a shape on the bed: its lowest point goes to z=0. Works on both lanes —
     it measures on the mesh and moves the original, so a solid stays a solid.
@@ -1151,7 +1214,7 @@ def _overhang_faces(_mesh, _angle=45.0, _layer=0.2):
     return Mesh(m.tm.submesh([met["over_mask"]], append=True, repair=False))
 
 
-def _print_check(_mesh, _angle=45.0, _layer=0.2):
+def _print_check(_mesh, _angle=45.0, _layer=0.2, _clearance=0.2):
     \"\"\"The print report: how tall, how much support, how well it sticks — and WHERE
     IT WILL BREAK. Wire it into a Panel.\"\"\"
     m = _as_mesh(_mesh)
@@ -1162,11 +1225,14 @@ def _print_check(_mesh, _angle=45.0, _layer=0.2):
     out = [
         "height      : %.1f mm  (%d layers at %.2f mm)" % (met["height"], layers, _layer),
         "bed contact : %.1f mm2" % met["bed_area"],
-        "support     : %.1f mm2 of face overhangs past %.0f deg" % (met["support_area"],
-                                                                    _angle),
     ]
-    if met["n_over"] == 0:
-        out.append("              nothing to support — it prints as it stands")
+    try:                                 # the real thing: prisms to the bed, minus the part
+        _, line = _support_report(m, _angle, _layer, _clearance)
+        out.append(line)
+    except Exception as _e:              # not watertight -> no boolean -> the proxy, said so
+        out.append("support     : %.0f mm2 of face overhangs past %.0f deg (area only — "
+                   "the true volume\\n              needs a closed mesh: %s)"
+                   % (met["support_area"], _angle, _e))
     if met["sectioned"]:
         out += [
             "",
@@ -1231,7 +1297,7 @@ def _rest_planes(_mesh):
 
 
 def _orient_plan(_mesh, _load=None, _w_strength=1.0, _w_support=1.0, _w_speed=0.3,
-                 _angle=45.0, _layer=0.2, _max_cand=60):
+                 _angle=45.0, _layer=0.2, _exact_below=25000, _max_cand=60):
     \"\"\"Try every stable resting pose, score it, keep the best.
 
     STRENGTH is the term worth reading twice. With a `load` wired in (the direction the
@@ -1251,16 +1317,34 @@ def _orient_plan(_mesh, _load=None, _w_strength=1.0, _w_support=1.0, _w_speed=0.
                       else list(_load)[:3], dtype=float)
         nv = _np.linalg.norm(v)
         load = v / nv if nv > 1e-9 else None
-    cands = []
-    for nrm in planes:
-        R = tmesh.geometry.align_vectors(nrm, [0.0, 0.0, -1.0])   # that face -> the bed
-        rot = m.transformed(R)
-        dropped = _bed_drop(rot, True, 0.0)
-        met = _print_metrics(dropped, _angle, _layer)
-        met["mesh"] = dropped
-        met["load_z"] = abs(float(R[:3, :3] @ load @ _np.array([0, 0, 1.0]))) \
-            if load is not None else None
-        cands.append(met)
+    # The real support volume is a boolean per pose (~0.6s on a 20k-triangle part): fine
+    # for a handful of poses on a modest part, not for a big mesh. Above the budget the
+    # search falls back to the `area x height` proxy — and the report says which it used,
+    # because a number whose provenance is a secret is worse than no number.
+    #
+    # It is all-or-nothing on purpose. Scoring one pose by real volume and the next by a
+    # proxy would rank two different quantities against each other and call it a decision.
+    def _score_all(exact):
+        out = []
+        for nrm in planes:
+            R = tmesh.geometry.align_vectors(nrm, [0.0, 0.0, -1.0])  # that face -> the bed
+            dropped = _bed_drop(m.transformed(R), True, 0.0)
+            met = _print_metrics(dropped, _angle, _layer)
+            if exact:
+                body = _support_body(dropped, _angle, _layer)        # may raise: not closed
+                met["support_vol"] = float(body.volume) if body is not None else 0.0
+            met["mesh"] = dropped
+            met["load_z"] = abs(float(R[:3, :3] @ load @ _np.array([0, 0, 1.0]))) \
+                if load is not None else None
+            out.append(met)
+        return out
+
+    exact = m.n_tris <= int(_exact_below)
+    try:
+        cands = _score_all(exact)
+    except Exception:
+        exact = False
+        cands = _score_all(False)
     if not cands:
         return {"mesh": m, "report": "no stable resting pose found"}
     mx = lambda k: max(max(c[k] for c in cands), 1e-9)            # noqa: E731
@@ -1278,17 +1362,25 @@ def _orient_plan(_mesh, _load=None, _w_strength=1.0, _w_support=1.0, _w_speed=0.
     head = ("load declared: strength = how much of it crosses the layers (0 is best)"
             if load is not None else
             "no load declared: strength = the smallest glued cross-section (bigger is better)")
-    rows = ["%-4s %-8s %-9s %-8s %-8s %s" % ("", "score", "strength", "support", "height",
-                                             "weak plane")]
+    sup_unit = "cm3" if exact else "mm2xmm"
+    rows = ["%-4s %-8s %-9s %-10s %-8s %s" % ("", "score", "strength",
+                                              "support " + sup_unit, "height", "weak plane")]
     for i, c in enumerate(cands[:5]):
-        rows.append("%-4s %-8.3f %-9s %-8.0f %-8.1f %.0f mm2 @ z=%.1f%s" % (
+        sup = ("%.2f" % (c["support_vol"] / 1000.0)) if exact else ("%.0f" % c["support_vol"])
+        rows.append("%-4s %-8.3f %-9s %-10s %-8.1f %.0f mm2 @ z=%.1f%s" % (
             "->" if i == 0 else " %d" % (i + 1), c["score"],
             ("%.2f" % c["load_z"]) if c["load_z"] is not None else "%.0f mm2" % c["weak_area"],
-            c["support_vol"], c["height"], c["weak_area"], c["weak_z"],
+            sup, c["height"], c["weak_area"], c["weak_z"],
             "   <- chosen" if i == 0 else ""))
+    prov = ("support is the REAL volume: prisms under every overhang, down to the bed, "
+            "minus the part" if exact else
+            "support is the area x height PROXY — the part is over `exact below` triangles, "
+            "and\\na boolean per pose would cost more than the answer is worth. Wire a "
+            "Support Volume\\nnode onto the winner for the true number.")
     report = "\\n".join(
         ["%d stable poses tried, %s" % (len(cands), head), ""] + rows
-        + ["", "Weights: strength %.1f, support %.1f, speed %.1f — they are a taste, not"
+        + ["", prov, "",
+           "Weights: strength %.1f, support %.1f, speed %.1f — they are a taste, not"
            % (_w_strength, _w_support, _w_speed),
            "a law. The measurements above are the part; the ranking is your priorities."])
     return {"mesh": best["mesh"], "report": report}
@@ -2861,7 +2953,7 @@ class Transpiler:
         p = self._param_values(node, ndef)          # keeps the editable-literal spans
         args = ", ".join([vals.get("mesh", "None"), vals.get("load", "None"),
                           p["strength"], p["supports"], p["speed"],
-                          p["angle"], p["layer"]])
+                          p["angle"], p["layer"], p["exact_below"]])
         plan, rep = var + "_plan", var + "_rep"
         lines.append(f"{rep} = None")                # defined even if the body throws
         body = [f"{plan} = _orient_plan({args}){_annot(node)}",

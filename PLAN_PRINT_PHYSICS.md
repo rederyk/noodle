@@ -34,6 +34,7 @@ certify the clever one.
 | `PlaceOnBed` | lowest point → z=0, optionally centred in XY. Serves **both lanes** (measures on the mesh, moves the original), so a solid stays a solid |
 | `PrintCheck` | text report → a Panel: height and layers, bed contact, overhang area past the critical angle, and the **weak plane** (area + height) |
 | `OverhangFaces` | the faces that need support, as a mesh of its own — so the viewer gives them their own colour and you *see* them on the part |
+| `SupportVolume` | the support material itself, **as a body**: preview it, inspect it, export it. The honest cost, not a gesture at it |
 | `OrientForPrint` | tries every stable resting pose, scores it, returns the winner already on the bed + a `report` table of the top five |
 
 `OrientForPrint` has **two outputs** from one search (`_emit_orient`, modelled on
@@ -48,8 +49,20 @@ a Panel happens to be wired in would be daft.
   this backwards — it makes the one orientation that needs *no* support at all look like
   the worst option on the list. (Measured on the example bracket: 1150 mm² of "overhang"
   that is simply the plate, sitting on the glass.)
-- **Support cost** — not the overhang *area* but `Σ area × height above the bed`: what
-  support costs is how far it has to reach down.
+- **Support volume** — the real one, and it is a **sweep and a boolean**: drop a prism from
+  every overhanging triangle to the bed, union them (`manifold3d.batch_boolean`), and
+  subtract the part *plus the part shifted down by the clearance gap* — that second copy is
+  what carves the space the support must leave under the face, or it welds itself on. What
+  is left **is** the support: preview it, weigh it, export it.
+  Checked against a pencil: a sphere of r=20 sitting on the bed returns **1.63 cm³** where
+  the integral gives **1.73** (the difference is tessellation plus the clearance gap). It
+  costs ~0.04 s at 1.3k triangles and **0.58 s at 20k**.
+  `Σ area × height above the bed` is the cheap **proxy**, and it is not the same quantity
+  and cannot be: it counts the column under an overhang even where the part itself is
+  already sitting in the way. `OrientForPrint` uses the real volume while the part is under
+  `exact_below` triangles and the proxy above it — **all or nothing**, and the report says
+  which. Scoring one pose by volume and the next by a proxy would rank two different
+  quantities against each other and call it a decision.
 - **The weak plane** — `manifold3d`'s `slice(z).area()`, 48 heights up the part. ~0.01 s
   for 80 sections, so scoring a hundred candidate poses is free. A non-watertight mesh has
   no honest cross-section: the report says so and points at `MeshFix` rather than
@@ -72,7 +85,7 @@ A bracket: a plate, a stem, a hole. Two copies, side by side.
 
 | | as modelled | as oriented (load along the stem) |
 |---|---|---|
-| support | **0 mm²** | 384 mm² |
+| support | **none at all** | 0.80 cm³ — about 1 g of PLA |
 | bed contact | 1150 mm² | 120 mm² |
 | height | 49 mm | 40 mm |
 | weak plane | **64 mm²** at the stem root | 88 mm² |
@@ -80,8 +93,9 @@ A bracket: a plate, a stem, a hole. Two copies, side by side.
 
 Printed as modelled it needs **not one support** — and it is standing in the one
 orientation that puts its job at right angles to its strength. `OrientForPrint` lays it
-down, paying 384 mm² of support and nine tenths of the bed contact, and it is right to:
-supports are money, a snapped bracket is a bracket.
+down, paying a gram of support (the grey body under the part *is* that gram — you can look
+at it) and nine tenths of the bed contact, and it is right to: supports are money, a
+snapped bracket is a bracket.
 
 **Then unwire the `load`** and it puts the part back upright. Nothing broke — you asked a
 different question and got an honest answer to it. That is the lesson worth keeping: an
@@ -90,11 +104,16 @@ FOR.
 
 ## 5. Not built yet
 
-- **Support volume proper** — the real thing is the swept volume under the overhangs down
-  to the bed or to the part below, not `area × height`. Needs a projection + boolean per
-  candidate; affordable (manifold does it in ms), just not done.
-- **Bridges** — an overhang spanning two supported walls does not need support at all. The
-  face test cannot see that; a per-layer island analysis can.
+- **Bridges** — an overhang spanning two supported walls does not need support at all, and
+  `SupportVolume` will happily build a prism under it. The face test cannot see a bridge;
+  a per-layer island analysis can. This is the biggest remaining lie in the number.
+- **Support that lands on the part, not on the bed** — every prism goes down to z=0. A real
+  slicer stops at whatever is underneath, so this OVER-counts wherever the part overhangs
+  itself (the part gets subtracted, so the material is right, but the columns still start
+  from the bed rather than resting on the shelf below).
+- **Support that is not solid** — real support is a sparse lattice at 10-20% density. The
+  volume here is the envelope; multiply by your density for the grams that actually go
+  through the nozzle.
 - **Print time** — height is a proxy. The honest number is `Σ layer perimeter + infill`,
   which is a slicer, and noodle is not one.
 - **A real load case** — one vector is one load. A bracket in bending wants a moment, not

@@ -311,8 +311,17 @@ thirds of the material within one — so orientation decides **where the part br
 - `PlaceOnBed` (lowest point → z=0; serves BOTH lanes: it measures on the mesh and moves
   the original, so a solid stays a solid), `PrintCheck` (report → Panel), `OverhangFaces`
   (the faces needing support, as a mesh of its own → its own colour in the viewer),
-  `OrientForPrint` (every stable pose scored; two outputs — the oriented mesh and the
-  table saying why — from ONE search, via `_emit_orient`, modelled on `_emit_center`).
+  `SupportVolume` (the support as a BODY), `OrientForPrint` (every stable pose scored; two
+  outputs — the oriented mesh and the table saying why — from ONE search, via
+  `_emit_orient`, modelled on `_emit_center`).
+- **Support is a sweep and a boolean, not an estimate**: a prism from every overhanging
+  triangle down to the bed, unioned (`manifold3d.batch_boolean`), minus the part *and the
+  part shifted down by the clearance gap* (that second copy carves the space the support
+  must leave, or it welds itself on). Checked against a pencil: a sphere of r=20 gives
+  1.63 cm³ where the integral says 1.73. ~0.6 s at 20k triangles — so `OrientForPrint`
+  uses it while the part is under `exact_below` triangles and the `area × height` proxy
+  above, **all or nothing**, and the report says which. It is the ENVELOPE (a slicer fills
+  it sparse) and it does not know about bridges — `PLAN_PRINT_PHYSICS.md` §5.
 - **The weak plane** is the smallest cross-section perpendicular to Z: `manifold3d`'s
   `slice(z).area()` (~0.01 s for 80 sections, so scoring 100 poses is free). It is a
   property of the part *in this orientation*, and turning the part moves it.

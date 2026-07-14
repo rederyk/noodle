@@ -168,8 +168,10 @@ _EXAMPLE_DESCRIPTIONS = {
                          "needs NOT ONE support, and its weakest glued section (64 mm2, "
                          "drawn in red at the stem root) is exactly where the load will "
                          "snap it off. Wire the load direction into `Orient for Print` "
-                         "and it lays the part down instead — 380 mm2 of support, and a "
-                         "bracket that holds. Unwire the load and it goes back to the "
+                         "and it lays the part down instead — a gram of support you can "
+                         "SEE (`Support Volume` builds the body, it does not estimate "
+                         "it), and a bracket that holds. Unwire the load and it goes "
+                         "back to the "
                          "weak one: an optimiser hands you the worst part in the world "
                          "if you never tell it what the part is FOR.",
     "mesh-lane": "The mesh lane — a Box and a Sphere tessellate into triangles just "

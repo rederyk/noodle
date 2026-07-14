@@ -1826,14 +1826,33 @@ register(NodeDef("PlaceOnBed", "print", "Place on Bed",
 register(NodeDef("PrintCheck", "print", "Print Check",
     inputs=[Socket("mesh", WIRE_MESH)],
     params=[_f("angle", 45, 20, 80, label="overhang angle"),
-            _f("layer", 0.2, 0.05, 1.0, label="layer height", step=0.05)],
+            _f("layer", 0.2, 0.05, 1.0, label="layer height", step=0.05),
+            _f("clearance", 0.2, 0, 2, label="support gap", step=0.05)],
     outputs=_data("report"),
-    code_template={"algebra": "_print_check({mesh}, {angle}, {layer})"},
+    code_template={"algebra": "_print_check({mesh}, {angle}, {layer}, {clearance})"},
     description="The print report, as text — wire it into a Panel. Height and layer "
-                "count, bed contact, how much face overhangs past the critical angle, "
-                "and WHERE IT WILL BREAK: the weak plane is the smallest glued "
-                "cross-section in the part, and a printed part comes apart at a layer "
-                "line before it breaks anywhere else. Put the part on the bed first."))
+                "count, bed contact, the support material in cm3 and grams (the REAL "
+                "volume — prisms under every overhang down to the bed, minus the part — "
+                "not an area), and WHERE IT WILL BREAK: the weak plane is the smallest "
+                "glued cross-section in the part, and a printed part comes apart at a "
+                "layer line before it breaks anywhere else. Put the part on the bed "
+                "first."))
+
+register(NodeDef("SupportVolume", "print", "Support Volume",
+    inputs=[Socket("mesh", WIRE_MESH)],
+    params=[_f("angle", 45, 20, 80, label="overhang angle"),
+            _f("layer", 0.2, 0.05, 1.0, label="layer height", step=0.05),
+            _f("clearance", 0.2, 0, 2, label="support gap", step=0.05)],
+    outputs=_mesh(),
+    code_template={"algebra": "_support_body({mesh}, {angle}, {layer}, {clearance})"},
+    description="The support material itself, as a BODY — drop a prism from every "
+                "overhanging triangle to the bed, union them, subtract the part (and the "
+                "part shifted down by `support gap`, which carves the clearance the "
+                "support must leave or it welds itself on). Preview it to see what you "
+                "are about to pay for, wire it into a Mesh Inspect for the volume, or "
+                "export it. This is the honest number that `area x height` only "
+                "gestures at: on a sphere of r=20 sitting on the bed it returns 1.63 cm3 "
+                "against 1.73 worked out with a pencil. ~0.6s on a 20k-triangle part."))
 
 register(NodeDef("OverhangFaces", "print", "Overhang Faces",
     inputs=[Socket("mesh", WIRE_MESH)],
@@ -1855,7 +1874,9 @@ register(NodeDef("OrientForPrint", "print", "Orient for Print",
             _f("supports", 1.0, 0, 3, label="fewer supports", step=0.1),
             _f("speed", 0.3, 0, 3, label="speed (height)", step=0.1),
             _f("angle", 45, 20, 80, label="overhang angle"),
-            _f("layer", 0.2, 0.05, 1.0, label="layer height", step=0.05)],
+            _f("layer", 0.2, 0.05, 1.0, label="layer height", step=0.05),
+            _i("exact_below", 25000, 0, 200000, label="exact below (tris)",
+               soft_max=50000)],
     outputs=[Socket("result", WIRE_MESH), Socket("report", WIRE_DATA)],
     code_template={"algebra": ""},   # handled by the transpiler (_emit_orient), not a template
     description="Try every stable resting pose (the faces of the convex hull the centre "
@@ -1865,7 +1886,12 @@ register(NodeDef("OrientForPrint", "print", "Orient for Print",
                 "direction the part will actually be pulled — and strength becomes the "
                 "real question: how much of that load crosses the layers instead of "
                 "running along them. With no load declared it falls back to maximising "
-                "the smallest glued cross-section. The weights are a taste, not a law."))
+                "the smallest glued cross-section. Support is the TRUE volume (a boolean "
+                "per pose) while the part is under `exact below` triangles, and the "
+                "area x height proxy above it — the report says which it used, all-or-"
+                "nothing, because ranking one pose by volume and the next by a proxy "
+                "would compare two different quantities and call it a decision. The "
+                "weights are a taste, not a law."))
 
 
 # ===========================================================================

@@ -178,6 +178,20 @@
     },
     {
       "id": "n15",
+      "type": "SupportVolume",
+      "params": {
+        "angle": 45,
+        "layer": 0.2,
+        "clearance": 0.2
+      },
+      "position": [
+        1260,
+        580
+      ],
+      "preview": true
+    },
+    {
+      "id": "n16",
       "type": "CodeBlock",
       "params": {
         "code": "# WHERE IT WILL BREAK, drawn \u2014 and drawn as the ACTUAL cross-section, not as a slab the\n# size of the part. That is the whole point: the thing holding the stem on is a square of\n# 8 x 8 mm, and a red plate the size of the plate would have hidden exactly the fact the\n# picture exists to show.\n#\n# A CodeBlock runs in the same globals as the generated script, so the print helpers in\n# the PREAMBLE are simply there to be called: _print_metrics gives the weak height,\n# manifold3d gives the polygon at it.\nthickness = 1.4  #@param float min=0.4 max=6 step=0.2\nout = []\nfor m in (in_0, in_1):\n    if m is None:\n        continue\n    met = _print_metrics(m, 45.0, 0.2)\n    if not met[\"sectioned\"]:\n        continue\n    z = met[\"weak_z\"]\n    outer, holes = [], []\n    for c in _to_manifold(m, \"the weak plane\").slice(z).to_polygons():\n        pts = [(float(q[0]), float(q[1])) for q in c]\n        if len(pts) < 3:\n            continue\n        area = 0.5 * sum(pts[i][0] * pts[(i + 1) % len(pts)][1]\n                         - pts[(i + 1) % len(pts)][0] * pts[i][1] for i in range(len(pts)))\n        f = make_face(Polyline(*pts, close=True))\n        (outer if area > 0 else holes).append(f)   # a hole winds the other way round\n    for f in outer:\n        slab = Pos(0, 0, z) * extrude(f, amount=thickness)\n        for h in holes:\n            slab = slab - (Pos(0, 0, z - 1) * extrude(h, amount=thickness + 2))\n        out.append(slab)\nresult = out\n"
@@ -189,10 +203,10 @@
       "preview": true
     },
     {
-      "id": "n16",
+      "id": "n17",
       "type": "CodeBlock",
       "params": {
-        "code": "# The two verdicts, standing at the back. Reading _print_metrics again rather than being\n# handed the numbers: the label cannot lie about a part it measured itself.\nsize = 4.0  #@param float min=2 max=12 step=0.2\ndef _up(s, x, z, fs):\n    return extrude(Pos(x, 26, z) * (Plane.XZ * Text(s, font_size=fs)), amount=0.7)\nout = [_up(\"THE SAME PART, PRINTED TWO WAYS\", 0, 84, size * 1.7),\n       _up(\"the load is along the stem\", 0, 74, size * 1.05)]\nfor m, x, name in ((in_0, -45, \"as modelled\"), (in_1, 45, \"as oriented\")):\n    if m is None:\n        continue\n    met = _print_metrics(m, 45.0, 0.2)\n    out += [_up(name, x, 64, size * 1.2),\n            _up(\"weak plane %.0f mm2\" % met[\"weak_area\"], x, 56, size * 0.95),\n            _up(\"support %.0f mm2\" % met[\"support_area\"], x, 49, size * 0.95),\n            _up(\"%.0f mm tall\" % met[\"height\"], x, 42, size * 0.95)]\nresult = out\n"
+        "code": "# The two verdicts, standing at the back. Reading _print_metrics again rather than being\n# handed the numbers: the label cannot lie about a part it measured itself.\nsize = 4.0  #@param float min=2 max=12 step=0.2\ndef _up(s, x, z, fs):\n    return extrude(Pos(x, 26, z) * (Plane.XZ * Text(s, font_size=fs)), amount=0.7)\nout = [_up(\"THE SAME PART, PRINTED TWO WAYS\", 0, 84, size * 1.7),\n       _up(\"the load is along the stem\", 0, 74, size * 1.05)]\nfor m, x, name in ((in_0, -45, \"as modelled\"), (in_1, 45, \"as oriented\")):\n    if m is None:\n        continue\n    met = _print_metrics(m, 45.0, 0.2)\n    body = _support_body(m, 45.0, 0.2, 0.2)\n    sup = (\"no support at all\" if body is None\n           else \"support %.2f cm3\" % (body.volume / 1000))   # the envelope: a slicer\n                                                             # fills it sparse\n    out += [_up(name, x, 64, size * 1.2),\n            _up(\"weak plane %.0f mm2\" % met[\"weak_area\"], x, 56, size * 0.95),\n            _up(sup, x, 49, size * 0.95),\n            _up(\"%.0f mm tall\" % met[\"height\"], x, 42, size * 0.95)]\nresult = out\n"
       },
       "position": [
         1490,
@@ -201,7 +215,7 @@
       "preview": true
     },
     {
-      "id": "n17",
+      "id": "n18",
       "type": "MeshFix",
       "params": {
         "min_body": 16,
@@ -214,10 +228,10 @@
       "preview": false
     },
     {
-      "id": "n18",
+      "id": "n19",
       "type": "Note",
       "params": {
-        "text": "IT IS NOT A CONVENIENCE. IT DECIDES WHERE THE PART BREAKS.\n\nA printed part is not the same material in every direction. Within a layer the plastic is continuous; between two layers it is glued, and that glue is worth roughly a third to two thirds of the real thing. So the question \"which way up?\" is not about supports or print time. It is about which direction you are allowed to pull.\n\nOn the LEFT is the bracket as modelled, dropped on the bed. It looks like the sensible way to print it: plate flat, stem straight up, and \u2014 read the Panel \u2014 it needs NOT ONE SUPPORT. Now look at the red slab cutting through the stem near its root. That is the weak plane: the smallest glued cross-section in the whole part, 64 mm\u00b2 of layer adhesion, and it is exactly where anything you hang on that stem will snap it off. The part is standing up in the one orientation that puts its job at right angles to its strength.\n\nOn the RIGHT is what `Orient for Print` chose, and the reason it chose it is the vector wired into `load`: the direction the stem will actually be pulled. Read its report \u2014 with the load declared, \"strength\" becomes how much of that load CROSSES the layers instead of running along them. Standing up scores 1.00 (all of it, head-on). Lying down scores 0.04 (almost none). It picks lying down even though that now costs some 380 mm\u00b2 of support and nine tenths of the bed contact, and it is right to: supports are money, and a snapped bracket is a bracket.\n\nTRY THIS \u2014 unwire `load` (or set it to 0,0,0).\nThe search has nothing to defend any more, so it optimises for what is left: no supports, big bed, short print. It puts the part back on its plate, standing up. Nothing is broken \u2014 you asked a different question and got an honest answer to it. That is worth staring at for a second: an optimiser will happily hand you the weakest possible part if you never tell it what the part is FOR.\n\nThe red faces are the ones that need support (`Overhang Faces` \u2014 a mesh of its own, so it gets its own colour). The bed faces are deliberately not among them: a flat base points straight down too, and counting it as an overhang is the classic way to get this backwards.\n\nThese are heuristics, not an FEA. They catch the dominant failure mode of an FDM part \u2014 it comes apart at a layer line, at the interface with the least glued area \u2014 and they say nothing about the stress riser around that hole. Use them to rule out the stupid orientation, not to certify the clever one."
+        "text": "IT IS NOT A CONVENIENCE. IT DECIDES WHERE THE PART BREAKS.\n\nA printed part is not the same material in every direction. Within a layer the plastic is continuous; between two layers it is glued, and that glue is worth roughly a third to two thirds of the real thing. So the question \"which way up?\" is not about supports or print time. It is about which direction you are allowed to pull.\n\nOn the LEFT is the bracket as modelled, dropped on the bed. It looks like the sensible way to print it: plate flat, stem straight up, and \u2014 read the Panel \u2014 it needs NOT ONE SUPPORT. Now look at the red slab cutting through the stem near its root. That is the weak plane: the smallest glued cross-section in the whole part, 64 mm\u00b2 of layer adhesion, and it is exactly where anything you hang on that stem will snap it off. The part is standing up in the one orientation that puts its job at right angles to its strength.\n\nOn the RIGHT is what `Orient for Print` chose, and the reason it chose it is the vector wired into `load`: the direction the stem will actually be pulled. Read its report \u2014 with the load declared, \"strength\" becomes how much of that load CROSSES the layers instead of running along them. Standing up scores 1.00 (all of it, head-on). Lying down scores 0.04 (almost none). It picks lying down even though that now costs real support material \u2014 the grey body under the part is it, prisms dropped from every overhanging face to the bed with the part cut out of them, and the label reads its volume \u2014 and nine tenths of the bed contact, and it is right to: supports are money, and a snapped bracket is a bracket.\n\nTRY THIS \u2014 unwire `load` (or set it to 0,0,0).\nThe search has nothing to defend any more, so it optimises for what is left: no supports, big bed, short print. It puts the part back on its plate, standing up. Nothing is broken \u2014 you asked a different question and got an honest answer to it. That is worth staring at for a second: an optimiser will happily hand you the weakest possible part if you never tell it what the part is FOR.\n\nThe red faces are the ones that need support (`Overhang Faces` \u2014 a mesh of its own, so it gets its own colour), and `Support Volume` turns them into the actual body of plastic you will throw away: 'area x height' is a proxy, this is a boolean, and on a sphere of r=20 it agrees with a pencil to within the tessellation. The bed faces are deliberately not among them: a flat base points straight down too, and counting it as an overhang is the classic way to get this backwards.\n\nThese are heuristics, not an FEA. They catch the dominant failure mode of an FDM part \u2014 it comes apart at a layer line, at the interface with the least glued area \u2014 and they say nothing about the stress riser around that hole. Use them to rule out the stupid orientation, not to certify the clever one."
       },
       "position": [
         1830,
@@ -320,37 +334,44 @@
     },
     {
       "id": "l14",
-      "from_node": "n4",
+      "from_node": "n11",
       "from_socket": "result",
       "to_node": "n15",
-      "to_socket": "in_0"
+      "to_socket": "mesh"
     },
     {
       "id": "l15",
-      "from_node": "n11",
-      "from_socket": "result",
-      "to_node": "n15",
-      "to_socket": "in_1"
-    },
-    {
-      "id": "l16",
       "from_node": "n4",
       "from_socket": "result",
       "to_node": "n16",
       "to_socket": "in_0"
     },
     {
-      "id": "l17",
+      "id": "l16",
       "from_node": "n11",
       "from_socket": "result",
       "to_node": "n16",
       "to_socket": "in_1"
+    },
+    {
+      "id": "l17",
+      "from_node": "n4",
+      "from_socket": "result",
+      "to_node": "n17",
+      "to_socket": "in_0"
     },
     {
       "id": "l18",
       "from_node": "n11",
       "from_socket": "result",
       "to_node": "n17",
+      "to_socket": "in_1"
+    },
+    {
+      "id": "l19",
+      "from_node": "n11",
+      "from_socket": "result",
+      "to_node": "n18",
       "to_socket": "mesh"
     }
   ],
