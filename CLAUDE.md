@@ -301,6 +301,34 @@ a dependency). Full findings + measurements: **`PLAN_MESH_LANE.md`**.
   `PLAN_MESH_LANE.md` §5.
 - Example graph: `cad_nodes/examples/mesh-lane.json` (seeded into `projects/`). Tests: `tests/test_mesh_lane.py`.
 
+## 5d. Print physics (category `print`)
+
+Four nodes that answer what a slicer never asks: **which way up, and why**
+(`catalog.py` §12c, runtime in the PREAMBLE, full notes in **`PLAN_PRINT_PHYSICS.md`**).
+A printed part is anisotropic — the bond between layers is worth roughly a third to two
+thirds of the material within one — so orientation decides **where the part breaks**.
+
+- `PlaceOnBed` (lowest point → z=0; serves BOTH lanes: it measures on the mesh and moves
+  the original, so a solid stays a solid), `PrintCheck` (report → Panel), `OverhangFaces`
+  (the faces needing support, as a mesh of its own → its own colour in the viewer),
+  `OrientForPrint` (every stable pose scored; two outputs — the oriented mesh and the
+  table saying why — from ONE search, via `_emit_orient`, modelled on `_emit_center`).
+- **The weak plane** is the smallest cross-section perpendicular to Z: `manifold3d`'s
+  `slice(z).area()` (~0.01 s for 80 sections, so scoring 100 poses is free). It is a
+  property of the part *in this orientation*, and turning the part moves it.
+- **Stable poses** = the convex-hull faces whose polygon contains the projected centre of
+  mass — scipy, because trimesh's `compute_stable_poses` needs `networkx`+`shapely`, which
+  are not in the image. Cluster hull normals by TOLERANCE, not by a rounded key.
+- Two traps, both paid for: the faces resting **on the bed** must be excluded from the
+  overhang (a flat base points down too, and counting it makes the one support-free
+  orientation look worst), and `PlaceOnBed` must measure on the **tessellation**, not on
+  `Shape.bounding_box()` — the fast OCCT box is oversized (hence `view.bbox.approx`), so a
+  part dropped by it hovers above the bed.
+- **Strength needs a load.** With a `load` vector the score is how much of it crosses the
+  layers; with none declared the optimiser optimises for printability and will hand you the
+  weakest possible part. That is the whole of `examples/print-orientation.json`.
+- Tests: `tests/test_print.py`.
+
 ## 5b. Lists & fan-out (Grasshopper-style)
 
 Inputs have a data-access mode (`Socket.list_access`):

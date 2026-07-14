@@ -163,6 +163,15 @@ _EXAMPLE_DESCRIPTIONS = {
                     "number at each point, so nearby points are FORCED to agree, and out "
                     "comes a landscape. Octaves add detail at half the height; the sea is "
                     "just a plane. Built on the mesh lane, watertight, and printable.",
+    "print-orientation": "Which way up is not a convenience — it decides where the part "
+                         "breaks. The same bracket, printed two ways: as modelled it "
+                         "needs NOT ONE support, and its weakest glued section (64 mm2, "
+                         "drawn in red at the stem root) is exactly where the load will "
+                         "snap it off. Wire the load direction into `Orient for Print` "
+                         "and it lays the part down instead — 380 mm2 of support, and a "
+                         "bracket that holds. Unwire the load and it goes back to the "
+                         "weak one: an optimiser hands you the worst part in the world "
+                         "if you never tell it what the part is FOR.",
     "mesh-lane": "The mesh lane — a Box and a Sphere tessellate into triangles just "
                  "by touching a mesh input, get cut with a mesh boolean (manifold3d: "
                  "0.1s where the B-Rep kernel needs 81s), simplified within a bounded "
