@@ -1800,6 +1800,101 @@ register(NodeDef("MeshToSolid", "mesh", "Mesh to Solid",
 
 
 # ===========================================================================
+# 12c. Print physics — how it lands, what it costs, where it breaks
+# ===========================================================================
+# A printed part is ANISOTROPIC: the bond between two layers is roughly a third to
+# two thirds as strong as the material within a layer. So the orientation is not a
+# convenience — it decides where the part breaks, and by how much. These four nodes
+# measure that (PLAN_PRINT_PHYSICS.md). They are heuristics, not an FEA: they catch
+# the dominant failure mode (the part splits at the glued interface with the least
+# area) and say nothing about a stress riser around a hole.
+
+register(NodeDef("PlaceOnBed", "print", "Place on Bed",
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_SURFACE, WIRE_MESH])],
+    params=[Param("center", "bool", "centre in XY", True, widget="checkbox"),
+            _f("clearance", 0.0, 0.0, 10, label="clearance")],
+    outputs=_geo(),
+    output_follows="shape",
+    code_template={"algebra": "_bed_drop({shape}, {center}, {clearance})"},
+    description="Sit the part on the bed: its lowest point goes to z=0. Works on both "
+                "lanes — a solid stays a solid, a mesh stays a mesh. It measures on the "
+                "tessellation rather than the bounding box on purpose: the fast OCCT box "
+                "is oversized (the live view marks its bbox `approx`), so a part dropped "
+                "by it hovers above the bed by up to 1% of its size — invisible on "
+                "screen, and a failed first layer."))
+
+register(NodeDef("PrintCheck", "print", "Print Check",
+    inputs=[Socket("mesh", WIRE_MESH)],
+    params=[_f("angle", 45, 20, 80, label="overhang angle"),
+            _f("layer", 0.2, 0.05, 1.0, label="layer height", step=0.05),
+            _f("clearance", 0.2, 0, 2, label="support gap", step=0.05)],
+    outputs=_data("report"),
+    code_template={"algebra": "_print_check({mesh}, {angle}, {layer}, {clearance})"},
+    description="The print report, as text — wire it into a Panel. Height and layer "
+                "count, bed contact, the support material in cm3 and grams (the REAL "
+                "volume — prisms under every overhang down to the bed, minus the part — "
+                "not an area), and WHERE IT WILL BREAK: the weak plane is the smallest "
+                "glued cross-section in the part, and a printed part comes apart at a "
+                "layer line before it breaks anywhere else. Put the part on the bed "
+                "first."))
+
+register(NodeDef("SupportVolume", "print", "Support Volume",
+    inputs=[Socket("mesh", WIRE_MESH)],
+    params=[_f("angle", 45, 20, 80, label="overhang angle"),
+            _f("layer", 0.2, 0.05, 1.0, label="layer height", step=0.05),
+            _f("clearance", 0.2, 0, 2, label="support gap", step=0.05)],
+    outputs=_mesh(),
+    code_template={"algebra": "_support_body({mesh}, {angle}, {layer}, {clearance})"},
+    description="The support material itself, as a BODY — drop a prism from every "
+                "overhanging triangle to the bed, union them, subtract the part (and the "
+                "part shifted down by `support gap`, which carves the clearance the "
+                "support must leave or it welds itself on). Preview it to see what you "
+                "are about to pay for, wire it into a Mesh Inspect for the volume, or "
+                "export it. This is the honest number that `area x height` only "
+                "gestures at: on a sphere of r=20 sitting on the bed it returns 1.63 cm3 "
+                "against 1.73 worked out with a pencil. ~0.6s on a 20k-triangle part."))
+
+register(NodeDef("OverhangFaces", "print", "Overhang Faces",
+    inputs=[Socket("mesh", WIRE_MESH)],
+    params=[_f("angle", 45, 20, 80, label="overhang angle"),
+            _f("layer", 0.2, 0.05, 1.0, label="layer height", step=0.05)],
+    outputs=_mesh(),
+    code_template={"algebra": "_overhang_faces({mesh}, {angle}, {layer})"},
+    description="Just the faces that will need support, as a mesh of their own — so the "
+                "viewer gives them their own colour and you SEE them on the part. The "
+                "faces resting ON the bed are excluded: a flat base points straight down "
+                "too, and calling that an overhang is the classic way to get this wrong. "
+                "It is an open patch, not a body — MeshInspect will say so, and it is "
+                "right to."))
+
+register(NodeDef("OrientForPrint", "print", "Orient for Print",
+    inputs=[Socket("mesh", WIRE_MESH),
+            Socket("load", WIRE_VECTOR, required=False)],
+    params=[_f("strength", 1.0, 0, 3, label="strength", step=0.1),
+            _f("supports", 1.0, 0, 3, label="fewer supports", step=0.1),
+            _f("speed", 0.3, 0, 3, label="speed (height)", step=0.1),
+            _f("angle", 45, 20, 80, label="overhang angle"),
+            _f("layer", 0.2, 0.05, 1.0, label="layer height", step=0.05),
+            _i("exact_below", 25000, 0, 200000, label="exact below (tris)",
+               soft_max=50000)],
+    outputs=[Socket("result", WIRE_MESH), Socket("report", WIRE_DATA)],
+    code_template={"algebra": ""},   # handled by the transpiler (_emit_orient), not a template
+    description="Try every stable resting pose (the faces of the convex hull the centre "
+                "of mass sits over — let go of the part and it stays), score each, and "
+                "return the winner already sitting on the bed. `report` is the table of "
+                "the top five, so you can see why. Wire a vector into `load` — the "
+                "direction the part will actually be pulled — and strength becomes the "
+                "real question: how much of that load crosses the layers instead of "
+                "running along them. With no load declared it falls back to maximising "
+                "the smallest glued cross-section. Support is the TRUE volume (a boolean "
+                "per pose) while the part is under `exact below` triangles, and the "
+                "area x height proxy above it — the report says which it used, all-or-"
+                "nothing, because ranking one pose by volume and the next by a proxy "
+                "would compare two different quantities and call it a decision. The "
+                "weights are a taste, not a law."))
+
+
+# ===========================================================================
 # 13. Export / IO
 # ===========================================================================
 register(NodeDef("ExportSTEP", "export", "Export STEP",

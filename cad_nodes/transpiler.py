@@ -1060,6 +1060,332 @@ def _mesh_to_solid(_mesh, _max_tris=20000):
     return Solid(fixer.Shape())
 
 
+# --- print physics (PLAN_PRINT_PHYSICS.md) ---------------------------------
+# An FDM part is ANISOTROPIC: the bond between layers is roughly a third to two
+# thirds of the strength within a layer, depending on material and temperature. So
+# orientation is not a convenience — it decides where the part breaks. Everything
+# below measures a mesh SITTING ON THE BED (z=0), and it is a heuristic, not an FEA:
+# it captures the dominant failure mode (the part splits at the glued interface with
+# the least area) and says nothing about stress concentration around a hole.
+
+
+def _sections(_mesh, _n=48):
+    \"\"\"Cross-section area up Z. manifold3d slices in ~0.01s for 80 sections, so
+    scoring a hundred candidate orientations is free.\"\"\"
+    import numpy as _np
+    tm = _mesh.tm
+    z0, z1 = float(tm.bounds[0][2]), float(tm.bounds[1][2])
+    if z1 - z0 < 1e-6:
+        return _np.array([]), _np.array([])
+    try:
+        man = _to_manifold(_mesh, "the print check")
+    except Exception:
+        return _np.array([]), _np.array([])   # not watertight: no honest section area
+    zs = _np.linspace(z0 + (z1 - z0) * 0.02, z1 - (z1 - z0) * 0.02, int(_n))
+    return _np.array([man.slice(float(z)).area() for z in zs]), zs
+
+
+def _print_metrics(_mesh, _angle=45.0, _layer=0.2, _nsec=48):
+    \"\"\"Measure one orientation. The mesh must already sit on the bed.
+
+    The faces ON THE BED are excluded from the overhang: a flat base points straight
+    down too, and counting it as an overhang — the classic way to get this wrong —
+    makes a part that needs no support at all look like the worst option there is.\"\"\"
+    import numpy as _np
+    tm = _mesh.tm
+    n, a = tm.face_normals, tm.area_faces
+    zc = tm.triangles[:, :, 2].mean(axis=1)
+    z0 = float(tm.bounds[0][2])
+    crit = math.cos(math.radians(float(_angle)))
+    down = n[:, 2] < -crit                      # steeper than the printer can bridge
+    bed = down & (zc < z0 + max(float(_layer), 0.05) * 2.0)
+    over = down & ~bed
+    areas, zs = _sections(_mesh, _nsec)
+    i = int(_np.argmin(areas)) if len(areas) else -1
+    return {
+        "support_area": float(a[over].sum()),
+        # what the support COSTS is not its footprint but how far it must reach down
+        "support_vol": float((a[over] * (zc[over] - z0)).sum()),
+        "bed_area": float(a[bed].sum()),
+        "height": float(tm.bounds[1][2] - z0),
+        "weak_area": float(areas[i]) if i >= 0 else 0.0,
+        "weak_z": float(zs[i]) if i >= 0 else 0.0,
+        "sectioned": i >= 0,
+        "over_mask": over,
+        "n_over": int(over.sum()),
+    }
+
+
+def _support_body(_mesh, _angle=45.0, _layer=0.2, _clearance=0.2):
+    \"\"\"The support material itself, as a body you can look at — not an estimate of it.
+
+    Under every overhanging triangle, drop a prism to the bed. Union the lot, subtract the
+    part (and the part shifted down by `clearance`, which is what carves the gap the
+    support must leave under the face, or it welds itself on). What is left IS the support:
+    its volume is grams, and you can preview it.
+
+    `area x height above the bed` — the cheap proxy the search falls back on — is not this
+    number and cannot be: it counts the column under an overhang even where the part
+    itself is already sitting in the way. On a sphere of r=20 on the bed this returns
+    1.63 cm3 against 1.73 cm3 worked out with a pencil (the rest is tessellation and the
+    clearance gap). It costs 0.58s on a 20k-triangle mesh, so it is affordable per node
+    and NOT free inside a search over every pose — hence the guard in _orient_plan.\"\"\"
+    import numpy as _np
+    m = _as_mesh(_mesh)
+    if m is None:
+        return None
+    tm = m.tm
+    met = _print_metrics(m, _angle, _layer, _nsec=2)
+    over = _np.where(met["over_mask"])[0]
+    z0 = float(tm.bounds[0][2])
+    if not len(over):
+        return None
+    mf = _mf()
+    prisms = []
+    for fi in over:
+        tri = tm.triangles[fi]
+        if float(tm.area_faces[fi]) < 1e-9 or float(tri[:, 2].max()) - z0 < 0.01:
+            continue                     # a degenerate face, or one already on the bed
+        v = _np.array([[p[0], p[1], p[2]] for p in tri]
+                      + [[p[0], p[1], z0] for p in tri], dtype=_np.float32)
+        # the face's own normal points DOWN (it is an overhang), so the prism's outward
+        # normal there points UP: the top triangle is the face, wound the other way.
+        f = _np.array([[0, 2, 1], [3, 4, 5],
+                       [0, 1, 4], [0, 4, 3],
+                       [1, 2, 5], [1, 5, 4],
+                       [2, 0, 3], [2, 3, 5]], dtype=_np.uint32)
+        prisms.append(mf.Manifold(mf.Mesh(v, f)))
+    if not prisms:
+        return None
+    col = mf.Manifold.batch_boolean(prisms, mf.OpType.Add)
+    part = _to_manifold(m, "the support volume")
+    blocker = part + part.translate((0.0, 0.0, -float(_clearance)))
+    return _from_manifold(col - blocker)
+
+
+def _support_report(_mesh, _angle=45.0, _layer=0.2, _clearance=0.2, _density=1.24):
+    \"\"\"The support body, in the units that hurt — and NOT pretending they are grams on the
+    spool. This is the ENVELOPE: a slicer fills it with a 10-20% lattice, so the plastic
+    that actually goes through the nozzle is a fraction of it. Quoting the solid mass as
+    the print cost would overstate it five-fold, and a number that flatters itself is
+    worse than no number.\"\"\"
+    s = _support_body(_mesh, _angle, _layer, _clearance)
+    if s is None:
+        return None, "support     : none at all — it prints as it stands"
+    cm3 = s.volume / 1000.0
+    return s, ("support     : %.2f cm3 of envelope  (%.1f g of PLA if it were solid; a "
+               "slicer fills it\\n              sparse, so scale by your support density — "
+               "and none of that touches\\n              the hour you will spend picking "
+               "it off)" % (cm3, cm3 * float(_density)))
+
+
+def _bed_drop(_shape, _center=True, _clearance=0.0):
+    \"\"\"Sit a shape on the bed: its lowest point goes to z=0. Works on both lanes —
+    it measures on the mesh and moves the original, so a solid stays a solid.
+
+    It measures on the TESSELLATION rather than Shape.bounding_box() on purpose: the
+    fast OCCT box is oversized (which is why the live view tags its bbox `approx`),
+    and a part dropped by an oversized box hovers above the bed by up to 1% of its
+    size — invisible on screen, and a failed first layer.\"\"\"
+    if _shape is None:
+        return None
+    m = _as_mesh(_shape)
+    if m is None:
+        return _shape
+    b = m.tm.bounds
+    dz = -float(b[0][2]) + float(_clearance)
+    dx = dy = 0.0
+    if _center:
+        dx = -float(b[0][0] + b[1][0]) / 2.0
+        dy = -float(b[0][1] + b[1][1]) / 2.0
+    return _move(_shape, None, dx, dy, dz)
+
+
+def _overhang_faces(_mesh, _angle=45.0, _layer=0.2):
+    \"\"\"Just the faces that will need support, as a mesh of their own — so the viewer
+    gives them their own colour and you SEE them on the part. Open by construction:
+    it is a patch, not a body, and MeshInspect will say so.\"\"\"
+    m = _as_mesh(_mesh)
+    if m is None:
+        return None
+    met = _print_metrics(m, _angle, _layer, _nsec=2)
+    if met["n_over"] == 0:
+        return None                              # nothing overhangs: an empty preview
+    return Mesh(m.tm.submesh([met["over_mask"]], append=True, repair=False))
+
+
+def _print_check(_mesh, _angle=45.0, _layer=0.2, _clearance=0.2):
+    \"\"\"The print report: how tall, how much support, how well it sticks — and WHERE
+    IT WILL BREAK. Wire it into a Panel.\"\"\"
+    m = _as_mesh(_mesh)
+    if m is None:
+        return "no mesh"
+    met = _print_metrics(m, _angle, _layer)
+    layers = int(met["height"] / max(float(_layer), 0.01)) + 1
+    out = [
+        "height      : %.1f mm  (%d layers at %.2f mm)" % (met["height"], layers, _layer),
+        "bed contact : %.1f mm2" % met["bed_area"],
+    ]
+    try:                                 # the real thing: prisms to the bed, minus the part
+        _, line = _support_report(m, _angle, _layer, _clearance)
+        out.append(line)
+    except Exception as _e:              # not watertight -> no boolean -> the proxy, said so
+        out.append("support     : %.0f mm2 of face overhangs past %.0f deg (area only — "
+                   "the true volume\\n              needs a closed mesh: %s)"
+                   % (met["support_area"], _angle, _e))
+    if met["sectioned"]:
+        out += [
+            "",
+            "WEAK PLANE  : %.1f mm2 at z = %.1f mm" % (met["weak_area"], met["weak_z"]),
+            "              That is the smallest glued area in the part, and a printed",
+            "              part comes apart at a layer line before it breaks anywhere",
+            "              else: across that plane the load is carried by layer",
+            "              adhesion alone (roughly a third to two thirds of the",
+            "              strength the same material has within a layer). Turn the",
+            "              part so the load runs ALONG the layers, not through them.",
+        ]
+    else:
+        out += ["", "WEAK PLANE  : not watertight — no honest cross-section to measure.",
+                "              Put a Mesh Fix in front of this."]
+    return "\\n".join(out)
+
+
+def _rest_planes(_mesh):
+    \"\"\"The faces the part could actually rest on: every face of its convex hull whose
+    polygon contains the centre of mass, projected down. That is what "stable" means —
+    let go of it and it stays. (trimesh has compute_stable_poses, but it wants networkx
+    and shapely, which are not in the image; the convex hull is scipy, which is.)\"\"\"
+    import numpy as _np
+    tm = _mesh.tm
+    hull = tm.convex_hull
+    com = _np.asarray(tm.center_mass, dtype=float)
+    # Cluster the hull's faces by normal with a TOLERANCE, not by a rounded key: one
+    # flat side of the part is many triangles whose normals agree to 6 decimals and
+    # not to 3, and a rounded key splits them into two identical "poses".
+    groups = []                                  # [(normal, [face indices])]
+    for fi, nrm in enumerate(hull.face_normals):
+        for g in groups:
+            if float(_np.dot(g[0], nrm)) > 0.999:
+                g[1].append(fi)
+                break
+        else:
+            groups.append((_np.asarray(nrm, dtype=float), [fi]))
+    seen = {tuple(g[0]): g[1] for g in groups}
+    planes = []
+    for key, faces in seen.items():
+        nrm = _np.asarray(key, dtype=float)
+        nrm /= (_np.linalg.norm(nrm) or 1.0)
+        pts = hull.vertices[_np.unique(hull.faces[faces].ravel())]
+        # is the centre of mass over the footprint? Build a 2D frame on the plane and
+        # ask whether the projected COM is inside the convex hull of the projected face.
+        u = _np.cross(nrm, [0.0, 0.0, 1.0])
+        if _np.linalg.norm(u) < 1e-6:
+            u = _np.cross(nrm, [0.0, 1.0, 0.0])
+        u /= (_np.linalg.norm(u) or 1.0)
+        v = _np.cross(nrm, u)
+        p2 = _np.column_stack([pts @ u, pts @ v])
+        c2 = _np.array([com @ u, com @ v])
+        try:
+            from scipy.spatial import ConvexHull as _CH
+            eq = _CH(p2).equations                # A x + b <= 0 inside
+            inside = bool(_np.all(eq[:, :2] @ c2 + eq[:, 2] <= 1e-6))
+        except Exception:
+            inside = True                         # degenerate footprint: keep it, and let
+        if inside:                                # the score decide
+            planes.append(nrm)
+    return planes
+
+
+def _orient_plan(_mesh, _load=None, _w_strength=1.0, _w_support=1.0, _w_speed=0.3,
+                 _angle=45.0, _layer=0.2, _exact_below=25000, _max_cand=60):
+    \"\"\"Try every stable resting pose, score it, keep the best.
+
+    STRENGTH is the term worth reading twice. With a `load` wired in (the direction the
+    part will be pulled), the score is |load . Z| after the rotation: you want the load
+    lying IN the layer plane, not crossing it, because crossing it is the printer's
+    weakest direction by a factor of two or three. With no load declared, the proxy is
+    the largest weak plane — maximise the smallest glued cross-section.\"\"\"
+    import numpy as _np
+    m = _as_mesh(_mesh)
+    if m is None:
+        return {"mesh": None, "report": "no mesh"}
+    tmesh = _tm()
+    planes = _rest_planes(m)[: int(_max_cand)]
+    load = None
+    if _load is not None:
+        v = _np.array([_load.X, _load.Y, _load.Z] if hasattr(_load, "X")
+                      else list(_load)[:3], dtype=float)
+        nv = _np.linalg.norm(v)
+        load = v / nv if nv > 1e-9 else None
+    # The real support volume is a boolean per pose (~0.6s on a 20k-triangle part): fine
+    # for a handful of poses on a modest part, not for a big mesh. Above the budget the
+    # search falls back to the `area x height` proxy — and the report says which it used,
+    # because a number whose provenance is a secret is worse than no number.
+    #
+    # It is all-or-nothing on purpose. Scoring one pose by real volume and the next by a
+    # proxy would rank two different quantities against each other and call it a decision.
+    def _score_all(exact):
+        out = []
+        for nrm in planes:
+            R = tmesh.geometry.align_vectors(nrm, [0.0, 0.0, -1.0])  # that face -> the bed
+            dropped = _bed_drop(m.transformed(R), True, 0.0)
+            met = _print_metrics(dropped, _angle, _layer)
+            if exact:
+                body = _support_body(dropped, _angle, _layer)        # may raise: not closed
+                met["support_vol"] = float(body.volume) if body is not None else 0.0
+            met["mesh"] = dropped
+            met["load_z"] = abs(float(R[:3, :3] @ load @ _np.array([0, 0, 1.0]))) \
+                if load is not None else None
+            out.append(met)
+        return out
+
+    exact = m.n_tris <= int(_exact_below)
+    try:
+        cands = _score_all(exact)
+    except Exception:
+        exact = False
+        cands = _score_all(False)
+    if not cands:
+        return {"mesh": m, "report": "no stable resting pose found"}
+    mx = lambda k: max(max(c[k] for c in cands), 1e-9)            # noqa: E731
+    hi_w, hi_s, hi_h, hi_b = mx("weak_area"), mx("support_vol"), mx("height"), mx("bed_area")
+    for c in cands:
+        strength = (c["load_z"] if c["load_z"] is not None
+                    else 1.0 - c["weak_area"] / hi_w)             # 0 = strong
+        c["score"] = (float(_w_strength) * strength
+                      + float(_w_support) * (c["support_vol"] / hi_s
+                                             + 0.4 * (1.0 - c["bed_area"] / hi_b))
+                      + float(_w_speed) * (c["height"] / hi_h))
+        c["strength"] = strength
+    cands.sort(key=lambda c: c["score"])
+    best = cands[0]
+    head = ("load declared: strength = how much of it crosses the layers (0 is best)"
+            if load is not None else
+            "no load declared: strength = the smallest glued cross-section (bigger is better)")
+    sup_unit = "cm3" if exact else "mm2xmm"
+    rows = ["%-4s %-8s %-9s %-10s %-8s %s" % ("", "score", "strength",
+                                              "support " + sup_unit, "height", "weak plane")]
+    for i, c in enumerate(cands[:5]):
+        sup = ("%.2f" % (c["support_vol"] / 1000.0)) if exact else ("%.0f" % c["support_vol"])
+        rows.append("%-4s %-8.3f %-9s %-10s %-8.1f %.0f mm2 @ z=%.1f%s" % (
+            "->" if i == 0 else " %d" % (i + 1), c["score"],
+            ("%.2f" % c["load_z"]) if c["load_z"] is not None else "%.0f mm2" % c["weak_area"],
+            sup, c["height"], c["weak_area"], c["weak_z"],
+            "   <- chosen" if i == 0 else ""))
+    prov = ("support is the REAL volume: prisms under every overhang, down to the bed, "
+            "minus the part" if exact else
+            "support is the area x height PROXY — the part is over `exact below` triangles, "
+            "and\\na boolean per pose would cost more than the answer is worth. Wire a "
+            "Support Volume\\nnode onto the winner for the true number.")
+    report = "\\n".join(
+        ["%d stable poses tried, %s" % (len(cands), head), ""] + rows
+        + ["", prov, "",
+           "Weights: strength %.1f, support %.1f, speed %.1f — they are a taste, not"
+           % (_w_strength, _w_support, _w_speed),
+           "a law. The measurements above are the part; the ranking is your priorities."])
+    return {"mesh": best["mesh"], "report": report}
+
+
 def _mesh_matrix(_kind, **_kw):
     \"\"\"Build the 4x4 for a transform on the mesh lane. A Move/Rotate/Scale/Mirror
     on triangles is exactly a matrix on the vertex array — the SAME operation the
@@ -2615,6 +2941,28 @@ class Transpiler:
         self.out_var_of[(node.id, "volume")] = volvar
         self._guard(lines, body, node)
 
+    def _emit_orient(self, node, lines: list[str]) -> None:
+        """OrientForPrint: one search, two outputs — the oriented mesh and the table
+        that says why it won. Same shape as _emit_center: the node's two output
+        sockets need distinct expressions, so they are registered in out_var_of. The
+        plan is computed ONCE and both outputs read it (scoring 60 poses means 60
+        slicings; doing it twice because a Panel is wired in would be daft)."""
+        ndef = catalog.get(node.type)
+        var = self._new_var(node.id)                 # var_of[node] = the mesh
+        vals = self._input_values(node.id, ndef)
+        p = self._param_values(node, ndef)          # keeps the editable-literal spans
+        args = ", ".join([vals.get("mesh", "None"), vals.get("load", "None"),
+                          p["strength"], p["supports"], p["speed"],
+                          p["angle"], p["layer"], p["exact_below"]])
+        plan, rep = var + "_plan", var + "_rep"
+        lines.append(f"{rep} = None")                # defined even if the body throws
+        body = [f"{plan} = _orient_plan({args}){_annot(node)}",
+                f"{var} = {plan}['mesh']",
+                f"{rep} = {plan}['report']"]
+        self.out_var_of[(node.id, "result")] = var
+        self.out_var_of[(node.id, "report")] = rep
+        self._guard(lines, body, node)
+
     def _emit_codeblock(self, node, lines: list[str]) -> None:
         """A CodeBlock transpiles like TWO connected nodes: a params node and a
         code node. Declared `#@param`s become the function's named ARGUMENTS — so
@@ -2895,6 +3243,8 @@ class Transpiler:
                 self._emit_vectorize(node, body)
             elif node.type == "CenterOfMass":
                 self._emit_center(node, body)
+            elif node.type == "OrientForPrint":
+                self._emit_orient(node, body)
             else:
                 self._emit_simple(node, body)
 
