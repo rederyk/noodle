@@ -365,6 +365,45 @@ thirds of the material within one — so orientation decides **where the part br
   weakest possible part. That is the whole of `examples/print-orientation.json`.
 - Tests: `tests/test_print.py`.
 
+## 5e. Voronoi 3D + universal Populate
+
+`PopulateGeometry` (display "Populate") and `Voronoi3D` are the point→partition
+pair. Helpers in the transpiler PREAMBLE; both stay memo-cacheable because the
+seed lives *inside* the helper (`np.random.RandomState`), not on the emitted line
+(`_MEMO_NONDET` matches emitted-line substrings only).
+
+- **Populate is universal** — one node, one `region` socket (`raw=True`,
+  `accepts=[solid, mesh]`), dispatching in `_populate` on the runtime TOPOLOGY of
+  what's wired (not duck-typing `position_at` — Edge *and* Face have one):
+  nothing → the legacy `0..w × 0..h` box at z=0 (bit-exact with the old node);
+  **open curve → 1D** along it, uniform by arc length (`edge.position_at(t)`, t is
+  already normalized arc length); **closed curve / flat XY face → 2D** *really
+  inside* the region (`Face.is_inside`, top-up rounds — not just its bbox); **curved
+  face → 2.5D** on the surface, uniform by area (`trimesh.sample.sample_surface`);
+  **solid / watertight mesh → 3D** inside the volume. The `raw` socket is
+  load-bearing: without it the `curve→surface` (`_face`) and `solid→mesh`
+  (`_to_mesh`) casts would fire at the wire and the helper could never tell a curve
+  from a face. A *closed* curve is re-filled inside the helper (`_face`) — the
+  legacy Rectangle/Circle-as-boundary idiom — while an open one scatters along.
+- **3D volume fill has no rtree** (`trimesh.contains` needs it, absent from the
+  image): point-in-mesh is `_winding_inside` — the generalized winding number in
+  pure numpy (|w|>0.25 = inside), run on a manifold3d-simplified *proxy* when the
+  mesh is heavy (>4k tris; it's only an inside oracle, so no verification like
+  MeshSimplify does). Rejection loop, 24 rounds, then a clear "run Mesh Fix" error.
+- **Voronoi3D** (`mesh` category, list output `cells`): `scipy.spatial.Voronoi` in
+  3D with sites mirrored across the **6 planes** of the domain box (body bbox if
+  wired, else the points' extent — the 3D analog of `_voronoi2d`'s mirror trick) so
+  every kept cell is finite. Each cell = its Voronoi vertices, shrunk toward the
+  centroid by `scale`, hulled straight into a Manifold (`Manifold.hull_points` — a
+  Voronoi cell is convex, the hull IS the cell), then `cell ^ body`. Output is a
+  list of `mesh` bodies (downstream is booleans; `MeshToSolid` is the explicit
+  bridge back to B-Rep). Coplanar/degenerate points → clear `QhullError`-wrapped
+  ValueError; cap 2000 points. ~0.1s for 60 cells clipped to a 5k-tri sphere.
+- **The lattice** = Populate(volume of a body) → Voronoi3D(same body, scale<1) →
+  `MeshSubtract` the shrunk cells from the body: the walls *between* cells become
+  the part. `examples/voronoi-3d-lattice.json`. Tests:
+  `tests/test_populate_voronoi3d.py` (pure-Python: wire shape + emission).
+
 ## 5b. Lists & fan-out (Grasshopper-style)
 
 Inputs have a data-access mode (`Socket.list_access`):
@@ -386,9 +425,11 @@ which node outputs are lists (`_produces_list` + `_LIST_PRODUCERS`) so lists
 propagate down a chain. List nodes live in the `data` category (ListCreate,
 ListSort, ListItem, ListReverse, ListSlice, First/Last, Flatten, Concat, …);
 `_sort` uses build123d `ShapeList.sort_by` for shapes, Python `sorted` otherwise.
-Other list-producers: `Voronoi2D` (scipy → cell faces), `DivideSurface`
-(`Face.position_at` UV grid → points) — both fan out downstream (Extrude per
-cell, scatter per point). scipy/numpy are available in the worker.
+Other list-producers: `Voronoi2D` (scipy → cell faces), `Voronoi3D` (scipy 3D +
+`manifold3d.hull_points`/boolean → convex mesh **cells** clipped to a body, §5e),
+`DivideSurface` (`Face.position_at` UV grid → points), `PopulateGeometry`
+(universal scatter, §5e) — all fan out downstream (Extrude per cell, scatter per
+point). scipy/numpy are available in the worker.
 Frontend multi-connect = dynamic input slots sharing one socket name (see
 `onConnectionsChange` + `fromGraphJSON` in `nodes.html`).
 
