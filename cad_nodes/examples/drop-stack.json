@@ -1,0 +1,172 @@
+{
+ "name": "drop-stack",
+ "nodes": [
+  {
+   "id": "t",
+   "type": "NumberSlider",
+   "params": {
+    "value": 0.85,
+    "_ui": {
+     "value": {
+      "min": 0,
+      "max": 1,
+      "step": 0.01
+     }
+    }
+   },
+   "position": [
+    60,
+    460
+   ]
+  },
+  {
+   "id": "big",
+   "type": "Box",
+   "params": {
+    "width": 20,
+    "height": 20,
+    "depth": 20
+   },
+   "position": [
+    60,
+    120
+   ]
+  },
+  {
+   "id": "mb",
+   "type": "Move",
+   "params": {
+    "z": 12
+   },
+   "position": [
+    300,
+    120
+   ]
+  },
+  {
+   "id": "small",
+   "type": "Box",
+   "params": {
+    "width": 10,
+    "height": 10,
+    "depth": 10
+   },
+   "position": [
+    60,
+    300
+   ]
+  },
+  {
+   "id": "ms",
+   "type": "Move",
+   "params": {
+    "x": 14,
+    "z": 45
+   },
+   "position": [
+    300,
+    300
+   ]
+  },
+  {
+   "id": "top",
+   "type": "Box",
+   "params": {
+    "width": 14,
+    "height": 14,
+    "depth": 14
+   },
+   "position": [
+    60,
+    620
+   ]
+  },
+  {
+   "id": "mt",
+   "type": "Move",
+   "params": {
+    "z": 75
+   },
+   "position": [
+    300,
+    620
+   ]
+  },
+  {
+   "id": "d",
+   "type": "Drop",
+   "params": {
+    "material": "plastic",
+    "collide": true
+   },
+   "position": [
+    560,
+    300
+   ],
+   "preview": true
+  }
+ ],
+ "connections": [
+  {
+   "id": "c1",
+   "from_node": "big",
+   "from_socket": "result",
+   "to_node": "mb",
+   "to_socket": "shape"
+  },
+  {
+   "id": "c2",
+   "from_node": "small",
+   "from_socket": "result",
+   "to_node": "ms",
+   "to_socket": "shape"
+  },
+  {
+   "id": "c3",
+   "from_node": "top",
+   "from_socket": "result",
+   "to_node": "mt",
+   "to_socket": "shape"
+  },
+  {
+   "id": "c4",
+   "from_node": "mb",
+   "from_socket": "result",
+   "to_node": "d",
+   "to_socket": "shape"
+  },
+  {
+   "id": "c5",
+   "from_node": "ms",
+   "from_socket": "result",
+   "to_node": "d",
+   "to_socket": "shape"
+  },
+  {
+   "id": "c6",
+   "from_node": "mt",
+   "from_socket": "result",
+   "to_node": "d",
+   "to_socket": "shape"
+  },
+  {
+   "id": "c7",
+   "from_node": "t",
+   "from_socket": "result",
+   "to_node": "d",
+   "to_socket": "t"
+  }
+ ],
+ "groups": [
+  {
+   "title": "one scene: fall, stack, tip off the edge",
+   "bounding": [
+    20,
+    60,
+    780,
+    700
+   ],
+   "color": "#3f589e"
+  }
+ ]
+}

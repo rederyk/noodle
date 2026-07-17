@@ -959,17 +959,27 @@ register(NodeDef("Move", "transform", "Move",
                 "to each position (one moved copy per vector)."))
 
 register(NodeDef("Rotate", "transform", "Rotate",
-    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE, WIRE_MESH])] + _pin("angle"),
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE, WIRE_MESH]),
+            Socket("pivot", WIRE_VECTOR, required=False)] + _pin("angle"),
     params=[_f("angle", 90, -360, 360),
             Param("axis", "select", "axis", "Z", widget="select",
                   options=["X", "Y", "Z"],
-                  code_map={"X": "Axis.X", "Y": "Axis.Y", "Z": "Axis.Z"})],
+                  code_map={"X": "Axis.X", "Y": "Axis.Y", "Z": "Axis.Z"}),
+            Param("about", "select", "about", "world", widget="select",
+                  options=["world", "part", "group"])],
     outputs=_geo(),
     gizmo={"kind": "rotate", "binds": ["angle"], "axisParam": "axis",
            "anchor": "origin", "lock": ["angle"]},
-    code_template={"algebra": "_rotate({shape}, {axis}, {angle})"},
+    code_template={"algebra": "_rotate({shape}, {axis}, {angle}, {pivot}, {about})"},
     output_follows="shape",
-    description="Rotate a shape (or a plane) around a global axis."))
+    description="Rotate a shape (or a plane, or a mesh). `about` picks the centre: "
+                "`world` turns about the global axis (a part away from the origin "
+                "ORBITS — the old behaviour), `part` about its own bbox centre (it "
+                "turns in place), `group` about the collective bbox centre when a "
+                "list is wired in — the ensemble turns as one rigid body. Wire a "
+                "point into `pivot` to name the centre exactly; it overrides the "
+                "dropdown. The centre is measured on the tessellation (the fast "
+                "OCCT box is oversized — same reason Place on Bed does)."))
 
 register(NodeDef("Scale", "transform", "Scale",
     inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE, WIRE_MESH])] + _pin("factor"),
@@ -1822,6 +1832,40 @@ register(NodeDef("PlaceOnBed", "print", "Place on Bed",
                 "is oversized (the live view marks its bbox `approx`), so a part dropped "
                 "by it hovers above the bed by up to 1% of its size — invisible on "
                 "screen, and a failed first layer."))
+
+register(NodeDef("Drop", "print", "Drop on Plane",
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_SURFACE, WIRE_MESH]),
+            Socket("plane", WIRE_PLANE, required=False)] + _pin("t"),
+    params=[_f("t", 1.0, 0.0, 1.0, step=0.01, label="timeline"),
+            Param("material", "select", "material", "plastic", widget="select",
+                  options=["plastic", "rubber", "steel", "wood", "lead", "clay"]),
+            Param("settle", "bool", "settle (topple)", True, widget="checkbox"),
+            Param("collide", "bool", "collide (stack)", False, widget="checkbox")],
+    outputs=_geo(),
+    output_follows="shape",
+    gizmo={"kind": "timeline", "binds": ["t"], "anchor": "preview", "lock": ["t"]},
+    code_template={"algebra": "_drop({shape}, {plane}, {t}, {material}, {settle}, {collide})"},
+    description="Place on Bed, but as a FALL you can scrub: drag `timeline` from 0 "
+                "(where the part is now) to 1 (at rest on the plane). The part drops "
+                "under gravity, BOUNCES — each impact keeps a fixed fraction of the "
+                "speed, set by `material`: rubber keeps going (e=0.85), plastic "
+                "clatters (0.55), lead lands with one dead thud (0.08), clay just "
+                "stops — and then, with `settle`, TOPPLES for real: if its centre of "
+                "mass is not over the contact patch it tips about the support edge, "
+                "rolls onto the next face of its hull, and repeats until it rests in "
+                "a genuinely stable pose (a cube dropped on its edge falls flat; a "
+                "sphere is left alone — rolling releases no energy and is not a "
+                "topple). t=1 is always fully at rest — material and topples change "
+                "the SHAPE of the journey, not its length. Falls along the wired "
+                "plane's normal (default: the bed, z=0). Wire a Number Slider into "
+                "`t` to drive several Drops from ONE timeline, or a list of times to "
+                "scatter the trajectory as a motion trail. With `collide` on, SEVERAL "
+                "shapes wired into this one node fall as ONE SCENE instead of a fan: "
+                "sequentially, lowest first, each stopping at its first contact — the "
+                "bed or the parts already down — and a part that lands unstably on a "
+                "pile TIPS off its perch and falls again (rays + sampled rotation: it "
+                "costs real compute, hence the toggle; no sliding, and no browser "
+                "live-replay in this mode). Both lanes — a solid stays a solid."))
 
 register(NodeDef("PrintCheck", "print", "Print Check",
     inputs=[Socket("mesh", WIRE_MESH)],

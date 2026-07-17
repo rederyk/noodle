@@ -292,6 +292,19 @@ def _bbox_of_coords(coords) -> dict | None:
 
 
 def _preview_of(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict | None:
+    """Compact per-node preview: _preview_geom's geometry, plus any animation
+    plan the node runtime attached to its result (`_noodle_anim` — today the
+    Drop node's fall/topple timeline). The plan rides the preview entry as
+    `anim`, reaches the editor through view.json, and lets the browser replay
+    the motion at 60fps while the slider drags — no engine round trip."""
+    entry = _preview_geom(value, linear_frac, angular)
+    anim = getattr(value, "_noodle_anim", None)
+    if entry is not None and anim is not None:
+        entry["anim"] = anim
+    return entry
+
+
+def _preview_geom(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict | None:
     """Compact per-node preview. Three render paths, tried in order:
       - points    : a Vector or list of Vectors -> dots
       - mesh      : a solid/sketch -> tessellated triangles

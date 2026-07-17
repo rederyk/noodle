@@ -9,7 +9,7 @@ run in the worker and are exercised end-to-end by examples/print-orientation.jso
 import pytest
 
 from cad_nodes import catalog
-from cad_nodes.casts import WIRE_DATA, WIRE_MESH, WIRE_SOLID, WIRE_VECTOR
+from cad_nodes.casts import WIRE_DATA, WIRE_MESH, WIRE_PLANE, WIRE_SOLID, WIRE_VECTOR
 from cad_nodes.graph import Graph, ValidationError
 from cad_nodes.transpiler import transpile
 
@@ -24,7 +24,7 @@ def _calls(code: str, helper: str) -> bool:
     return any(f"= {helper}(" in ln for ln in code.splitlines())
 
 
-PRINT_NODES = ["PlaceOnBed", "PrintCheck", "OverhangFaces", "OrientForPrint"]
+PRINT_NODES = ["PlaceOnBed", "Drop", "PrintCheck", "OverhangFaces", "OrientForPrint"]
 
 
 @pytest.mark.parametrize("ntype", PRINT_NODES)
@@ -173,3 +173,123 @@ def test_the_search_declares_which_support_number_it_used():
     code = transpile(g)
     call = next(l for l in code.splitlines() if "_orient_plan(__out_" in l)
     assert "1234" in call
+
+
+# --- Drop: Place on Bed as a fall you can scrub ------------------------------
+
+def test_drop_serves_both_lanes_like_place_on_bed():
+    # Same trick as PlaceOnBed: measure on the mesh, move the original.
+    sock = catalog.get("Drop").inputs[0]
+    assert sock.wire_type == WIRE_SOLID
+    assert WIRE_MESH in (sock.accepts or [])
+    assert catalog.get("Drop").output_follows == "shape"
+
+
+def test_drop_takes_an_optional_plane_to_fall_toward():
+    plane = next(s for s in catalog.get("Drop").inputs if s.name == "plane")
+    assert plane.wire_type == WIRE_PLANE and not plane.required
+
+
+def test_drop_timeline_is_a_normalised_scrub():
+    # 0 = where the part is, 1 = at rest. Always the FULL settle: the material
+    # changes the shape of the journey, never the reach of the slider.
+    t = catalog.get("Drop").param("t")
+    assert (t.min, t.max) == (0.0, 1.0)
+
+
+def test_drop_declares_the_timeline_gizmo():
+    # Edit-on-canvas: drag the part along Z to scrub t (pull down = drop, lift
+    # = rewind). A wired `t` locks the gizmo — the upstream slider owns time.
+    g = catalog.get("Drop").gizmo
+    assert g == {"kind": "timeline", "binds": ["t"], "anchor": "preview",
+                 "lock": ["t"]}
+
+
+def test_drop_materials_are_fixed_and_contrasting():
+    # Plastic is the default; lead is the promised counterpoint (one dead thud).
+    mat = catalog.get("Drop").param("material")
+    assert mat.default == "plastic"
+    assert "lead" in mat.options and "rubber" in mat.options
+
+
+def test_drop_settles_by_default_and_the_toggle_reaches_the_call():
+    # The topple cascade is the point of the node — on by default; `settle`
+    # off must fall back to the translation-only fall (balanced on its edge).
+    p = catalog.get("Drop").param("settle")
+    assert p.type == "bool" and p.default is True
+    g = _g(
+        [{"id": "b", "type": "Box", "params": {}},
+         {"id": "d", "type": "Drop", "params": {"settle": False}}],
+        [{"id": "c", "from_node": "b", "from_socket": "result",
+          "to_node": "d", "to_socket": "shape"}],
+    )
+    call = next(l for l in transpile(g).splitlines() if "= _drop(" in l)
+    assert "False" in call
+
+
+def test_drop_transpiles_with_time_and_material_at_the_call_site():
+    g = _g(
+        [{"id": "b", "type": "Box", "params": {}},
+         {"id": "d", "type": "Drop", "params": {"t": 0.35, "material": "lead"}}],
+        [{"id": "c", "from_node": "b", "from_socket": "result",
+          "to_node": "d", "to_socket": "shape"}],
+    )
+    g.validate()
+    code = transpile(g)
+    assert _calls(code, "_drop")
+    call = next(l for l in code.splitlines() if "= _drop(" in l)
+    assert "0.35" in call and "'lead'" in call
+
+
+def test_a_solid_dropped_stays_a_solid():
+    # output_follows carries `solid` through, so a B-Rep-only node may follow.
+    g = _g(
+        [{"id": "b", "type": "Box", "params": {}},
+         {"id": "d", "type": "Drop", "params": {}},
+         {"id": "f", "type": "Fillet", "params": {}}],
+        [{"id": "c1", "from_node": "b", "from_socket": "result",
+          "to_node": "d", "to_socket": "shape"},
+         {"id": "c2", "from_node": "d", "from_socket": "result",
+          "to_node": "f", "to_socket": "part"}],
+    )
+    g.validate()
+
+
+def test_drop_collide_exists_and_is_off_by_default():
+    # Collisions cost real compute (rays + sampled rotations): opt-in only.
+    p = catalog.get("Drop").param("collide")
+    assert p.type == "bool" and p.default is False
+
+
+def test_collide_unfans_the_shapes_into_one_scene():
+    # Two shapes + collide: the transpiler must NOT fan out — the runtime needs
+    # the whole list to stack the parts against each other — and the output is
+    # a list again so downstream still fans.
+    g = _g(
+        [{"id": "a", "type": "Box", "params": {}},
+         {"id": "b", "type": "Box", "params": {}},
+         {"id": "d", "type": "Drop", "params": {"collide": True}}],
+        [{"id": "c1", "from_node": "a", "from_socket": "result",
+          "to_node": "d", "to_socket": "shape"},
+         {"id": "c2", "from_node": "b", "from_socket": "result",
+          "to_node": "d", "to_socket": "shape"}],
+    )
+    g.validate()
+    code = transpile(g)
+    call = next(l for l in code.splitlines() if "= _drop(" in l)
+    assert "_fanout" not in call and "[__out_" in call
+
+
+def test_without_collide_several_shapes_still_fan_out():
+    g = _g(
+        [{"id": "a", "type": "Box", "params": {}},
+         {"id": "b", "type": "Box", "params": {}},
+         {"id": "d", "type": "Drop", "params": {}}],
+        [{"id": "c1", "from_node": "a", "from_socket": "result",
+          "to_node": "d", "to_socket": "shape"},
+         {"id": "c2", "from_node": "b", "from_socket": "result",
+          "to_node": "d", "to_socket": "shape"}],
+    )
+    code = transpile(g)
+    call = next(l for l in code.splitlines() if "_drop(" in l and "__out_" in l)
+    assert "_fanout" in call

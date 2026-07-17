@@ -544,3 +544,82 @@ def test_new_list_nodes_fan_out_downstream():
     code = transpile(g)
     assert "_randlist(4, 0.0, 1.0, 1)" in code
     assert "_fanout" in code
+
+
+# --- Rotate: pivot + about (world / part / group) --------------------------
+def _rot_graph(about=None, extra_nodes=(), extra_conns=()):
+    params = {"angle": 45, "axis": "X"}
+    if about is not None:
+        params["about"] = about
+    return Graph.from_dict({"name": "t", "nodes": [
+        {"id": "b", "type": "Box", "params": {}},
+        {"id": "r", "type": "Rotate", "params": params},
+        *extra_nodes,
+    ], "connections": [
+        {"id": "c1", "from_node": "b", "from_socket": "result",
+         "to_node": "r", "to_socket": "shape"},
+        *extra_conns,
+    ]})
+
+
+def test_rotate_takes_an_optional_pivot_point():
+    piv = next(s for s in catalog.get("Rotate").inputs if s.name == "pivot")
+    assert piv.wire_type == "vector" and not piv.required
+
+
+def test_rotate_about_defaults_to_world_so_old_graphs_are_untouched():
+    # Backward compatibility is the contract: a graph saved before `about`
+    # existed carries no such param, and must keep orbiting the global axis.
+    p = catalog.get("Rotate").param("about")
+    assert p.default == "world"
+    assert p.options == ["world", "part", "group"]
+    g = _rot_graph()                       # no `about` in params at all
+    g.validate()
+    code = transpile(g)
+    call = next(l for l in code.splitlines() if "= _rotate(" in l)
+    assert "'world'" in call and "__pivot_" not in call
+
+
+def test_rotate_about_group_hoists_one_shared_centre_out_of_the_fanout():
+    # Two shapes multi-wired into `shape` fan out; with about=group each item
+    # must pivot about the ONE collective centre, so the emitter hoists
+    # _pivot_of([...]) before the lambda — else each piece spins about itself.
+    g = _rot_graph("group",
+                   extra_nodes=[{"id": "b2", "type": "Box", "params": {}}],
+                   extra_conns=[{"id": "c2", "from_node": "b2",
+                                 "from_socket": "result",
+                                 "to_node": "r", "to_socket": "shape"}])
+    g.validate()
+    code = transpile(g)
+    assert any(l.strip().startswith("__pivot_") and "_pivot_of(" in l
+               for l in code.splitlines())
+    call = next(l for l in code.splitlines() if "_fanout(" in l and "_rotate(" in l)
+    assert "__pivot_" in call               # the hoisted centre reaches every item
+
+
+def test_rotate_about_part_does_not_hoist():
+    # Per-part centres live in the helper: each fanned item measures its own.
+    g = _rot_graph("part",
+                   extra_nodes=[{"id": "b2", "type": "Box", "params": {}}],
+                   extra_conns=[{"id": "c2", "from_node": "b2",
+                                 "from_socket": "result",
+                                 "to_node": "r", "to_socket": "shape"}])
+    code = transpile(g)
+    assert "__pivot_" not in code
+
+
+def test_a_wired_pivot_wins_over_the_hoist():
+    # An explicit pivot point is the user naming the centre — group mode must
+    # not overwrite it.
+    g = _rot_graph("group",
+                   extra_nodes=[{"id": "b2", "type": "Box", "params": {}},
+                                {"id": "p", "type": "ConstructPoint",
+                                 "params": {"x": 5}}],
+                   extra_conns=[{"id": "c2", "from_node": "b2",
+                                 "from_socket": "result",
+                                 "to_node": "r", "to_socket": "shape"},
+                                {"id": "c3", "from_node": "p",
+                                 "from_socket": "point",
+                                 "to_node": "r", "to_socket": "pivot"}])
+    g.validate()
+    assert "__pivot_" not in transpile(g)

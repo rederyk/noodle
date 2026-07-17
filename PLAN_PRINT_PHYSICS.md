@@ -32,6 +32,7 @@ certify the clever one.
 | node | what it does |
 |---|---|
 | `PlaceOnBed` | lowest point → z=0, optionally centred in XY. Serves **both lanes** (measures on the mesh, moves the original), so a solid stays a solid |
+| `Drop` | PlaceOnBed as a **fall you can scrub**: a `timeline` slider from 0 (where the part is) to 1 (at rest), analytic bounce under gravity, restitution fixed per `material` (plastic 0.55, rubber 0.85, steel 0.65, wood 0.45, lead 0.08, clay 0). Optional `plane` input sets what it falls onto (default the bed). Both lanes, translation only |
 | `PrintCheck` | text report → a Panel: height and layers, bed contact, overhang area past the critical angle, and the **weak plane** (area + height) |
 | `OverhangFaces` | the faces that need support, as a mesh of its own — so the viewer gives them their own colour and you *see* them on the part |
 | `SupportVolume` | the support material itself, **as a body**: preview it, inspect it, export it. The honest cost, not a gesture at it |
@@ -40,6 +41,65 @@ certify the clever one.
 `OrientForPrint` has **two outputs** from one search (`_emit_orient`, modelled on
 `_emit_center`): scoring the poses means slicing each of them, and doing it twice because
 a Panel happens to be wired in would be daft.
+
+`Drop` (`_drop` + `_drop_segs`/`_drop_height` + `_settle_plan` in the PREAMBLE) is two
+phases on one slider. **Bounce**: one free fall plus a geometric series of parabolas —
+each impact keeps `e` of the speed, bounces below 0.1% of the drop count as rest. With
+`e=0.08` (lead) the fall is nearly the whole phase — one dead thud — where rubber spends
+most of it bouncing. **Topple** (`settle`, on by default): the quasi-static cascade. A
+resting body is stable iff its centre of mass projects inside the support polygon — the
+same test OrientForPrint uses to *enumerate* stable poses; `_settle_plan` walks the *path*
+between them on the convex hull: com outside the contact patch → tip about the nearest
+support edge (or corner) until the next hull facet touches, repeat (≤40 steps). Each step
+is recorded as (pivot, axis, angle, seconds) and replayed — partially, ease-in `f²` — at
+scrub time, composed as `Shape.rotate(Axis(...))` on the B-Rep lane and one 4×4 on the
+mesh lane, conjugated through the wired plane's frame.
+
+Two rules carry the honesty. The **energy guard**: a step that does not strictly lower the
+centre of mass is not a topple — a tessellated sphere "toppling" facet to facet releases
+nothing and is declared at rest (it may creep a facet or two first — physically fair),
+where a cube balanced on an edge drops its centre 20% and goes over. And **deterministic
+ties**: a part balanced exactly (the 45° cube — com dead over the support edge, zero
+torque) tries both senses and takes the one that descends; a graph must give the same
+answer twice, where a real part would be tipped by the first draught.
+
+The timeline is bounce seconds + topple seconds (g = 9810 mm/s²), normalised to the
+slider: `t=1` is always fully at rest, material and topples change the *shape* of the
+journey, not its reach. Heights are measured on the tessellation (same reason as
+`PlaceOnBed`); a part starting *under* the plane surfaces linearly — it cannot fall. The
+com is `trimesh.center_mass` when the mesh is watertight, the bbox centre otherwise.
+Why this took a second pass: the bounce has a closed form, toppling does not — it is
+contact dynamics (which edge, how far, then which edge next), a genuinely simulated
+cascade, just quasi-static instead of a full rigid-body integrator.
+
+And because the plan is *data* — segments and steps, not code — the engine ships it with
+the preview (`_noodle_anim` on the result → `previews[id].anim` in view.json) and the
+editor replays any t in the browser as pure matrix math (`dropMatrixAt`, nodes.html):
+with ✥ fastDrag on, dragging the t slider (or a Number Slider wired into `t`, or the
+timeline gizmo) animates the fall at 60fps with zero engine round trips; the exact
+re-bake lands when the drag settles. One physics, computed once, played anywhere.
+
+**Collisions (`collide`, off by default).** Several shapes wired into ONE Drop become one
+scene instead of a fan (the transpiler un-fans `shape`; the output is a list again). The
+parts fall **sequentially, lowest first**, each stopping at its first contact with the bed
+or the parts already at rest, and the timeline covers the whole sequence — at no t has
+anything ever passed through anything else. Contact is measured with `_vspans`: vertical
+point-in-triangle spans with CLOSED boundaries (trimesh's pure ray engine needs rtree,
+which the image does not ship — and a ray grazing a silhouette is a coin toss where the
+closed test makes footprint-to-footprint stacking exact), witnesses both ways (`_up_gaps`
+adds edge midpoints: a table edge has no interior vertex), plus an inside test for
+lateral penetration the vertical gaps are blind to (`_scene_touch`). On the pile the
+stability question is the same com-over-contact-shadow test as the bed; an unstable perch
+TIPS about the nearest contact edge (`_tip_search`: 8° strides + bisection — no closed
+form against an arbitrary mesh), and three closed-form rules keep the cascade honest and
+finite: RELEASE when the com sinks to pivot level (past it the support would have to
+pull), never rotate past the bottom of the com's arc (a free body does not pendulum back
+up), and a hanging contact that cannot rotate simply lets go (a vertical wall does not
+obstruct a vertical fall). The demo scenario — a cube dropped half-off a landed box —
+runs the full chain: perch, tip past release, catch the wall, roll 90° down it, land flat
+on the bed beside. Declared limits: friction is infinite (nothing slides), a bed topple
+does not check neighbours it sweeps, edge-on-edge kisses live at tessellation scale,
+max ~10 events per part, and no browser live-replay (a fan previews as one merged mesh).
 
 ## 3. How each number is got
 

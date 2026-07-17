@@ -357,7 +357,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
           <button class="tb-icon" onclick="frameView()" title="Fit to view (F · dbl-click)">⛶</button>
           <button class="tb-icon on" id="btn-grid" onclick="toggleGrid()" title="Show / hide grid">▦</button>
           <button class="tb-icon" id="btn-proj" onclick="toggleProjection()" title="Perspective / Orthographic (O)">⧉</button>
-          <button class="tb-icon" id="btn-fast" onclick="toggleFastDrag()" title="Drag Move/Rotate/Scale = instant local preview">✥</button>
+          <button class="tb-icon" id="btn-fast" onclick="toggleFastDrag()" title="Drag Move/Rotate/Scale/Drop timeline = instant local preview">✥</button>
           <button class="tb-icon" id="btn-isolate" onclick="toggleIsolate()" title="Isolate selected — show only the selected nodes'/group's shapes (I)">◎</button>
         </div>
       </div>
@@ -497,6 +497,7 @@ let runAbort = null;       // AbortController for the in-flight run
 let loadingGraph = false;  // suppress live triggers while rebuilding the graph
 let fastDrag = false;      // local JS transform while dragging Move/Rotate/Scale
 let previewMeshes = {};    // graph node-id -> THREE.Mesh currently shown
+let previewAnims  = {};    // graph node-id -> Drop animation plan (view previews[].anim)
 // RefImage: editor-only textured quads drawn in the viewport as modelling refs
 const refGroup = new THREE.Group();  // added to viewer.scene lazily in syncRefImages
 const refMeshes = {};                // graph node-id -> THREE.Mesh (reference quad)
@@ -2583,13 +2584,89 @@ function onParamChange(node){
     scheduleLive();   // re-bake exactly once the drag settles
     return;
   }
+  if (fastDrag && applyDropTargets(node)){
+    scheduleLive();   // a slider wired into Drop t: same live replay, per target
+    return;
+  }
   if (liveMode) scheduleLive();
+}
+
+// ── Drop live replay ────────────────────────────────────────────────────────
+// The engine ships the WHOLE fall with the preview (previews[id].anim: bounce
+// segments + topple steps, world coordinates, and the t it was baked at), so
+// the browser can play any t of the timeline as pure matrix math — the same
+// physics, anticipated at 60fps while the slider drags; the exact re-bake
+// lands when the drag settles.
+function dropMatrixAt(anim, t){
+  const M = new THREE.Matrix4();
+  const n = new THREE.Vector3(anim.n[0], anim.n[1], anim.n[2]);
+  const tau = Math.min(Math.max(+t || 0, 0), 1) * anim.T;
+  const h0 = anim.h0;
+  if (tau < anim.Tb || !(anim.steps||[]).length){      // still in the air
+    const f = anim.Tb > 0 ? tau / anim.Tb : 1;
+    let h = 0;
+    if (h0 <= 0) h = h0 * (1 - f);
+    else {
+      let tn = f * anim.tot_n;
+      for (const [d, up] of anim.segs){
+        if (tn <= d){ h = h0 * Math.max((up == null ? 1 - tn*tn : up*tn - tn*tn), 0); break; }
+        tn -= d;
+      }
+    }
+    return M.makeTranslation(n.x*(h-h0), n.y*(h-h0), n.z*(h-h0));
+  }
+  M.makeTranslation(-h0*n.x, -h0*n.y, -h0*n.z);        // landed…
+  let left = tau - anim.Tb;
+  for (const s of anim.steps){                         // …then the topples, in order
+    let deg = s.deg, partial = false;
+    if (left >= s.du - 1e-12){ left -= s.du; }
+    else { const fr = Math.max(0, left / s.du); deg = s.deg * fr * fr; partial = true; }
+    const ax = new THREE.Vector3(s.ax[0], s.ax[1], s.ax[2]).normalize();
+    M.premultiply(new THREE.Matrix4().makeTranslation(-s.p[0], -s.p[1], -s.p[2]))
+     .premultiply(new THREE.Matrix4().makeRotationAxis(ax, deg * Math.PI/180))
+     .premultiply(new THREE.Matrix4().makeTranslation(s.p[0], s.p[1], s.p[2]));
+    if (partial) break;
+  }
+  return M;
+}
+
+// Seat `node`'s preview mesh at timeline position tNew, relative to the t the
+// mesh was baked at: mesh transform = M(tNew) · M(tBaked)⁻¹.
+function applyDropAnim(node, tNew){
+  const anim = previewAnims['n'+node.id], m = previewMeshes['n'+node.id];
+  if (!anim || !m) return false;
+  const rel = dropMatrixAt(anim, tNew).multiply(dropMatrixAt(anim, anim.t).invert());
+  rel.decompose(m.position, m.quaternion, m.scale);
+  return true;
+}
+
+// A dragged value node (Number Slider…) wired straight into Drop `t` sockets:
+// replay each connected Drop live instead of waiting for the engine.
+function applyDropTargets(node){
+  if (!node || !node.outputs || !lgraph) return false;
+  const v = node.properties && node.properties.value;
+  if (typeof v !== 'number') return false;
+  let hit = false;
+  for (const out of node.outputs){
+    for (const lid of (out.links || [])){
+      const lk = lgraph.links[lid]; if (!lk) continue;
+      const tn = lgraph.getNodeById(lk.target_id);
+      if (!tn || tn.cadType !== 'Drop') continue;
+      const sock = (tn.inputs || [])[lk.target_slot];
+      if (!sock || (sock.cadName || sock.name) !== 't') continue;
+      if (applyDropAnim(tn, v)) hit = true;
+    }
+  }
+  return hit;
 }
 
 // Move/Rotate/Scale a node's own preview mesh in Three.js (60fps), as a delta
 // from the params baked into the current mesh. Returns false if not applicable.
+// Drop replays its shipped timeline the same way (dropMatrixAt).
 function applyLocalTransform(node){
-  if (!node || !['Move','Rotate','Scale'].includes(node.cadType)) return false;
+  if (!node) return false;
+  if (node.cadType === 'Drop') return applyDropAnim(node, +node.properties.t);
+  if (!['Move','Rotate','Scale'].includes(node.cadType)) return false;
   const m = previewMeshes['n'+node.id];
   if (!m) return false;                 // this node's result isn't on screen
   const b = node._baked || {}, p = node.properties;
@@ -2688,10 +2765,13 @@ function enterGizmoEdit(node){
   gizmoParamStart = {};
   for (const name of g.binds) gizmoParamStart[name] = +node.properties[name] || 0;
   transformControls.setMode(g.kind === 'rotate' ? 'rotate' : g.kind === 'scale' ? 'scale' : 'translate');
-  // rotate constrains to the node's single chosen axis; others show all 3
+  // rotate constrains to the node's single chosen axis; timeline (Drop) is a
+  // translate that only rides the fall axis (Z); others show all 3
   if (g.kind === 'rotate'){
     const ax = gizmoAxisLetter(node);
     transformControls.showX = ax==='x'; transformControls.showY = ax==='y'; transformControls.showZ = ax==='z';
+  } else if (g.kind === 'timeline'){
+    transformControls.showX = transformControls.showY = false; transformControls.showZ = true;
   } else {
     transformControls.showX = transformControls.showY = transformControls.showZ = true;
   }
@@ -2749,6 +2829,16 @@ function gizmoDragUpdate(){
     let r = 1, best = 0;
     for (const c of ['x','y','z']){ const dv = Math.abs(s[c]-1); if (dv > best){ best = dv; r = s[c]; } }
     gizmoWriteParam(node, g.binds[0], gizmoParamStart[g.binds[0]] * (r || 1e-6));
+  } else if (g.kind === 'timeline'){                        // Drop: drag along Z scrubs t
+    // Pull the part DOWN and time advances, lift it and time rewinds. One part
+    // height (or its height above the bed, whichever is larger) = the full
+    // timeline, so the gesture is "drag it to the plane" — clamped 0..1 by the
+    // catalog range in gizmoWriteParam.
+    const dz = gizmoAnchor.position.z - gizmoStart.z;
+    let span = Math.max(gizmoStart.z, 10);
+    const pm = previewMeshes['n'+node.id];
+    if (pm){ const b=new THREE.Box3().setFromObject(pm); span = Math.max(span, b.max.z-b.min.z); }
+    gizmoWriteParam(node, g.binds[0], gizmoParamStart[g.binds[0]] - dz/span);
   } else {                                                  // translate
     const d = gizmoAnchor.position.clone().sub(gizmoStart); // world delta
     gizmoWriteParam(node, g.binds[0], gizmoParamStart[g.binds[0]] + d.x);
@@ -2758,7 +2848,9 @@ function gizmoDragUpdate(){
   node.setDirtyCanvas && node.setDirtyCanvas(true,true);
   // optimistic preview: applyLocalTransform covers Move/Rotate/Scale; for the
   // point producers (ConstructPoint/Vector) shift their dot by the world delta.
-  if (!applyLocalTransform(node) && g.kind === 'translate'){
+  // Timeline (Drop) rides the same fallback: the mesh follows the cursor until
+  // the debounced exact run lands the bounce/topple frame (memo makes it cheap).
+  if (!applyLocalTransform(node) && (g.kind === 'translate' || g.kind === 'timeline')){
     const m = previewMeshes['n'+node.id];
     if (m) m.position.copy(gizmoAnchor.position.clone().sub(gizmoStart));
   }
@@ -2795,7 +2887,9 @@ function showGizmoHint(node){
     host.style.position = host.style.position || 'relative';
     host.appendChild(el);
   }
-  el.textContent = '✎ Editing '+(node.title||node.cadType)+' — drag to move · Esc to stop';
+  const verb = (node._gizmo||{}).kind === 'timeline'
+    ? 'drag ↓ to drop, ↑ to rewind' : 'drag to move';
+  el.textContent = '✎ Editing '+(node.title||node.cadType)+' — '+verb+' · Esc to stop';
   el.style.display = 'block';
 }
 
@@ -3544,6 +3638,9 @@ function renderPreviews(view){
         { onSize:(s)=>{ if(s) setStats(`${s.x.toFixed(1)} × ${s.y.toFixed(1)} × ${s.z.toFixed(1)} mm`); } }); },
   });
   previewMeshes = r.meshes;
+  previewAnims = {};                     // Drop timelines riding the previews (fastDrag replay)
+  const pvs = (view && view.previews) || {};
+  for (const id in pvs) if (pvs[id] && pvs[id].anim) previewAnims[id] = pvs[id].anim;
   applyIsolate();                        // re-hide unselected shapes after a fresh render
   syncRefImages();                       // draw RefImage reference quads alongside the model
   if(!r.order.length) return;            // onEmpty handled the legend / STL fallback

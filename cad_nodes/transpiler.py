@@ -1201,6 +1201,710 @@ def _bed_drop(_shape, _center=True, _clearance=0.0):
     return _move(_shape, None, dx, dy, dz)
 
 
+# Coefficient of restitution on a hard bed, per material. Fixed values, and
+# honest about being a caricature: real restitution depends on both bodies,
+# the impact speed and the geometry. What matters here is the CONTRAST —
+# rubber keeps bouncing, lead lands with one dead thud.
+_DROP_E = {"plastic": 0.55, "rubber": 0.85, "steel": 0.65, "wood": 0.45,
+           "lead": 0.08, "clay": 0.0}
+
+
+def _drop_segs(_e):
+    \"\"\"Normalised bounce segments (duration, up-speed): the first fall lasts 1
+    time unit and lands at speed 2 (g=2, h0=1), then a geometric series of
+    parabolas, each keeping _e of the impact speed, until the apex sinks below
+    0.1% of the drop. Everything scales: real seconds are these times t0.\"\"\"
+    e = max(0.0, min(float(_e), 0.95))
+    segs = [(1.0, None)]
+    v, apex = 2.0, 1.0
+    for _ in range(60):
+        v *= e
+        apex *= e * e
+        if apex < 1e-3:
+            break
+        segs.append((v, v))            # duration 2v/g = v when g=2
+    return segs
+
+
+def _drop_height(_segs, _tnorm):
+    \"\"\"Height (in h0=1 units) at normalised time _tnorm along the bounce.\"\"\"
+    tau = _tnorm
+    for d, up in _segs:
+        if tau <= d:
+            if up is None:
+                return max(1.0 - tau * tau, 0.0)
+            return max(up * tau - tau * tau, 0.0)
+        tau -= d
+    return 0.0
+
+
+def _rodrigues(_e, _ang):
+    import numpy as _np
+    K = _np.array([[0.0, -_e[2], _e[1]], [_e[2], 0.0, -_e[0]], [-_e[1], _e[0], 0.0]])
+    return _np.eye(3) + math.sin(_ang) * K + (1.0 - math.cos(_ang)) * (K @ K)
+
+
+def _support_pick(_C2, _com2, _eps):
+    \"\"\"The stability geometry shared by the bed cascade and the pile tips:
+    given the 2D shadow of the contact points and the com's shadow, return
+    (None, None) when the com is INSIDE the support (at rest), else the
+    closest boundary point q and, when q lies in an edge's interior, that
+    edge — the pivot the part will tip about.\"\"\"
+    import numpy as _np
+    C2 = _C2
+    if len(C2) >= 3:
+        try:
+            from scipy.spatial import ConvexHull as _CH2
+            poly = C2[_CH2(C2).vertices]               # ccw
+        except Exception:
+            poly = None                                # collinear contacts
+        if poly is not None:
+            if all((poly[(i + 1) % len(poly)][0] - poly[i][0]) * (_com2[1] - poly[i][1])
+                   - (poly[(i + 1) % len(poly)][1] - poly[i][1]) * (_com2[0] - poly[i][0])
+                   >= -_eps for i in range(len(poly))):
+                return None, None                      # com inside: at rest
+            C2 = poly
+    if len(C2) == 1:
+        return C2[0], None
+    n2, best = len(C2), None
+    for i in range(n2 if n2 > 2 else 1):
+        a, b = C2[i], C2[(i + 1) % n2]
+        ed = b - a
+        L2 = float(ed @ ed)
+        tp = 0.0 if L2 < 1e-18 else max(0.0, min(1.0, float((_com2 - a) @ ed) / L2))
+        cp = a + tp * ed
+        d2 = float((_com2 - cp) @ (_com2 - cp))
+        if best is None or d2 < best[0]:
+            best = (d2, cp, a, b, tp)
+    _, q, a, b, tp = best
+    return q, ((a, b) if 1e-7 < tp < 1.0 - 1e-7 else None)
+
+
+def _pivot_axes(_q, _seg, _com, _p3, _eps):
+    \"\"\"Candidate tip axes (horizontal, through _p3), sense chosen so gravity
+    does the tipping. Balanced ties return both senses (edge) or the compass
+    (point) — the caller's energy guard decides which, if any, is a real
+    descent.\"\"\"
+    import numpy as _np
+    u = _com[:2] - _q
+    if _seg is not None:
+        e3 = _np.array([_seg[1][0] - _seg[0][0], _seg[1][1] - _seg[0][1], 0.0])
+        e3 /= _np.linalg.norm(e3)
+        if float(u @ u) > _eps * _eps:
+            return [e3] if _np.cross(e3, _com - _p3)[2] < 0.0 else [-e3]
+        return [e3, -e3]
+    if float(u @ u) > _eps * _eps:
+        d3 = _np.array([u[0], u[1], 0.0]) / math.sqrt(float(u @ u))
+        return [_np.cross(_np.array([0.0, 0.0, 1.0]), d3)]
+    return [_np.array([1.0, 0.0, 0.0]), _np.array([-1.0, 0.0, 0.0]),
+            _np.array([0.0, 1.0, 0.0]), _np.array([0.0, -1.0, 0.0])]
+
+
+def _settle_plan(_pts, _com, _max_steps=40):
+    \"\"\"The topple cascade: quasi-static rigid settling on the bed (z=0), played
+    out on the convex hull. Returns (steps, settled) — each step is (pivot,
+    axis, angle_deg, seconds) in bed coordinates, replayed in order (a partial
+    last step is a scrub position).
+
+    The mechanics: a resting body is stable iff its centre of mass projects
+    inside the support polygon — the same test OrientForPrint uses to ENUMERATE
+    the stable poses; this walks the PATH between them. If the com is outside,
+    gravity tips the body about the nearest support edge (or corner), it rolls
+    onto the next hull facet, and the loop repeats. Two rules carry all the
+    honesty: every step must strictly LOWER the centre of mass (the energy
+    guard — a tessellated sphere \"toppling\" facet to facet releases nothing
+    and is declared at rest, where a cube balanced on an edge drops its centre
+    by 20% and goes over), and perfectly balanced ties pick a deterministic
+    side (a real part would be tipped by the first draught; a graph must give
+    the same answer twice).\"\"\"
+    import numpy as _np
+    g = 9810.0
+    pts = _np.asarray(_pts, dtype=float).copy()
+    com = _np.asarray(_com, dtype=float).copy()
+    scale = float(_np.linalg.norm(pts.max(0) - pts.min(0))) or 1.0
+    eps_c = 1e-5 * scale               # this close to the bed = touching
+    eps_t = 1e-6 * scale               # com-over-support tie tolerance
+
+    def _first_touch(p, e):
+        # smallest positive rotation about the horizontal axis (p, e) at which
+        # some hull vertex reaches the bed: z(phi) = A cos(phi) + B sin(phi)
+        r = pts - p
+        A = r[:, 2]
+        Bz = _np.cross(_np.broadcast_to(e, r.shape), r)[:, 2]
+        best = None
+        for a, b in zip(A, Bz):
+            if a * a + b * b < (1e-9 * scale) ** 2:
+                continue               # on the axis: it IS the contact
+            phi = math.atan2(-a, b) % math.pi
+            if phi < 1e-6:
+                phi += math.pi
+            if best is None or phi < best:
+                best = phi
+        return best
+
+    steps = []
+    for _ in range(int(_max_steps)):
+        pts[:, 2] -= pts[:, 2].min()
+        com2 = com[:2]
+        C2 = pts[pts[:, 2] < eps_c][:, :2]
+        if len(C2) == 0:
+            return steps, False
+        q, seg = _support_pick(C2, com2, eps_t)
+        if q is None:
+            return steps, True                         # com inside: at rest
+        p3 = _np.array([q[0], q[1], 0.0])
+        took = False
+        for e3 in _pivot_axes(q, seg, com, p3, eps_t):
+            th = _first_touch(p3, e3)
+            if th is None or th > math.pi - 1e-6:
+                continue
+            R = _rodrigues(e3, th)
+            ncom = R @ (com - p3) + p3
+            npts = (R @ (pts - p3).T).T + p3
+            if com[2] - (ncom[2] - npts[:, 2].min()) <= max(1e-4 * scale, 1e-7):
+                continue                               # energy guard: no release, no
+            rc = com - p3                              # topple (rolling, or uphill)
+            rperp = rc - float(rc @ e3) * e3
+            tau = 2.0 * math.sqrt(max(float(_np.linalg.norm(rperp)), 1e-3) * th / g)
+            steps.append((tuple(p3), tuple(e3), math.degrees(th), tau))
+            pts, com = npts, ncom
+            took = True
+            break
+        if not took:
+            return steps, True                         # balanced / rolling: at rest
+    return steps, False                                # cap hit: report, don't loop
+
+
+def _bed_frame(_plane):
+    # (origin, basis) of the bed: columns of B are its x/y/z dirs, world frame
+    import numpy as _np
+    if isinstance(_plane, Plane):
+        o = _np.array(tuple(_plane.origin), dtype=float)
+        B = _np.column_stack([_np.array(tuple(d), dtype=float)
+                              for d in (_plane.x_dir, _plane.y_dir, _plane.z_dir)])
+        return o, B
+    return _np.zeros(3), _np.eye(3)
+
+
+def _drop_apply(_shape, _B, _o, _ops):
+    \"\"\"Seat _shape at one moment of its journey: _ops is the ordered event
+    prefix — ("t", dz) translations along the bed normal and ("r", p, ax, deg)
+    rotations in bed coordinates — applied in sequence on either lane.\"\"\"
+    import numpy as _np
+    n = _B[:, 2]
+    if _is_mesh(_shape):
+        M = _np.eye(4)
+        for op in _ops:
+            if op[0] == "t":
+                Tm = _np.eye(4)
+                Tm[:3, 3] = op[1] * n
+                M = Tm @ M
+            else:
+                M = _tm().transformations.rotation_matrix(
+                    math.radians(op[3]), _B @ _np.asarray(op[2]),
+                    _B @ _np.asarray(op[1]) + _o) @ M
+        return _shape.transformed(M)
+    s = _shape
+    moved = False
+    for op in _ops:
+        if op[0] == "t":
+            s = _move(s, None, float(op[1] * n[0]), float(op[1] * n[1]), float(op[1] * n[2]))
+        else:
+            pw = _B @ _np.asarray(op[1]) + _o
+            aw = _B @ _np.asarray(op[2])
+            s = s.rotate(Axis((pw[0], pw[1], pw[2]), (aw[0], aw[1], aw[2])), op[3])
+        moved = True
+    if not moved:
+        s = _move(s, None, 0.0, 0.0, 0.0)              # a COPY even at rest (tags ride results)
+    return s
+
+
+def _events_pose(_events, _tau):
+    \"\"\"The event prefix at _tau seconds: completed events whole, the current
+    one partial — a fall via its bounce profile, a rotation eased in (f^2).\"\"\"
+    ops, left = [], _tau
+    for ev in _events:
+        if ev["k"] == "fall":
+            if left >= ev["T"] - 1e-12:
+                ops.append(("t", -ev["d"]))
+                left -= ev["T"]
+            else:
+                f = left / ev["T"] if ev["T"] > 0.0 else 1.0
+                if ev["d"] > 0.0:
+                    h = ev["d"] * _drop_height(ev["segs"], f * ev["tot_n"])
+                else:
+                    h = ev["d"] * (1.0 - f)            # surfacing: a linear lift
+                ops.append(("t", h - ev["d"]))
+                return ops
+        else:
+            if left >= ev["du"] - 1e-12:
+                ops.append(("r", ev["p"], ev["ax"], ev["deg"]))
+                left -= ev["du"]
+            else:
+                fr = max(0.0, left / ev["du"])
+                ops.append(("r", ev["p"], ev["ax"], ev["deg"] * fr * fr))
+                return ops
+    return ops
+
+
+def _vspans(_P, _T):
+    \"\"\"The vertical line through each point of _P against the triangle soup _T:
+    the nearest surface BELOW and ABOVE each point. This is the whole ray
+    engine of the collide mode — every contact question here is vertical, so a
+    closed 2D point-in-triangle test + the plane height does exactly what a
+    general ray tracer would, with no dependency (trimesh's pure ray engine
+    needs rtree, which the image does not ship) and CLOSED boundaries: two
+    parts sharing a footprint edge-for-edge still see each other, where a ray
+    grazing a silhouette is a coin toss. Vertical facets are invisible from
+    above, as they should be. Returns (below, above), nan = nothing there.\"\"\"
+    import numpy as _np
+    n = len(_P)
+    below = _np.full(n, _np.nan)
+    above = _np.full(n, _np.nan)
+    if _T is None or len(_T) == 0 or n == 0:
+        return below, above
+    pmin = _P[:, :2].min(axis=0)
+    pmax = _P[:, :2].max(axis=0)
+    tmin = _T.min(axis=1)
+    tmax = _T.max(axis=1)
+    keep = ((tmax[:, 0] >= pmin[0] - 1e-9) & (tmin[:, 0] <= pmax[0] + 1e-9) &
+            (tmax[:, 1] >= pmin[1] - 1e-9) & (tmin[:, 1] <= pmax[1] + 1e-9))
+    T = _T[keep]
+    if len(T) == 0:
+        return below, above
+    for j0 in range(0, n, 256):
+        P = _P[j0:j0 + 256]
+        bl = below[j0:j0 + 256]
+        ab = above[j0:j0 + 256]
+        for i0 in range(0, len(T), 512):
+            Tc = T[i0:i0 + 512]
+            a, b, c = Tc[:, 0], Tc[:, 1], Tc[:, 2]
+            v0 = b[:, :2] - a[:, :2]
+            v1 = c[:, :2] - a[:, :2]
+            den = v0[:, 0] * v1[:, 1] - v0[:, 1] * v1[:, 0]
+            ok = _np.abs(den) > 1e-12
+            if not bool(ok.any()):
+                continue
+            a, b, c, v0, v1, den = a[ok], b[ok], c[ok], v0[ok], v1[ok], den[ok]
+            dx = P[:, None, 0] - a[None, :, 0]
+            dy = P[:, None, 1] - a[None, :, 1]
+            s = (dx * v1[None, :, 1] - dy * v1[None, :, 0]) / den[None, :]
+            u = (v0[None, :, 0] * dy - v0[None, :, 1] * dx) / den[None, :]
+            inside = (s >= -1e-9) & (u >= -1e-9) & (s + u <= 1.0 + 1e-9)
+            zs = (a[None, :, 2] + s * (b[None, :, 2] - a[None, :, 2])
+                  + u * (c[None, :, 2] - a[None, :, 2]))
+            pz = P[:, None, 2]
+            zb = _np.where(inside & (zs <= pz + 1e-6), zs, -_np.inf).max(axis=1)
+            za = _np.where(inside & (zs >= pz - 1e-6), zs, _np.inf).min(axis=1)
+            bl[:] = _np.fmax(bl, _np.where(_np.isfinite(zb), zb, _np.nan))
+            ab[:] = _np.fmin(ab, _np.where(_np.isfinite(za), za, _np.nan))
+    return below, above
+
+
+def _shadow_gaps(_V, _landed):
+    \"\"\"Per-vertex vertical clearance under each point of _V: to the bed (its
+    own z) or to the top of any landed part beneath it. _landed is a list of
+    triangle soups (n,3,3) in bed coordinates.\"\"\"
+    import numpy as _np
+    gap = _V[:, 2].copy()
+    for T in _landed:
+        below, _ = _vspans(_V, T)
+        m = ~_np.isnan(below)
+        if bool(m.any()):
+            gap[m] = _np.minimum(gap[m], _V[m, 2] - below[m])
+    return gap
+
+
+def _scene_touch(_P, _landed):
+    \"\"\"Touch metric for the tip sweep: per point, the vertical gap to a support
+    below — or a NEGATIVE depth when the point is INSIDE a landed body (a
+    surface below AND above in the same soup: the sweep swung it through a
+    wall, which vertical gaps alone are blind to). Convex-ish approximation.\"\"\"
+    import numpy as _np
+    g = _P[:, 2].copy()                                # the bed
+    for T in _landed:
+        below, above = _vspans(_P, T)
+        hasb = ~_np.isnan(below)
+        hasa = ~_np.isnan(above)
+        gap = _np.where(hasb, _P[:, 2] - _np.where(hasb, below, 0.0), _np.inf)
+        inside = hasb & hasa
+        depth = _np.minimum(_P[:, 2] - _np.where(hasb, below, 0.0),
+                            _np.where(hasa, above, 0.0) - _P[:, 2])
+        gap = _np.where(inside, -_np.abs(depth), gap)
+        g = _np.minimum(g, gap)
+    return g
+
+
+def _up_gaps(_Atris, _landed):
+    \"\"\"The other half of the contact: each landed part's points, looking UP into
+    the falling part's underside — the corner of the pile poking into a hollow
+    that the falling part's own vertices cannot see. Returns (gaps, points):
+    vertical clearances and the support points they belong to.\"\"\"
+    import numpy as _np
+    gaps, pts = [], []
+    for T in _landed:
+        # vertices AND edge midpoints: a table's edge has no interior vertex,
+        # yet its midpoint is exactly the witness a poking contact needs
+        v = _np.concatenate([T.reshape(-1, 3), 0.5 * (T[:, 0] + T[:, 1]),
+                             0.5 * (T[:, 1] + T[:, 2]), 0.5 * (T[:, 2] + T[:, 0])])
+        if len(v) > 900:
+            v = v[::len(v) // 900]
+        _, above = _vspans(v, _Atris)
+        m = ~_np.isnan(above)
+        if bool(m.any()):
+            for g_, p_ in zip(above[m] - v[m, 2], v[m]):
+                gaps.append(float(g_))
+                pts.append([float(p_[0]), float(p_[1]), float(p_[2])])
+    return gaps, pts
+
+
+def _tip_search(_V, _com, _p3, _e3, _landed, _scale, _tol, _over=None):
+    \"\"\"One tip on the pile, found by sampling: rotate about (_p3, _e3) in 8-deg
+    strides until the part meets the scene or the bed — no closed form exists
+    against an arbitrary mesh, this is the honest price of the pile — then
+    bisect the angle. The scan stops at the RELEASE angle: the rotation where
+    the centre of mass sinks to the pivot's height. Past it the support would
+    have to PULL to keep contact, which a pile cannot do — the part lets go
+    there and free-falls from that pose (the caller's next fall event). The
+    release angle is closed-form: the same A cos + B sin root as _first_touch,
+    applied to the com. Returns (theta, V_new, com_new) or None (the energy
+    guard refused: no descent, no tip).\"\"\"
+    import numpy as _np
+    r = _V - _p3
+    perp = r - (r @ _e3)[:, None] * _e3
+    free = _np.linalg.norm(perp, axis=1) > 1e-3 * _scale
+    if not bool(free.any()):
+        return None
+    a3 = _com - _p3                                    # release: com sinks to pivot level
+    A = float(a3[2])
+    Bz = float(_np.cross(_e3, a3)[2])
+    if A * A + Bz * Bz < (1e-9 * _scale) ** 2:
+        th_rel = th_cap = math.pi                      # com on the axis: no release
+    elif A <= 0.0:
+        # the com is ALREADY at/below the pivot: this contact cannot hold the
+        # part for an instant — it lets go now (a small turn, then the fall)
+        th_rel = 0.0
+        th_cap = math.atan2(Bz, A) % math.pi
+    else:
+        th_rel = math.atan2(-A, Bz) % math.pi
+        if th_rel < 1e-6:
+            th_rel += math.pi
+        # never rotate past the LOWEST point of the com's arc: beyond it the
+        # pendulum swings back up, which a body that has let go cannot do
+        th_cap = math.atan2(Bz, A) % math.pi
+
+    def gmin(th):
+        Vr = (_rodrigues(_e3, th) @ (_V - _p3).T).T + _p3
+        return float(_scene_touch(Vr[free], _landed).min())
+
+    # scan PAST the release angle by an overshoot: a part that lets go is
+    # still rotating as it falls (it left with angular momentum), and without
+    # the extra turn it would drop straight back onto the corner it just left.
+    # The caller GROWS the overshoot when the part keeps re-catching the same
+    # corner — a face sliding down a fixed edge in centimetre steps is the
+    # no-slip caricature converging too slowly, so each re-catch swings wider.
+    th_go = min(th_rel + (math.radians(35.0) if _over is None else _over),
+                th_cap, math.radians(178.0))
+    lo, hi = math.radians(2.0), th_go
+    found = prev = None
+    th = lo
+    while th <= hi:
+        if gmin(th) <= _tol:
+            found = th
+            break
+        prev = th
+        th += math.radians(8.0)
+    released = found is None
+    if released:
+        if hi < math.radians(2.0) or th_rel >= math.radians(178.0):
+            return None                                # nowhere to go: at rest
+        th = th_go                                     # tips clear: let go here
+    else:
+        a, b = (prev if prev is not None else 0.0), found
+        for _ in range(5):
+            mid = 0.5 * (a + b)
+            if gmin(mid) <= _tol:
+                b = mid
+            else:
+                a = mid
+        th = b
+    R = _rodrigues(_e3, th)
+    ncom = R @ (_com - _p3) + _p3
+    if _com[2] - ncom[2] <= max(1e-4 * _scale, 1e-7):
+        return None                                    # energy guard: not a descent
+    return th, (R @ (_V - _p3).T).T + _p3, ncom, released
+
+
+def _body_sim(_tmB, _landed, _e, _settle, _scale, _max_events=10):
+    \"\"\"One part falling into the scene (bed + parts already at rest), as a list
+    of events. The loop: fall to first contact — bed or pile, looking BOTH ways
+    (_shadow_gaps down, _up_gaps up) — then ask the stability question at that
+    contact. A clean bed landing gets the exact closed-form cascade
+    (_settle_plan); a pile landing gets the sampled tip (_tip_search) and, if
+    the part tips clear, ANOTHER fall — the cube dropped half-off a box rolls
+    off the edge and lands on the bed, which is the point of doing this
+    properly. A part starting under the bed surfaces linearly (a negative
+    fall). Rest = com over the contact shadow; friction is infinite (nothing
+    slides). Returns (events, V_rest).\"\"\"
+    import numpy as _np
+    g = 9810.0
+    V = _tmB.vertices.copy()
+    faces = _tmB.faces
+    try:
+        com = _np.asarray(_tmB.center_mass, dtype=float).copy()
+        if not (_tmB.is_watertight and float(_tmB.volume) > 1e-9):
+            raise ValueError
+    except Exception:
+        com = _np.asarray(_tmB.bounds, dtype=float).mean(axis=0)
+    tol = max(1e-4 * _scale, 1e-6)
+    eps_t = 1e-6 * _scale
+    events = []
+    release_p = None                                   # a pivot the part just let go of
+    n_tip = 0                                          # consecutive tips: overshoot grows
+    for _ev in range(int(_max_events)):
+        gd = _shadow_gaps(V, _landed)
+        gu, up_pts = _up_gaps(V[faces], _landed)
+        if release_p is not None:
+            # the part has LET GO of this pivot: its touching witness must not
+            # pin the next fall to zero, or the part hangs in the air forever
+            eps_r = max(2e-2 * _scale, 10 * tol)
+            keep = [j for j, p_ in enumerate(up_pts)
+                    if float(_np.linalg.norm(_np.asarray(p_) - release_p)) > eps_r]
+            gu = [gu[j] for j in keep]
+            up_pts = [up_pts[j] for j in keep]
+            stale = ((_np.linalg.norm(V[:, :2] - release_p[:2], axis=1) < eps_r)
+                     & (_np.abs(V[:, 2] - release_p[2]) < eps_r))
+            gd = _np.where(stale, _np.inf, gd)
+            release_p = None
+        d = float(gd.min())
+        if gu:
+            d = min(d, float(min(gu)))
+        if abs(d) > tol:
+            events.append({"k": "fall", "d": d})       # d < 0 = surfacing lift
+            V = V.copy()
+            V[:, 2] -= d
+            com = com.copy()
+            com[2] -= d
+            gd = gd - d
+            gu = [x - d for x in gu]
+            if abs(d) > 2e-2 * _scale:
+                n_tip = 0                              # a real fall: fresh situation
+        # the contact set: this part's touching vertices + the pile points
+        # poking into it (their xy IS the support's xy; z the support height)
+        C = [V[i] for i in _np.nonzero(gd <= tol)[0]]
+        C += [p for x, p in zip(gu, up_pts) if x <= tol]
+        if not C:
+            break                                      # nothing under it at all
+        C = _np.asarray(C, dtype=float)
+        on_pile = bool((C[:, 2] > tol).any())
+        if not on_pile and _settle:
+            # clean bed landing: the exact cascade, closed form
+            try:
+                from scipy.spatial import ConvexHull as _CH
+                hp = V[_CH(V, qhull_options="QJ").vertices].copy()
+            except Exception:
+                hp = V.copy()
+            steps, _ok = _settle_plan(hp, com)
+            for (p, ax, deg, du) in steps:
+                events.append({"k": "rot", "p": p, "ax": ax, "deg": deg, "du": du})
+                R = _rodrigues(_np.asarray(ax), math.radians(deg))
+                p3 = _np.asarray(p)
+                V = (R @ (V - p3).T).T + p3
+                com = R @ (com - p3) + p3
+            break
+        if not _settle:
+            break
+        q, seg = _support_pick(C[:, :2], com[:2], eps_t)
+        if q is None:
+            break                                      # com over the shadow: at rest
+        # pivot at the real contact height, not at z=0: tipping off a table edge
+        dq = _np.linalg.norm(C[:, :2] - q, axis=1)
+        near = dq < max(1e-3 * _scale, 1e-6)
+        z_p = float(C[near][:, 2].max()) if bool(near.any()) else float(C[:, 2].max())
+        p3 = _np.array([q[0], q[1], z_p])
+        tipped = None
+        over = math.radians(35.0) * (2 ** min(n_tip, 3))
+        for e3 in _pivot_axes(q, seg, com, p3, eps_t):
+            tipped = _tip_search(V, com, p3, e3, _landed, _scale, tol, over)
+            if tipped is not None:
+                th, Vn, cn, released = tipped
+                rc = com - p3
+                rperp = rc - float(rc @ e3) * e3
+                du = 2.0 * math.sqrt(max(float(_np.linalg.norm(rperp)), 1e-3) * th / g)
+                events.append({"k": "rot", "p": tuple(p3), "ax": tuple(e3),
+                               "deg": math.degrees(th), "du": du})
+                V, com = Vn, cn
+                n_tip += 1
+                if released:
+                    release_p = p3                     # ignore this touch next round
+                break
+        if tipped is None:
+            if float(p3[2]) > float(com[2]) + tol:
+                # hanging on a contact ABOVE its com that cannot even rotate:
+                # nothing holds that — let go and fall past it (a vertical wall
+                # does not obstruct a vertical fall)
+                release_p = p3
+                continue
+            break                                      # balanced enough: at rest
+    # durations: only the LAST real fall bounces (a part that tips off an edge
+    # never settled there); earlier falls and surfacing lifts are clean ramps
+    falls = [i for i, ev in enumerate(events) if ev["k"] == "fall" and ev["d"] > 0]
+    last_fall = falls[-1] if falls else None
+    for i, ev in enumerate(events):
+        if ev["k"] != "fall":
+            continue
+        segs = _drop_segs(_e) if i == last_fall else [(1.0, None)]
+        ev["segs"] = segs
+        ev["tot_n"] = sum(dd for dd, _ in segs)
+        ev["T"] = math.sqrt(2.0 * abs(ev["d"]) / g) * ev["tot_n"]
+    return events, V
+
+
+def _drop(_shape, _plane=None, _t=1.0, _material="plastic", _settle=True,
+          _collide=False):
+    \"\"\"A real fall onto the plane, scrubbed by _t: 0 = where the part is now,
+    1 = at rest. The part falls, BOUNCES (each impact keeps _DROP_E of its
+    speed), and — with `settle` — TOPPLES: once the bounces die, the quasi-
+    static cascade of _settle_plan tips it about its support edges until its
+    centre of mass sits over the contact polygon. With `collide` and several
+    shapes wired into the SAME node they fall as ONE SCENE instead of a fan
+    (_drop_collide): sequentially, each onto the bed or onto the parts already
+    down. Works on both lanes: it measures on the mesh and transforms the
+    ORIGINAL, so a solid stays a solid. A part starting under the plane
+    surfaces linearly — it cannot fall.\"\"\"
+    if _collide and isinstance(_shape, (list, tuple)):
+        return _drop_collide(list(_shape), _plane, _t, _material, _settle)
+    if _shape is None:
+        return None
+    m = _as_mesh(_shape)
+    if m is None:
+        return _shape
+    import numpy as _np
+    o, B = _bed_frame(_plane)
+    V = (m.tm.vertices - o) @ B                        # bed coordinates
+    h0 = float(V[:, 2].min())
+    t = max(0.0, min(float(_t), 1.0))
+    g = 9810.0
+    steps = []
+    if _settle:
+        tm_ = m.tm
+        try:
+            cw = _np.asarray(tm_.center_mass, dtype=float)
+            if not (tm_.is_watertight and float(tm_.volume) > 1e-9):
+                raise ValueError                       # open patch: mass centre is a lie
+        except Exception:
+            cw = _np.asarray(tm_.bounds, dtype=float).mean(axis=0)
+        com = (cw - o) @ B
+        com[2] -= h0
+        try:
+            from scipy.spatial import ConvexHull as _CH
+            hp = V[_CH(V, qhull_options="QJ").vertices].copy()
+        except Exception:
+            hp = V.copy()
+        hp[:, 2] -= h0
+        steps, _ok = _settle_plan(hp, com)
+    segs = _drop_segs(_DROP_E.get(str(_material), 0.55))
+    tot_n = sum(d for d, _ in segs)
+    t0 = math.sqrt(2.0 * abs(h0) / g)
+    Tb = t0 * (tot_n if h0 > 0.0 else 1.0)             # bounce (or surfacing) seconds
+    Ts = sum(s[3] for s in steps)                      # topple seconds
+    T = Tb + Ts
+    if T <= 1e-12:
+        return _shape                                  # already at rest, already stable
+    n = B[:, 2]
+    # The whole journey, as plain data riding on the result (mesh_extractor lifts
+    # it into the preview entry as `anim`): the editor replays it in the browser
+    # at 60fps while the slider drags — same math, world coordinates, plus the t
+    # THIS preview was baked at, so the browser can move relative to it.
+    plan = {"t": float(t), "T": float(T), "Tb": float(Tb), "h0": float(h0),
+            "tot_n": float(tot_n),
+            "n": [float(n[0]), float(n[1]), float(n[2])],
+            "segs": [[float(d), None if up is None else float(up)]
+                     for d, up in segs],
+            "steps": [{"p": [float(x) for x in (B @ _np.asarray(p) + o)],
+                       "ax": [float(x) for x in (B @ _np.asarray(ax))],
+                       "deg": float(deg), "du": float(du)}
+                      for (p, ax, deg, du) in steps]}
+
+    def _tag(_res):
+        try:
+            _res._noodle_anim = plan
+        except Exception:
+            pass
+        return _res
+
+    tau = t * T
+    if tau < Tb or not steps:                          # still in the air
+        f = tau / Tb if Tb > 0.0 else 1.0
+        h = h0 * (1.0 - f) if h0 <= 0.0 else h0 * _drop_height(segs, f * tot_n)
+        return _tag(_drop_apply(_shape, B, o, [("t", float(h - h0))]))
+    ops = [("t", float(-h0))]
+    left = tau - Tb                                    # landed: replay the topples
+    for (p, ax, deg, du) in steps:
+        if left >= du - 1e-12:
+            ops.append(("r", p, ax, deg))
+            left -= du
+        else:
+            fr = max(0.0, left / du)
+            ops.append(("r", p, ax, deg * fr * fr))    # ease-in: a topple starts slow
+            break
+    return _tag(_drop_apply(_shape, B, o, ops))
+
+
+def _drop_collide(_shapes, _plane=None, _t=1.0, _material="plastic", _settle=True):
+    \"\"\"The multi-body drop: every shape wired into the node falls into ONE
+    scene, sequentially, lowest first. Each part falls to its first contact —
+    the bed or the parts already at rest — bounces there, and settles with the
+    full stability treatment: the exact topple cascade on a clean bed landing,
+    the sampled tip on a pile (_tip_search), and a part that tips clear of its
+    perch FALLS AGAIN, onto whatever is below. No sliding (friction is
+    infinite), contacts are vertical-ray measured (an edge-on-edge kiss can be
+    missed at tessellation scale), a bed topple does not check the neighbours
+    it sweeps past, and the order is by starting height — declared limits, not
+    surprises. The timeline is the whole sequence end to end, one part at a
+    time, so at any t nothing has ever passed through anything else. Output
+    keeps the wiring order. No browser-replay plan in this mode: the previews
+    of a fan are one merged mesh, so the engine re-bakes each scrub (memo makes
+    the unchanged parts free).\"\"\"
+    import numpy as _np
+    o, B = _bed_frame(_plane)
+    e = _DROP_E.get(str(_material), 0.55)
+    t = max(0.0, min(float(_t), 1.0))
+    bodies = []
+    for i, s in enumerate(_shapes):
+        m = _as_mesh(s) if s is not None else None
+        if m is None:
+            bodies.append({"i": i, "shape": s, "tm": None})
+            continue
+        Vl = (m.tm.vertices - o) @ B
+        bodies.append({"i": i, "shape": s,
+                       "tm": _tm().Trimesh(vertices=Vl, faces=m.tm.faces.copy(),
+                                           process=False)})
+    live = [b for b in bodies if b["tm"] is not None]
+    if live:
+        lo = _np.min([b["tm"].bounds[0] for b in live], axis=0)
+        hi = _np.max([b["tm"].bounds[1] for b in live], axis=0)
+        scale = float(_np.linalg.norm(hi - lo)) or 1.0
+    order = sorted(live, key=lambda b: float(b["tm"].bounds[0][2]))
+    landed = []                                        # triangle soups at rest
+    for b in order:
+        events, V_rest = _body_sim(b["tm"], landed, e, _settle, scale)
+        b["events"] = events
+        b["T"] = sum(ev.get("T", ev.get("du", 0.0)) for ev in events)
+        landed.append(V_rest[b["tm"].faces])
+    results = [bb["shape"] for bb in bodies]           # non-meshables pass through
+    T_total = sum(b["T"] for b in order)
+    if T_total <= 1e-12:
+        return results
+    tau_g = t * T_total
+    start = 0.0
+    for b in order:
+        tau = min(max(tau_g - start, 0.0), b["T"])
+        start += b["T"]
+        results[b["i"]] = _drop_apply(b["shape"], B, o, _events_pose(b["events"], tau))
+    return results
+
+
 def _overhang_faces(_mesh, _angle=45.0, _layer=0.2):
     \"\"\"Just the faces that will need support, as a mesh of their own — so the viewer
     gives them their own colour and you SEE them on the part. Open by construction:
@@ -1396,8 +2100,10 @@ def _mesh_matrix(_kind, **_kw):
         m[:3, 3] = [_kw["x"], _kw["y"], _kw["z"]]
     elif _kind == "rotate":
         d = _kw["axis"].direction
+        p = _kw.get("point")
         m = _tm().transformations.rotation_matrix(
-            math.radians(float(_kw["angle"])), [d.X, d.Y, d.Z], [0, 0, 0])
+            math.radians(float(_kw["angle"])), [d.X, d.Y, d.Z],
+            [p.X, p.Y, p.Z] if p is not None else [0, 0, 0])
     elif _kind == "scale":
         m[0, 0], m[1, 1], m[2, 2] = _kw["x"], _kw["y"], _kw["z"]
     elif _kind == "mirror":
@@ -1407,17 +2113,56 @@ def _mesh_matrix(_kind, **_kw):
     return m
 
 
-def _rotate(_obj, _axis, _angle):
-    \"\"\"Rotate any spatial object — Shape, Plane OR Mesh — by _angle degrees about
-    a global axis. Uses Location algebra (Rot * obj) so it is polymorphic: a plane
-    rotates just like a solid (build123d Planes have no .rotate()); a mesh takes
-    the equivalent 4x4 on its vertices.\"\"\"
+def _pivot_of(_x):
+    \"\"\"The point a shape turns about when no explicit pivot is wired: the bbox
+    CENTRE, measured on the tessellation (the fast OCCT box is oversized, same
+    reason _bed_drop measures on triangles), aggregated over a list — the union
+    box of everything, so a group turns rigidly about one shared point. Planes
+    pivot on their origin; point-likes are their own pivot.\"\"\"
+    los, his = [], []
+    for it in _flatten([_x]):
+        if it is None:
+            continue
+        if isinstance(it, Plane):
+            q = it.origin
+            los.append((q.X, q.Y, q.Z)); his.append((q.X, q.Y, q.Z))
+            continue
+        q = _as_point(it)
+        if q is not None:
+            los.append((q.X, q.Y, q.Z)); his.append((q.X, q.Y, q.Z))
+            continue
+        try:
+            b = _as_mesh(it).tm.bounds
+            los.append(tuple(b[0])); his.append(tuple(b[1]))
+        except Exception:
+            continue
+    if not los:
+        return None
+    lo = [min(v[i] for v in los) for i in range(3)]
+    hi = [max(v[i] for v in his) for i in range(3)]
+    return Vector((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0)
+
+
+def _rotate(_obj, _axis, _angle, _pivot=None, _about="world"):
+    \"\"\"Rotate any spatial object — Shape, Plane OR Mesh — by _angle degrees.
+    About what: the wired _pivot point when present; else _about picks it —
+    "world" is the global axis (the old behaviour), "part"/"group" the bbox
+    centre of what came in (for a fanned list, "group" receives the collective
+    centre hoisted by the emitter, so the ensemble turns as one rigid body).
+    Uses Location algebra (Pos * Rot * Pos⁻¹ * obj) so it is polymorphic: a
+    plane rotates just like a solid; a mesh takes the equivalent 4x4.\"\"\"
     if _obj is None:
         return None
+    p = _as_point(_pivot) if _pivot is not None else None
+    if p is None and _about in ("part", "group"):
+        p = _pivot_of(_obj)
     if _is_mesh(_obj):
-        return _obj.transformed(_mesh_matrix("rotate", axis=_axis, angle=_angle))
+        return _obj.transformed(_mesh_matrix("rotate", axis=_axis, angle=_angle, point=p))
     d = _axis.direction
-    return Rot(d.X * _angle, d.Y * _angle, d.Z * _angle) * _obj
+    r = Rot(d.X * _angle, d.Y * _angle, d.Z * _angle)
+    if p is None:
+        return r * _obj
+    return Pos(p.X, p.Y, p.Z) * (r * (Pos(-p.X, -p.Y, -p.Z) * _obj))
 
 
 def _scale(_shape, _factor=1.0, _x=1.0, _y=1.0, _z=1.0):
@@ -3090,6 +3835,26 @@ class Transpiler:
                 else:
                     subs[sock.name] = self._cast(srcs[0], sock, vars_[0])
 
+        # Drop with `collide`: the shapes wired into the node are ONE scene, not
+        # a fan — hand the whole list to the runtime (which stacks them against
+        # each other) and mark the output a list so downstream still fans.
+        if (node.type == "Drop" and subs.get("collide") == "True"
+                and "shape" in fan):
+            subs["shape"] = fan.pop("shape")
+            self._produces_list.add(node.id)
+
+        # `about="group"` while the shape input fans out: every item must pivot
+        # about the ONE collective centre, or each piece spins about itself —
+        # hoist the centre out of the per-item lambda. Unfanned there is nothing
+        # to do: _rotate sees the whole value and its bbox IS the group box.
+        hoist = None
+        if (subs.get("about") == "'group'" and "shape" in fan
+                and subs.get("pivot") in (None, "None")):
+            self._counter += 1
+            pv = f"__pivot_{self._counter}"
+            hoist = f"{pv} = _pivot_of({fan['shape']})"
+            subs["pivot"] = pv
+
         template = ndef.code_template.get("algebra")
         if template is None:
             raise ValueError(f"Node {node.type} has no algebra template")
@@ -3111,7 +3876,7 @@ class Transpiler:
 
         if ndef.outputs:
             var = self._new_var(node.id)
-            body = [f"{var} = {expr}{_annot(node)}"]
+            body = ([hoist] if hoist else []) + [f"{var} = {expr}{_annot(node)}"]
             if self._previewed(node, ndef):
                 body.append(f"__previews__[{node.id!r}] = {var}")
             self._guard(lines, body, node)

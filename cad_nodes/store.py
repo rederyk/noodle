@@ -34,6 +34,12 @@ _EXAMPLE_DESCRIPTIONS = {
     "bolt-flange": "Bolt-circle flange: one hole polar-arrayed and subtracted "
                    "wholesale — Grasshopper-style list fan-out.",
     "csg-boolean": "CSG basics: a box minus a sphere (Subtract boolean).",
+    "drop-bounce": "Drop on Plane: one timeline slider scrubs three materials "
+                   "falling side by side — plastic clatters, lead thuds, rubber "
+                   "keeps bouncing.",
+    "drop-stack": "Drop with collide: three boxes fall into ONE scene — one "
+                  "lands, one stacks, and the half-off cube tips over the edge, "
+                  "rolls down the wall and lands flat on the bed beside.",
     "parametric-gear": "Custom node from scratch — a spur gear written in one "
                        "CodeBlock, driven by #@param knobs.",
     "gear-row-fanout": "Grasshopper-style fan-out — a Range feeds the gear "

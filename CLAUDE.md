@@ -285,7 +285,11 @@ a dependency). Full findings + measurements: **`PLAN_MESH_LANE.md`**.
   helpers branch on `_is_mesh` and apply a 4×4 (`_mesh_matrix`) instead of a
   `Location`, and `output_follows="shape"` carries the mesh type back out. There is
   no `MeshMove` and there must not be. (Arrays/Align don't take meshes yet — their
-  templates still build `Pos(…) * shape` inline.)
+  templates still build `Pos(…) * shape` inline.) `Rotate` also takes an optional
+  `pivot` point and an `about` select — world (global axis, the default) / part (own
+  bbox centre) / group (collective centre; under fan-out the emitter hoists ONE
+  `_pivot_of(…)` out of the lambda so the ensemble turns rigidly); centres are
+  measured on the tessellation, like `PlaceOnBed`.
 - **The cast is asymmetric on purpose.** `solid/surface → mesh` is automatic
   (tessellation: milliseconds, safely lossy) — drop a `Box` straight into a mesh
   input and it just works. `mesh → solid` is **not** a cast: rebuilding a B-Rep from
@@ -303,13 +307,36 @@ a dependency). Full findings + measurements: **`PLAN_MESH_LANE.md`**.
 
 ## 5d. Print physics (category `print`)
 
-Four nodes that answer what a slicer never asks: **which way up, and why**
+Five nodes that answer what a slicer never asks: **which way up, and why**
 (`catalog.py` §12c, runtime in the PREAMBLE, full notes in **`PLAN_PRINT_PHYSICS.md`**).
 A printed part is anisotropic — the bond between layers is worth roughly a third to two
 thirds of the material within one — so orientation decides **where the part breaks**.
 
 - `PlaceOnBed` (lowest point → z=0; serves BOTH lanes: it measures on the mesh and moves
-  the original, so a solid stays a solid), `PrintCheck` (report → Panel), `OverhangFaces`
+  the original, so a solid stays a solid), `Drop` (PlaceOnBed as a scrubbable FALL: a
+  `timeline` slider 0→1, analytic bounce with restitution fixed per `material` — plastic
+  0.55, lead 0.08, rubber 0.85… — then, with `settle` on, the part TOPPLES for real:
+  `_settle_plan` walks the quasi-static cascade on the convex hull (com outside the
+  contact patch → tip about the nearest support edge until the next facet lands, ≤40
+  steps, replayed partially at scrub time). The energy guard — every step must strictly
+  lower the com — is what stops a sphere rolling forever while letting the edge-balanced
+  cube go over; balanced ties resolve deterministically. t=1 is always fully at rest;
+  optional `plane` input. Gizmo `kind:"timeline"` (nodes.html): Edit-on-canvas shows a
+  Z-only translate arrow — pull the part down to advance t, lift to rewind, one part
+  height ≈ the full slider; wired `t` locks it. LIVE REPLAY: `_drop` attaches the whole
+  journey as data to its result (`_noodle_anim`: bounce segs + topple steps, world
+  coords, baked t); `_preview_of` lifts it into previews[id].anim, and nodes.html
+  (`dropMatrixAt`/`applyDropAnim`) replays any t as pure matrix math at 60fps while the
+  slider or a wired Number Slider drags (✥ fastDrag), mesh pose = M(t)·M(t_baked)⁻¹ —
+  the engine re-bakes exactly when the drag settles. COLLISIONS: the `collide` toggle —
+  off by default, it costs real compute — un-fans multiple shapes wired into one Drop
+  into ONE scene (`_drop_collide`): sequential falls, lowest first, each stopping at its
+  first contact with bed or pile (`_vspans`: vertical point-in-triangle spans, no ray
+  lib — trimesh's ray engine needs rtree, not in the image), stability test on the pile,
+  sampled tip (`_tip_search`, 8°+bisection) with closed-form release when the com sinks
+  to pivot level, capped at the com-arc bottom; a tipped-clear part falls again. No
+  sliding, no live replay in collide mode; timeline = the whole sequence, so no t ever
+  interpenetrates), `PrintCheck` (report → Panel), `OverhangFaces`
   (the faces needing support, as a mesh of its own → its own colour in the viewer),
   `SupportVolume` (the support as a BODY), `OrientForPrint` (every stable pose scored; two
   outputs — the oriented mesh and the table saying why — from ONE search, via
