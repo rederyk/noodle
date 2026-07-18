@@ -1,0 +1,48 @@
+{
+  "name": "voronoi-3d-lattice",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "Sphere",
+      "params": { "radius": 20 },
+      "position": [60, 160],
+      "preview": false
+    },
+    {
+      "id": "n2",
+      "type": "PopulateGeometry",
+      "params": { "count": 60, "seed": 7 },
+      "position": [340, 120],
+      "preview": false
+    },
+    {
+      "id": "n3",
+      "type": "Voronoi3D",
+      "params": { "scale": 0.85 },
+      "position": [620, 160],
+      "preview": false
+    },
+    {
+      "id": "n4",
+      "type": "MeshSubtract",
+      "params": {},
+      "position": [900, 160],
+      "preview": true
+    },
+    {
+      "id": "n5",
+      "type": "Note",
+      "params": {
+        "text": "TRUE 3D VORONOI — Populate fills the sphere's VOLUME with 60 seeded points (wire a solid into region and it samples inside, not in a box). Voronoi3D turns each point into a convex mesh cell, shrunk to 0.85 and clipped to the same sphere; Mesh Subtract carves the cells out, and what remains — the walls BETWEEN cells — is the lattice. count/seed set the pattern, scale sets the wall thickness (1.0 = no walls, nothing left). Preview n3 to see the raw cells; MeshToSolid bridges back to B-Rep if you must fillet it."
+      },
+      "position": [60, 420]
+    }
+  ],
+  "connections": [
+    { "id": "c1", "from_node": "n1", "from_socket": "result", "to_node": "n2", "to_socket": "region" },
+    { "id": "c2", "from_node": "n2", "from_socket": "points", "to_node": "n3", "to_socket": "points" },
+    { "id": "c3", "from_node": "n1", "from_socket": "result", "to_node": "n3", "to_socket": "body" },
+    { "id": "c4", "from_node": "n1", "from_socket": "result", "to_node": "n4", "to_socket": "a" },
+    { "id": "c5", "from_node": "n3", "from_socket": "cells", "to_node": "n4", "to_socket": "b" }
+  ]
+}

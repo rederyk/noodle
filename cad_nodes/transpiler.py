@@ -976,6 +976,61 @@ def _mesh_bool(_mode, *_items):
     return _from_manifold(mf.Manifold.batch_boolean(mans, op))
 
 
+def _voronoi3d(_points, _body=None, _scale=0.9):
+    \"\"\"3D Voronoi cells as closed convex Mesh bodies, clipped to `body`.
+
+    Sites are mirrored across the SIX planes of the domain box (the body's bbox
+    if wired, else the points' extent) so every kept cell is finite — the 3D
+    analog of _voronoi2d's trick. Each finite cell is its Voronoi vertices,
+    shrunk toward the centroid by `scale`, hulled straight into a manifold
+    (Manifold.hull_points — a Voronoi cell is convex by construction, the hull
+    IS the cell), then intersected with the body. Mesh Subtract the shrunk
+    cells from the body for a voronoi lattice. Measured: 60 sites clipped to a
+    5k-triangle sphere in under 0.1s.\"\"\"
+    import numpy as np
+    from scipy.spatial import Voronoi
+    pts = _origin_points(_points)
+    if len(pts) < 2:
+        return []
+    if len(pts) > 2000:
+        raise ValueError("Voronoi 3D: %d points — cap is 2000 (each one is a "
+                         "solid cell and a boolean)." % len(pts))
+    P = np.array([(p.X, p.Y, p.Z) for p in pts], dtype=float)
+    body = _as_mesh(_body)
+    if body is not None:
+        lo, hi = body.tm.bounds
+    else:
+        lo, hi = P.min(axis=0), P.max(axis=0)
+    pad = []
+    for (x, y, z) in P:
+        pad += [(2 * lo[0] - x, y, z), (2 * hi[0] - x, y, z),
+                (x, 2 * lo[1] - y, z), (x, 2 * hi[1] - y, z),
+                (x, y, 2 * lo[2] - z), (x, y, 2 * hi[2] - z)]
+    try:
+        vor = Voronoi(np.vstack([P, pad]))
+    except Exception:
+        raise ValueError("Voronoi 3D needs points spread in a VOLUME (>= 2, not "
+                         "all coplanar) — wire a solid into Populate's region to "
+                         "scatter them inside a body.")
+    mf = _mf()
+    s = float(_scale)
+    man_body = _to_manifold(body, "Voronoi 3D") if body is not None else None
+    out = []
+    for i in range(len(P)):                        # original sites only
+        reg = vor.regions[vor.point_region[i]]
+        if not reg or -1 in reg:
+            continue
+        v = vor.vertices[reg]
+        c = v.mean(axis=0)
+        cell = mf.Manifold.hull_points((c + s * (v - c)).astype(np.float32))
+        if man_body is not None:
+            cell = cell ^ man_body
+        m = _from_manifold(cell)
+        if m is not None:
+            out.append(m)
+    return out
+
+
 def _mesh_simplify(_mesh, _tolerance=0.05, _max_error=5.0):
     \"\"\"Simplify to a BOUNDED geometric deviation (manifold3d): no surface moves
     further than `tolerance`. On the raccordo: 0.07s, 147k -> 35k triangles, volume
@@ -2830,13 +2885,156 @@ def _domain2d(_region, _w, _h, _pts=None):
     return 0.0, 0.0, float(_w), float(_h)
 
 
-def _populate(_count=40, _seed=1, _width=100.0, _height=100.0, _region=None):
-    \"\"\"Scatter `count` random points (z=0), deterministic per `seed`, inside the
-    `region` rectangle's bounds if wired, else a 0..width x 0..height box.\"\"\"
+def _winding_inside(_V, _F, _P, _chunk=128):
+    \"\"\"Point-in-mesh by the generalized winding number (van Oosterom-Strackee),
+    pure numpy — trimesh.contains needs rtree, which is not in the image. For a
+    closed mesh the winding of an inside point is ~1, outside ~0; the 0.25
+    threshold is tolerant of near-surface points. Chunked over points to bound
+    memory (chunk x tris temporaries).\"\"\"
     import numpy as np
-    x0, y0, x1, y1 = _domain2d(_region, _width, _height)
+    V = np.asarray(_V, dtype=float)
+    F = np.asarray(_F)
+    P = np.asarray(_P, dtype=float)
+    T = V[F]                                       # (tris, 3 corners, xyz)
+    out = np.zeros(len(P), dtype=bool)
+    for s in range(0, len(P), int(_chunk)):
+        p = P[s:s + int(_chunk)]
+        a = T[None, :, 0, :] - p[:, None, :]
+        b = T[None, :, 1, :] - p[:, None, :]
+        c = T[None, :, 2, :] - p[:, None, :]
+        la = np.linalg.norm(a, axis=2)
+        lb = np.linalg.norm(b, axis=2)
+        lc = np.linalg.norm(c, axis=2)
+        det = np.einsum("kmi,kmi->km", a, np.cross(b, c))
+        den = (la * lb * lc + np.einsum("kmi,kmi->km", a, b) * lc
+               + np.einsum("kmi,kmi->km", b, c) * la
+               + np.einsum("kmi,kmi->km", a, c) * lb)
+        w = np.arctan2(det, den).sum(axis=1) / (2.0 * np.pi)
+        out[s:s + int(_chunk)] = np.abs(w) > 0.25
+    return out
+
+
+def _populate_volume(_m, _n, _rng):
+    \"\"\"Rejection-sample _n points INSIDE a watertight mesh: uniform candidates in
+    the bbox, kept by winding number. The inside test runs on a simplified proxy
+    when the mesh is heavy — it is only an oracle, so a plain manifold simplify
+    with no verification is fine (unlike MeshSimplify, whose result is the part).\"\"\"
+    import numpy as np
+    tm0 = _as_mesh(_m).tm
+    proxy = tm0
+    if len(tm0.faces) > 4000:
+        try:
+            diag = float(np.linalg.norm(tm0.bounds[1] - tm0.bounds[0]))
+            proxy = _from_manifold(
+                _to_manifold(Mesh(tm0), "Populate").simplify(diag * 0.005)).tm
+        except Exception:
+            pass
+    lo, hi = tm0.bounds
+    V, F = np.asarray(proxy.vertices, dtype=float), np.asarray(proxy.faces)
+    got, have = [], 0
+    for _round in range(24):
+        cand = _rng.uniform(lo, hi, (max(2 * int(_n), 64), 3))
+        keep = cand[_winding_inside(V, F, cand)]
+        got.append(keep)
+        have += len(keep)
+        if have >= _n:
+            break
+    P = np.vstack(got) if got else np.zeros((0, 3))
+    if len(P) < _n:
+        raise ValueError(
+            "Populate filled only %d of %d points — the body occupies too little "
+            "of its bounding box, or the mesh is not closed (run Mesh Fix)."
+            % (len(P), int(_n)))
+    return [Vector(float(x), float(y), float(z)) for x, y, z in P[:int(_n)]]
+
+
+def _populate_on_surface(_m, _n, _seed):
+    \"\"\"Area-uniform random points ON a surface (curved faces, shells, meshes):
+    trimesh sample_surface over the tessellation. Uniform BY AREA — random UV
+    through position_at would crowd points where the parametrization compresses.\"\"\"
+    pts, _fi = _tm().sample.sample_surface(_as_mesh(_m).tm, int(_n),
+                                           seed=int(_seed))
+    return [Vector(float(x), float(y), float(z)) for x, y, z in pts]
+
+
+def _populate(_count=40, _seed=1, _width=100.0, _height=100.0, _region=None):
+    \"\"\"Universal scatter, deterministic per `seed` — dispatches on what `region`
+    IS (the socket is raw, so the value arrives untouched):
+      nothing        -> the legacy 0..width x 0..height box at z=0
+      curve          -> ALONG it, uniform by arc length (1D)
+      planar XY face -> INSIDE the region — really inside, not its bbox (2D)
+      curved face    -> ON the surface, uniform by area (2.5D)
+      solid / watertight mesh -> INSIDE the volume (3D)
+    Dispatch is on topology (solids/faces/edges), not duck-typing position_at —
+    Edge and Face both have one.\"\"\"
+    import numpy as np
     rng = np.random.RandomState(int(_seed))
-    xs = rng.uniform(x0, x1, int(_count)); ys = rng.uniform(y0, y1, int(_count))
+    n = max(1, int(_count))
+    r = _region
+    if r is None:                                  # legacy path — UNCHANGED
+        xs = rng.uniform(0.0, float(_width), n)
+        ys = rng.uniform(0.0, float(_height), n)
+        return [Vector(float(x), float(y), 0.0) for x, y in zip(xs, ys)]
+    if _is_mesh(r):
+        return (_populate_volume(r, n, rng) if r.watertight
+                else _populate_on_surface(r, n, _seed))
+    solids = list(r.solids()) if hasattr(r, "solids") else []
+    faces = list(r.faces()) if hasattr(r, "faces") else []
+    edges = list(r.edges()) if hasattr(r, "edges") else []
+    if solids:                                     # 3D: inside the volume
+        return _populate_volume(_to_mesh(r), n, rng)
+    if not faces and edges:
+        # A CLOSED curve is a region BOUNDARY — the legacy idiom: Rectangle /
+        # Circle wired as `region` used to arrive filled via the _face cast,
+        # which the raw socket now skips. Fill it and treat it as the face it
+        # meant. An OPEN curve scatters ALONG itself (the 1D branch below).
+        filled = _face(r)
+        ff = list(filled.faces()) if hasattr(filled, "faces") else []
+        if ff:
+            r, faces = filled, ff
+    if faces:
+        f = faces[0]
+        flat_xy = False
+        if len(faces) == 1:
+            try:
+                flat_xy = f.is_planar and abs(f.normal_at(f.center()).Z) > 0.99
+            except Exception:
+                flat_xy = False
+        if flat_xy:
+            # 2D: draw in the bbox with the SAME two rng.uniform calls as the
+            # old node (a Rectangle rejects nothing -> byte-identical points,
+            # e.g. the voronoi vase), then keep only what is really inside.
+            bb = r.bounding_box()
+            z = (bb.min.Z + bb.max.Z) / 2.0
+            out = []
+            for _round in range(24):
+                xs = rng.uniform(bb.min.X, bb.max.X, n)
+                ys = rng.uniform(bb.min.Y, bb.max.Y, n)
+                out += [Vector(float(x), float(y), z) for x, y in zip(xs, ys)
+                        if f.is_inside((float(x), float(y), z))]
+                if len(out) >= n:
+                    break
+            if not out:
+                raise ValueError("Populate: no point landed inside the region "
+                                 "face — is it degenerate?")
+            return out[:n]
+        return _populate_on_surface(_to_mesh(r), n, _seed)   # 2.5D: ON it
+    if edges:                                      # 1D: uniform by arc length
+        L = [float(e.length) for e in edges]
+        tot = sum(L)
+        cum = np.cumsum([0.0] + L)
+        u = rng.uniform(0.0, tot, n)
+        idx = np.minimum(np.searchsorted(cum, u, side="right") - 1,
+                         len(edges) - 1)
+        out = []
+        for ui, i in zip(u, idx):
+            t = (ui - cum[int(i)]) / (L[int(i)] or 1.0)
+            p = edges[int(i)].position_at(min(max(float(t), 0.0), 1.0))
+            out.append(Vector(p.X, p.Y, p.Z))
+        return out
+    x0, y0, x1, y1 = _domain2d(r, _width, _height)  # fallback: old bbox path
+    xs = rng.uniform(x0, x1, n)
+    ys = rng.uniform(y0, y1, n)
     return [Vector(float(x), float(y), 0.0) for x, y in zip(xs, ys)]
 
 
@@ -3146,7 +3344,7 @@ _LIST_PRODUCERS = {
     "ArrayLinear", "ArrayPolar", "ListCreate", "ListRange", "ListSeries", "ListRepeat",
     "ListSlice", "ListReverse", "ListSort", "ListFlatten", "Concat",
     "ListShift", "ListFilter", "ListUnique", "Random",
-    "Voronoi2D", "DivideSurface", "PopulateGeometry", "MapToSurface",
+    "Voronoi2D", "Voronoi3D", "DivideSurface", "PopulateGeometry", "MapToSurface",
     "DivideCurve", "CurveEndpoints", "Deconstruct",
     "DeconstructEdges", "DeconstructFaces",
     "Surface", "Curve", "Point",   # gated containers always emit a list (filter/transform)

@@ -50,6 +50,10 @@ _EXAMPLE_DESCRIPTIONS = {
                      "subtracted from a plate into a perforated panel.",
     "voronoi-vase": "Advanced combo — Voronoi cells mapped onto a revolved "
                     "surface, shelled into a thin-walled vase.",
+    "voronoi-3d-lattice": "TRUE 3D Voronoi — points scattered INSIDE a sphere "
+                          "become convex mesh cells, shrunk and subtracted so "
+                          "the walls between them are the part: an organic "
+                          "lattice (Populate volume fill + Voronoi3D).",
     "parametric-curves": "Parametric curves — a Spline through points, an "
                          "ArcCenter and a Line as building blocks for wire geometry.",
     "predicate-selectors": "Selecting by RULE, not by clicking — EdgesByType picks "

@@ -587,17 +587,23 @@ register(NodeDef("MakeFace", "operations", "Surface (Make Face)",
                 "Polyline, …) into a 2D face, ready for Extrude / Revolve / Loft. "
                 "Fans out over a list of curves (one face each)."))
 
-register(NodeDef("PopulateGeometry", "operations", "Populate Geometry",
-    inputs=[Socket("region", WIRE_SURFACE, required=False)],
+register(NodeDef("PopulateGeometry", "operations", "Populate",
+    inputs=[Socket("region", WIRE_SURFACE, required=False, raw=True,
+                   accepts=[WIRE_SOLID, WIRE_MESH])],
     params=[_i("count", 40, 1, 5000, label="count"),
             _i("seed", 1, 0, 100000, label="seed", widget="input"),
             _f("width", 100, 1, 5000, label="width", widget="input"),
             _f("height", 100, 1, 5000, label="height", widget="input")],
     outputs=[Socket("points", WIRE_VECTOR)],
     code_template={"algebra": "_populate({count}, {seed}, {width}, {height}, {region})"},
-    description="Scatter `count` random points (z=0), deterministic per `seed`, "
-                "inside the `region` rectangle if wired (else a width x height "
-                "box). Feed into Voronoi2D, an origin, or Move."))
+    description="Scatter `count` random points, deterministic per `seed` — and "
+                "WHERE they land depends on what you wire into `region`: an OPEN "
+                "curve scatters ALONG it (uniform by arc length), a closed curve "
+                "or flat sketch INSIDE the region (really inside, not its "
+                "bounding box), a curved surface ON it (uniform by area), a "
+                "solid or watertight mesh INSIDE the volume. Nothing wired: a "
+                "width x height box at z=0. Feed Voronoi2D from a flat fill, "
+                "Voronoi3D from a volume fill, or any origin/Move to scatter."))
 
 register(NodeDef("Voronoi2D", "operations", "Voronoi 2D",
     inputs=[Socket("points", WIRE_VECTOR, list_access=True),
@@ -1779,6 +1785,20 @@ register(NodeDef("MeshIntersect", "mesh", "Mesh Intersect",
     outputs=_mesh(),
     code_template={"algebra": "_mesh_bool('intersect', {a}, {b})"},
     description="Boolean intersection A & B on meshes."))
+
+register(NodeDef("Voronoi3D", "mesh", "Voronoi 3D",
+    inputs=[Socket("points", WIRE_VECTOR, list_access=True),
+            Socket("body", WIRE_MESH, required=False)],
+    params=[_f("scale", 0.9, 0.05, 1.0, 0.05, label="scale")],
+    outputs=[Socket("cells", WIRE_MESH)],
+    code_template={"algebra": "_voronoi3d({points}, {body}, {scale})"},
+    description="TRUE 3D Voronoi: each point becomes a closed convex mesh CELL, "
+                "clipped to `body` if wired (a solid casts in automatically). "
+                "`scale` shrinks every cell toward its centre — Mesh Subtract "
+                "the shrunk cells from the body and the walls between cells "
+                "become the part: a voronoi lattice. Feed `points` from "
+                "Populate with the same body in its region (a volume fill). "
+                "List output — fans out downstream. Cap 2000 points."))
 
 register(NodeDef("MeshSimplify", "mesh", "Mesh Simplify",
     inputs=[Socket("mesh", WIRE_MESH)],
