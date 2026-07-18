@@ -218,6 +218,19 @@ rect + colour). They're **editor-only metadata**: the engine never reads them, b
 save/reload and api/copilot round-trips. Serialized/restored in `nodes.html`
 (`toGraphJSON`/`fromGraphJSON`); created with Ctrl+G (`groupSelected`).
 
+`preview` is the per-node eye: `True`/`False` force it, absent = auto (draw only
+terminal geometry nodes). **Every emit path must call `Transpiler._previewed`** —
+it is the ONE gate, and an emit path that forgets it leaves the eye wired to
+nothing, silently, for every node of that type (that was feedback
+20260718-164854: selectors, CenterOfMass, TraceImage, OrientForPrint and
+bypassed nodes all had dead toggles). Selectors are the special case: their
+output wire is `selection`/`data`, which says how they may be WIRED, not what
+they hold — at run time it is drawable sub-shapes, so they honour an EXPLICIT
+eye but never auto-draw (a graph is full of wired selectors; drawing them all
+unasked buries the part). `mesh_extractor._preview_geom` then dispatches on the
+runtime VALUE, not the declared type: points → dots, solid/sketch → mesh, curve
+→ polylines.
+
 `params._ui` is another editor-only namespace (like CodeBlock's `_cb`): per-slider
 drag window + step set via the slider's ⚙ (`{param: {min,max,step}}`). Sliders in
 the editor are a custom `cadslider` widget — the drag window defaults to ±10

@@ -244,7 +244,15 @@ def extract_view(shape, linear_frac: float = 0.02, angular: float = 0.4,
 
 
 def _is_point(v) -> bool:
-    """A bare point/vector: has X/Y/Z but isn't a topological shape (no edges)."""
+    """A bare point/vector: has X/Y/Z but isn't a topological shape (no edges).
+
+    A build123d Vertex is BOTH — a topological shape that is nothing but a
+    position — so the no-edges test alone rejects it and a picked vertex draws
+    as nothing at all (it has no mesh and no wire; dots are the only way to see
+    it). Name-check it, the way the transpiler's _as_point already does.
+    """
+    if type(v).__name__ == "Vertex":
+        return True
     return (hasattr(v, "X") and hasattr(v, "Y") and hasattr(v, "Z")
             and not hasattr(v, "edges") and not hasattr(v, "faces"))
 
