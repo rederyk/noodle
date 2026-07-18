@@ -84,6 +84,18 @@ function previewsExtent(previews, ids) {
   return Math.max(s.length(), 1);
 }
 function objFromPreview(p, color, opts, scale) {
+  if (p.bodies) {                              // a collide Scene: one child per body,
+    const grp = new THREE.Group();             // each independently posable at scrub time
+    p.bodies.forEach((b, i) => {
+      const child = objFromPreview(b, color, opts, scale);
+      if (!child) return;
+      child.userData.bodyIndex = i;
+      child.userData.anim = b.anim || null;
+      grp.add(child);
+    });
+    grp.userData.isScene = true;
+    return grp;
+  }
   if (p.mesh) {
     const obj = meshFromData(p.mesh, color);
     if (opts && opts.wireframe) { obj.material.wireframe = true; obj.material.metalness = 0; }
@@ -385,7 +397,7 @@ export class CadViewer {
   renderPreviews(previews, { colorOf, wireOf, onEmpty } = {}) {
     previews = previews || {};
     this._clearPreviewGroup();
-    const drawable = e => e && (e.mesh || e.polylines || e.points);
+    const drawable = e => e && (e.mesh || e.polylines || e.points || e.bodies);
     const order = Object.keys(previews).filter(k => drawable(previews[k]))
       .sort((a, b) => nodeNum(a) - nodeNum(b));   // stable order for colour slots
     if (!order.length) { if (onEmpty) onEmpty(); return { order: [], colors: {}, meshes: {}, size: null }; }
@@ -434,8 +446,13 @@ export class CadViewer {
     this._ray.setFromCamera(this._mouse, this.camera);
     this._ray.params.Line.threshold = 0.5;
     this._ray.params.Points.threshold = 3;
-    const hits = this._ray.intersectObjects(this.previewGroup.children, false)
-      .filter(h => h.object.visible !== false);   // don't pick hidden (e.g. isolated) shapes
-    return (hits.length && hits[0].object.userData.nodeId) || null;
+    const hits = this._ray.intersectObjects(this.previewGroup.children, true)
+      .filter(h => h.object.visible !== false);   // recurse into Scene groups
+    for (const h of hits) {                        // walk up to the node-owning object
+      let o = h.object;
+      while (o && o.userData.nodeId == null && o !== this.previewGroup) o = o.parent;
+      if (o && o.userData.nodeId != null) return o.userData.nodeId;
+    }
+    return null;
   }
 }

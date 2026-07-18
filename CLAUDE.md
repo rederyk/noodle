@@ -330,13 +330,18 @@ thirds of the material within one — so orientation decides **where the part br
   slider or a wired Number Slider drags (✥ fastDrag), mesh pose = M(t)·M(t_baked)⁻¹ —
   the engine re-bakes exactly when the drag settles. COLLISIONS: the `collide` toggle —
   off by default, it costs real compute — un-fans multiple shapes wired into one Drop
-  into ONE scene (`_drop_collide`): sequential falls, lowest first, each stopping at its
-  first contact with bed or pile (`_vspans`: vertical point-in-triangle spans, no ray
-  lib — trimesh's ray engine needs rtree, not in the image), stability test on the pile,
-  sampled tip (`_tip_search`, 8°+bisection) with closed-form release when the com sinks
-  to pivot level, capped at the com-arc bottom; a tipped-clear part falls again. No
-  sliding, no live replay in collide mode; timeline = the whole sequence, so no t ever
-  interpenetrates), `PrintCheck` (report → Panel), `OverhangFaces`
+  into ONE scene (`_drop_collide` → `_dyn_sim`) and runs REAL rigid-body dynamics
+  (pybullet, DIRECT mode): every part is its convex hull, they all fall TOGETHER —
+  colliding mid-air, pushing each other over, tumbling, stacking — simulated once at a
+  fixed 1/240s step (deterministic per scene) in MILLIMETRES directly (so the fixed
+  collision margin is sub-micron, not the ~1mm it becomes when shrunk to metres; CCD +
+  hull-volume masses), recorded as 60Hz keyframes per body until the scene sleeps
+  (restitutionVelocityThreshold=100mm/s + friction/damping, ~0.6-1s). Each returned
+  shape carries its own keyframe plan (`_noodle_anim` kind "keys"); mesh_extractor emits
+  a `{kind:"Scene", bodies:[...]}` preview, viewer.js builds a Group of independently-
+  posable meshes, and nodes.html (`keyInterp`/`sceneBodyPose`) replays the whole pile
+  LIVE (lerp+slerp) while the slider drags. Limits: hulls not true meshes, chaotic like
+  real falling), `PrintCheck` (report → Panel), `OverhangFaces`
   (the faces needing support, as a mesh of its own → its own colour in the viewer),
   `SupportVolume` (the support as a BODY), `OrientForPrint` (every stable pose scored; two
   outputs — the oriented mesh and the table saying why — from ONE search, via

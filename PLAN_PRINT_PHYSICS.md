@@ -80,26 +80,37 @@ timeline gizmo) animates the fall at 60fps with zero engine round trips; the exa
 re-bake lands when the drag settles. One physics, computed once, played anywhere.
 
 **Collisions (`collide`, off by default).** Several shapes wired into ONE Drop become one
-scene instead of a fan (the transpiler un-fans `shape`; the output is a list again). The
-parts fall **sequentially, lowest first**, each stopping at its first contact with the bed
-or the parts already at rest, and the timeline covers the whole sequence — at no t has
-anything ever passed through anything else. Contact is measured with `_vspans`: vertical
-point-in-triangle spans with CLOSED boundaries (trimesh's pure ray engine needs rtree,
-which the image does not ship — and a ray grazing a silhouette is a coin toss where the
-closed test makes footprint-to-footprint stacking exact), witnesses both ways (`_up_gaps`
-adds edge midpoints: a table edge has no interior vertex), plus an inside test for
-lateral penetration the vertical gaps are blind to (`_scene_touch`). On the pile the
-stability question is the same com-over-contact-shadow test as the bed; an unstable perch
-TIPS about the nearest contact edge (`_tip_search`: 8° strides + bisection — no closed
-form against an arbitrary mesh), and three closed-form rules keep the cascade honest and
-finite: RELEASE when the com sinks to pivot level (past it the support would have to
-pull), never rotate past the bottom of the com's arc (a free body does not pendulum back
-up), and a hanging contact that cannot rotate simply lets go (a vertical wall does not
-obstruct a vertical fall). The demo scenario — a cube dropped half-off a landed box —
-runs the full chain: perch, tip past release, catch the wall, roll 90° down it, land flat
-on the bed beside. Declared limits: friction is infinite (nothing slides), a bed topple
-does not check neighbours it sweeps, edge-on-edge kisses live at tessellation scale,
-max ~10 events per part, and no browser live-replay (a fan previews as one merged mesh).
+scene instead of a fan (the transpiler un-fans `shape`; the output is a list again). This
+is where the quasi-static single-body model gives way to **real rigid-body dynamics**
+(`_dyn_sim`, pybullet in DIRECT mode): every part is its convex hull, and they all fall
+**together** — colliding in mid-air, pushing each other over, tumbling, stacking — because
+coupled contact is exactly what a sequential lowest-first cascade cannot express. The run
+is simulated once at a fixed 1/240 s step (deterministic for a given scene on a given
+build) and recorded as 60 Hz keyframes per body until the scene sleeps.
+
+Three engine choices carry the quality. **Units are millimetres directly, not scaled to
+metres**: pybullet's collision margin is a fixed absolute value, so a 20 mm cube shrunk to
+0.02 m rests ~1 mm above the bed, where the same cube at mm scale rests sub-micron —
+verified across scales (S=1 → 0.001 mm gap, S=0.001 → 1 mm). Tunnelling risk is
+scale-invariant (speed × dt / thickness), so nothing is lost, and a per-body swept sphere
+(CCD) covers the thin, fast cases. **`restitutionVelocityThreshold` = 100 mm/s**: below it
+a contact is inelastic — the 1 mm/s I first used made every real contact elastic and the
+pile jittered for the full 8 s instead of settling; with the threshold plus rolling /
+spinning friction and angular damping a three-box scene sleeps in ~0.6-1 s. **Mass is the
+hull volume**, so ratios are physical (a heavy part settles a light one, not the reverse).
+
+Because the plan is again *data* — per-body keyframe tracks (times, positions,
+quaternions) — the whole scene replays in the browser: each body carries its own
+`_noodle_anim` of kind `"keys"`, `mesh_extractor` emits a `{kind:"Scene", bodies:[…]}`
+preview, `viewer.js` builds a Group of independently-posable meshes, and `nodes.html`
+(`keyInterp` + `sceneBodyPose`, lerp + slerp) moves each body to any t while the slider
+drags — the same live-replay story as the single drop, now for a whole pile. The demo
+(`drop-stack`): three boxes fall as one scene — one lands, one stacks, and the half-off
+cube tumbles over the edge, rolls off and ends flat on the bed beside. Declared limits:
+convex HULLS, not the true meshes (a bowl will not cradle a ball); rest poses carry the
+solver's contact margin (sub-micron in mm units), not CAD exactness; deterministic per
+scene but chaotic in the physical sense — nudge a part a hair and the pile lands
+differently. That is not a bug; that is what falling is.
 
 ## 3. How each number is got
 

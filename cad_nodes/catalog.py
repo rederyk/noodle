@@ -1861,11 +1861,13 @@ register(NodeDef("Drop", "print", "Drop on Plane",
                 "`t` to drive several Drops from ONE timeline, or a list of times to "
                 "scatter the trajectory as a motion trail. With `collide` on, SEVERAL "
                 "shapes wired into this one node fall as ONE SCENE instead of a fan: "
-                "sequentially, lowest first, each stopping at its first contact — the "
-                "bed or the parts already down — and a part that lands unstably on a "
-                "pile TIPS off its perch and falls again (rays + sampled rotation: it "
-                "costs real compute, hence the toggle; no sliding, and no browser "
-                "live-replay in this mode). Both lanes — a solid stays a solid."))
+                "real rigid-body dynamics (pybullet), so they fall TOGETHER — colliding "
+                "in mid-air, pushing each other over, tumbling and stacking — simulated "
+                "once and recorded as keyframes the slider scrubs (and the browser "
+                "replays live). It costs real compute, hence the toggle. Each body is "
+                "its convex HULL (a bowl will not cradle a ball), and the pile is "
+                "deterministic for a given scene but chaotic like real falling — nudge "
+                "a part and it lands differently. Both lanes — a solid stays a solid."))
 
 register(NodeDef("PrintCheck", "print", "Print Check",
     inputs=[Socket("mesh", WIRE_MESH)],

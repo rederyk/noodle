@@ -482,6 +482,8 @@ window._noodle = { get lgraph(){ return lgraph; }, get lcanvas(){ return lcanvas
   get viewer(){ return viewer; }, get picker(){ return picker; },
   get execGlow(){ return execGlow; }, get lastCost(){ return lastCost; },
   get showCost(){ return showCost; },
+  get THREE(){ return THREE; },
+  paramChange(n){ return onParamChange(n); },
   togglePick(i){ return togglePick(i); } };
 let currentName = null;
 let lastNodeErrors = {};   // last execution's node_id -> error, for feedback reports
@@ -2630,11 +2632,51 @@ function dropMatrixAt(anim, t){
   return M;
 }
 
-// Seat `node`'s preview mesh at timeline position tNew, relative to the t the
-// mesh was baked at: mesh transform = M(tNew) · M(tBaked)⁻¹.
+// A collide body ships a KEYFRAME plan instead (kind "keys"): pybullet ran the
+// whole scene once, and here we interpolate (lerp + slerp) the pose at any t.
+function keyInterp(anim, tau){
+  const T = anim.times; if (!T || !T.length) return null;
+  const q = (i)=> new THREE.Quaternion(anim.quat[i][0], anim.quat[i][1], anim.quat[i][2], anim.quat[i][3]);
+  if (tau <= T[0])            return { p: anim.pos[0], q: q(0) };
+  if (tau >= T[T.length-1])   return { p: anim.pos[T.length-1], q: q(T.length-1) };
+  let lo = 0, hi = T.length - 1;
+  while (hi - lo > 1){ const mid = (lo+hi)>>1; if (T[mid] <= tau) lo = mid; else hi = mid; }
+  const f = (tau - T[lo]) / ((T[hi] - T[lo]) || 1);
+  const p = [0,1,2].map(i => anim.pos[lo][i]*(1-f) + anim.pos[hi][i]*f);
+  return { p, q: q(lo).slerp(q(hi), f) };
+}
+
+// Move one Scene body (baked at anim.t) to tNew. Its world vertices sit at pose
+// (pB,qB); target is (pT,qT). The rigid delta is Δq = qT·qB⁻¹, and the child's
+// offset = pT − Δq·pB, so vertex y → Δq·(y−pB) + pT.
+function sceneBodyPose(anim, tNew, child){
+  const T = anim.T || 1;
+  const at = keyInterp(anim, Math.min(Math.max(tNew,0),1) * T);
+  const bk = keyInterp(anim, Math.min(Math.max(anim.t,0),1) * T);
+  if (!at || !bk) return;
+  const dq = at.q.clone().multiply(bk.q.clone().invert());
+  const pB = new THREE.Vector3(bk.p[0], bk.p[1], bk.p[2]);
+  const pT = new THREE.Vector3(at.p[0], at.p[1], at.p[2]);
+  child.quaternion.copy(dq);
+  child.position.copy(pT).sub(pB.clone().applyQuaternion(dq));
+}
+
+// Seat `node`'s preview at timeline position tNew, relative to its baked t. A
+// single Drop is one mesh moved by M(tNew)·M(tBaked)⁻¹; a collide Scene is a
+// group whose bodies each carry their own keyframe plan.
 function applyDropAnim(node, tNew){
-  const anim = previewAnims['n'+node.id], m = previewMeshes['n'+node.id];
-  if (!anim || !m) return false;
+  const m = previewMeshes['n'+node.id];
+  if (!m) return false;
+  if (m.userData && m.userData.isScene){
+    let any = false;
+    for (const child of m.children){
+      const a = child.userData && child.userData.anim;
+      if (a && a.kind === 'keys'){ sceneBodyPose(a, tNew, child); any = true; }
+    }
+    return any;
+  }
+  const anim = previewAnims['n'+node.id];
+  if (!anim) return false;
   const rel = dropMatrixAt(anim, tNew).multiply(dropMatrixAt(anim, anim.t).invert());
   rel.decompose(m.position, m.quaternion, m.scale);
   return true;

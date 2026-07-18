@@ -297,6 +297,29 @@ def _preview_of(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict 
     Drop node's fall/topple timeline). The plan rides the preview entry as
     `anim`, reaches the editor through view.json, and lets the browser replay
     the motion at 60fps while the slider drags — no engine round trip."""
+    # A fanned collide result is a LIST whose items each carry their own
+    # keyframe plan — render them as a SCENE of independently-animated bodies
+    # (one sub-mesh + anim each) so the browser can replay the whole pile, not
+    # a single merged blob frozen at one t.
+    if isinstance(value, (list, tuple)) and any(
+            getattr(v, "_noodle_anim", None) is not None for v in value):
+        bodies, lo, hi = [], [1e30, 1e30, 1e30], [-1e30, -1e30, -1e30]
+        for v in value:
+            g = _preview_geom(v, linear_frac, angular)
+            if g is None:
+                continue
+            g["anim"] = getattr(v, "_noodle_anim", None)
+            bodies.append(g)
+            bb = g.get("bbox")
+            if bb:
+                lo = [min(lo[i], bb["min"][i]) for i in range(3)]
+                hi = [max(hi[i], bb["max"][i]) for i in range(3)]
+        if bodies:
+            box = ({"min": lo, "max": hi,
+                    "size": [hi[i] - lo[i] for i in range(3)]}
+                   if hi[0] > -1e30 else None)
+            return {"kind": "Scene", "bodies": bodies, "bbox": box}
+
     entry = _preview_geom(value, linear_frac, angular)
     anim = getattr(value, "_noodle_anim", None)
     if entry is not None and anim is not None:
