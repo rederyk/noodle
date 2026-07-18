@@ -134,8 +134,18 @@ cad_nodes/
                        topo order; group nodes (BuildPart/BuildSketch) emit
                        nested `with` blocks. PREAMBLE injects runtime helpers
                        (_at, _pushpull, _section, _bbox_plane, _rotate,
-                       _select_subshapes). Each node is wrapped in try/except so
-                       one failing node is recorded in __errors__, not fatal.
+                       _select_subshapes, _reanchor). Each node is wrapped in
+                       try/except so one failing node is recorded in __errors__,
+                       not fatal.
+                       TRAP, paid for: build123d's algebra-mode fillet()/chamfer()
+                       take NO target — they read `objects[0].topo_parent`, which
+                       after a boolean still names the PRE-boolean operand. Round a
+                       corner of a Union and you silently get that operand back,
+                       the rest of the part deleted and no error raised. So every
+                       rounding node passes its `part` EXPLICITLY and _reanchor()
+                       re-points the picks at it (in place — chamfer()'s 2D branch
+                       matches picks by TShape identity, so copies match nothing).
+                       Never call bare fillet()/chamfer() in a code_template.
                        run(emit_map=True) / transpile_with_map() also return a
                        param<->code source map (sentinel-wrapped literals measured
                        on the final text) for the editable code view. A CodeBlock
