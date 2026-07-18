@@ -15,6 +15,7 @@ The generated module exposes `__result__` (the shape to preview) and
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 from . import catalog
@@ -131,6 +132,7 @@ def _annot(node) -> str:
     return f"  # @node:{node.id} ({node.type})"
 
 PREAMBLE = """\
+import json as _json
 import math
 import os
 import random
@@ -143,6 +145,71 @@ __panels__ = {}
 __previews__ = {}
 __errors__ = {}
 __timings__ = {}     # per-node wall-clock seconds, keyed by node id
+__hashes__ = {}      # node id -> content key (memo mode; drives the mesh cache)
+__cached__ = {}      # node id -> True when the memo store served it (no re-run)
+
+# Persistent memo store. The warm worker injects __MEMO__ (a plain dict that
+# survives across runs) into the script globals; a cold subprocess has none, so
+# every _memo_get misses and the graph executes exactly as before. Entries are
+# content-addressed (see Transpiler._memo_plan), so a param edit re-runs ONLY
+# the dirty subtree — everything upstream/sideways is restored from the cache.
+try:
+    __MEMO__
+except NameError:
+    __MEMO__ = None
+
+_MEMO_CAP = 256      # LRU entries (node outputs + preview meshes + views)
+
+# Live progress. The executor points __PROGRESS_PATH__ at a per-run NDJSON file
+# (see executor.build_script) and the editor tails it WHILE the run is still going,
+# so nodes light up as they execute instead of being replayed afterwards. It is the
+# only channel that works on BOTH paths: the warm worker redirects stdout into a
+# buffer during exec, and the cold subprocess has no pipe home at all. No path set
+# (the /ui code view, tests) = every _ev is a no-op.
+try:
+    __PROGRESS_PATH__
+except NameError:
+    __PROGRESS_PATH__ = None
+
+_PROG_F = None
+
+
+def _ev(_kind, _nid, _dt=None, _cached=False, _err=None):
+    global _PROG_F
+    if not __PROGRESS_PATH__:
+        return
+    try:
+        if _PROG_F is None:
+            _PROG_F = open(__PROGRESS_PATH__, "a")
+        _e = {"k": _kind, "n": _nid}
+        if _dt is not None:
+            _e["t"] = round(_dt, 4)
+        if _cached:
+            _e["c"] = True
+        if _err:
+            _e["x"] = True
+        _PROG_F.write(_json.dumps(_e) + "\\n")
+        _PROG_F.flush()      # the tailer reads this file while we're still running
+    except Exception:
+        pass                 # progress is a nicety: never let it break a run
+
+
+def _memo_get(_k):
+    if __MEMO__ is None:
+        return None
+    _v = __MEMO__.get(_k)
+    if _v is not None:
+        __MEMO__.pop(_k, None)   # LRU touch (dict keeps insertion order)
+        __MEMO__[_k] = _v
+    return _v
+
+
+def _memo_put(_k, _v):
+    if __MEMO__ is None:
+        return
+    while len(__MEMO__) >= _MEMO_CAP:
+        __MEMO__.pop(next(iter(__MEMO__)))
+    __MEMO__[_k] = _v
 
 
 def _out(_path):
@@ -639,14 +706,1273 @@ def _section(_shape, _plane=None):
     return section(_shape, section_by=pl)
 
 
-def _rotate(_obj, _axis, _angle):
-    \"\"\"Rotate any spatial object — Shape OR Plane — by _angle degrees about a
-    global axis. Uses Location algebra (Rot * obj) so it is polymorphic: a plane
-    rotates just like a solid (build123d Planes have no .rotate()).\"\"\"
+# ===========================================================================
+# The mesh lane (PLAN_MESH_LANE.md)
+#
+# build123d/OCCT cannot model meshes — `import_stl` yields a Face with only a
+# triangulation and no surface (booleans on it are refused outright), and
+# `Mesher.read` sews every triangle into a planar B-Rep face: 300s to open a
+# 147k-triangle part, 81s per boolean. So triangles get their own lane, with
+# trimesh as the engine (MIT — noodle stays MIT; see THIRD_PARTY_NOTICES.md).
+# ===========================================================================
+_TRIMESH = None
+
+
+def _tm():
+    \"\"\"Import trimesh lazily — a graph with no mesh node must not pay for it.\"\"\"
+    global _TRIMESH
+    if _TRIMESH is None:
+        import trimesh as _t
+        _TRIMESH = _t
+    return _TRIMESH
+
+
+class Mesh:
+    \"\"\"A triangle mesh flowing on a `mesh` wire.
+
+    Wraps a trimesh.Trimesh so the engine stays an implementation detail (it is
+    swappable) and so the transforms and the preview extractor can dispatch on a
+    named type instead of duck-typing a third-party class.\"\"\"
+
+    # Duck-type marker. mesh_extractor runs as an imported module and cannot see
+    # this class (it is defined in the generated script's globals), so it sniffs
+    # for this attribute rather than using isinstance.
+    _noodle_mesh = True
+    __slots__ = ("tm",)
+
+    def __init__(self, tm):
+        self.tm = tm
+
+    @property
+    def volume(self):
+        try:
+            return float(self.tm.volume)
+        except Exception:
+            return 0.0
+
+    @property
+    def area(self):
+        try:
+            return float(self.tm.area)
+        except Exception:
+            return 0.0
+
+    @property
+    def n_tris(self):
+        return int(len(self.tm.faces))
+
+    @property
+    def watertight(self):
+        try:
+            return bool(self.tm.is_watertight)
+        except Exception:
+            return False
+
+    def arrays(self):
+        \"\"\"(vertices, triangles) as plain nested lists — what the viewer wants.\"\"\"
+        return self.tm.vertices.tolist(), self.tm.faces.tolist()
+
+    def transformed(self, _m):
+        \"\"\"Apply a 4x4 matrix to the vertices — this is what a transform IS on a
+        mesh, and it is why Move/Rotate/Scale stay ONE node across both lanes.\"\"\"
+        t = self.tm.copy()
+        t.apply_transform(_m)
+        return Mesh(t)
+
+    def __repr__(self):
+        return "Mesh(%d tris, watertight=%s)" % (self.n_tris, self.watertight)
+
+
+def _is_mesh(_x):
+    return getattr(_x, "_noodle_mesh", False)
+
+
+def _mesh_concat(_items):
+    ms = [m for m in _items if m is not None]
+    if not ms:
+        return None
+    if len(ms) == 1:
+        return ms[0]
+    return Mesh(_tm().util.concatenate([m.tm for m in ms]))
+
+
+def _to_mesh(_x, _tol=None):
+    \"\"\"Cast a B-Rep shape onto the mesh lane (the solid->mesh / surface->mesh cast
+    in casts.py — applied automatically at the wire boundary). Tessellates with
+    build123d, then hands the triangles to trimesh.\"\"\"
+    if _x is None or _is_mesh(_x):
+        return _x
+    if isinstance(_x, (list, tuple)):
+        return _mesh_concat([_to_mesh(i, _tol) for i in _x])
+    if _tol is None:                       # scale the deflection to the part
+        try:
+            bb = _x.bounding_box(optimal=False)
+            diag = (bb.size.X ** 2 + bb.size.Y ** 2 + bb.size.Z ** 2) ** 0.5
+            _tol = max(diag * 0.005, 0.01)
+        except Exception:
+            _tol = 0.1
+    verts, tris = _x.tessellate(float(_tol), 0.3)
+    return Mesh(_tm().Trimesh(vertices=[[v.X, v.Y, v.Z] for v in verts],
+                              faces=[list(t) for t in tris], process=True))
+
+
+def _as_mesh(_x):
+    \"\"\"Coerce whatever landed on a mesh input to a Mesh: a Mesh passes through, a
+    B-Rep shape tessellates, a path loads.\"\"\"
+    if _x is None or _is_mesh(_x):
+        return _x
+    if isinstance(_x, str):
+        return _mesh_load(_x)
+    return _to_mesh(_x)
+
+
+def _mesh_load(_path):
+    \"\"\"Load an STL/OBJ/PLY/3MF as a Mesh — 0.16s on a 147k-triangle part, where
+    build123d's Mesher takes 300s for the same file.\"\"\"
+    if not _path:
+        return None
+    return Mesh(_tm().load(str(_path), force="mesh"))
+
+
+def _mesh_fix(_mesh, _min_body=16, _fill_holes=True):
+    \"\"\"Repair a mesh into something a boolean engine will accept: merge duplicate
+    vertices, drop duplicate and degenerate faces, drop stray shards (bodies under
+    `_min_body` triangles), fill holes, fix normals.
+
+    This is the node that finds what OCCT cannot even see. The raccordo STL's only
+    real defect was ONE stray triangle plus a duplicate face — no holes at all —
+    and OCCT reported it `is_valid=True` (PLAN_MESH_LANE.md §0).\"\"\"
+    _mesh = _as_mesh(_mesh)
+    if _mesh is None:
+        return None
+    tm = _mesh.tm.copy()
+    tm.merge_vertices()
+    tm.update_faces(tm.unique_faces())
+    tm.update_faces(tm.nondegenerate_faces())
+    try:
+        bodies = list(tm.split(only_watertight=False))
+    except Exception:
+        bodies = []
+    if len(bodies) > 1:
+        keep = [b for b in bodies if len(b.faces) >= int(_min_body)]
+        if keep:
+            tm = keep[0] if len(keep) == 1 else _tm().util.concatenate(keep)
+    if _fill_holes and not tm.is_watertight:
+        try:
+            _tm().repair.fill_holes(tm)
+        except Exception:
+            pass
+    try:
+        _tm().repair.fix_normals(tm)
+    except Exception:
+        pass
+    return Mesh(tm)
+
+
+def _mesh_inspect(_mesh):
+    \"\"\"A text report of a mesh's health — the mesh lane's perception tool (the
+    sibling of slice_summary for the retroeng flow). Wire it into a Panel.\"\"\"
+    _mesh = _as_mesh(_mesh)
+    if _mesh is None:
+        return "no mesh"
+    tm = _mesh.tm
+    try:
+        bodies = len(tm.split(only_watertight=False))
+    except Exception:
+        bodies = 1
+    try:
+        import numpy as _np
+        e = tm.edges_sorted
+        _u, _c = _np.unique(e, axis=0, return_counts=True)
+        boundary = int((_c == 1).sum())
+        nonmanifold = int((_c > 2).sum())
+    except Exception:
+        boundary = nonmanifold = -1
+    lines = [
+        "triangles   : %d" % len(tm.faces),
+        "vertices    : %d" % len(tm.vertices),
+        "watertight  : %s" % bool(tm.is_watertight),
+        "bodies      : %d" % bodies,
+        "boundary edges     : %d" % boundary,
+        "non-manifold edges : %d" % nonmanifold,
+        "euler       : %s" % tm.euler_number,
+        "volume      : %.3f" % _mesh.volume,
+        "area        : %.3f" % _mesh.area,
+    ]
+    return "\\n".join(lines)
+
+
+def _mesh_export(_mesh, _path):
+    \"\"\"Write a Mesh to STL/OBJ/PLY/3MF (the extension picks the format).\"\"\"
+    _mesh = _as_mesh(_mesh)
+    if _mesh is None or not _path:
+        return None
+    _mesh.tm.export(str(_path))
+    return _mesh
+
+
+_MANIFOLD = None
+
+
+def _mf():
+    \"\"\"Import manifold3d lazily (Apache-2.0) — the boolean/simplify engine.\"\"\"
+    global _MANIFOLD
+    if _MANIFOLD is None:
+        import manifold3d as _m
+        _MANIFOLD = _m
+    return _MANIFOLD
+
+
+def _to_manifold(_x, _who="this operation"):
+    \"\"\"Mesh -> manifold3d.Manifold, with the one error message that matters.
+
+    manifold3d only operates on a closed volume: hand it an open or non-manifold
+    mesh and it returns an EMPTY manifold whose status() says why. trimesh's own
+    wrapper surfaces that as "Not all meshes are volumes!", which tells the user
+    nothing actionable — so we translate it into what to actually do.\"\"\"
+    import numpy as _np
+    m = _as_mesh(_x)
+    if m is None:
+        return None
+    mf = _mf()
+    man = mf.Manifold(mf.Mesh(
+        vert_properties=_np.asarray(m.tm.vertices, dtype=_np.float32),
+        tri_verts=_np.asarray(m.tm.faces, dtype=_np.uint32)))
+    if man.is_empty() and m.n_tris:
+        raise ValueError(
+            "%s needs a closed (watertight) mesh — manifold3d reports %s. "
+            "Put a Mesh Fix node in front of it." % (_who, man.status()))
+    return man
+
+
+def _from_manifold(_man):
+    \"\"\"manifold3d.Manifold -> Mesh.
+
+    process=False is load-bearing: manifold3d already returns a welded, valid
+    manifold, and trimesh's default processing re-merges its vertices — which
+    silently BREAKS it. (Measured: simplify at 1.5mm came back non-watertight
+    with process=True and watertight with process=False. Same triangles.)\"\"\"
+    if _man is None or _man.is_empty():
+        return None
+    msh = _man.to_mesh()
+    return Mesh(_tm().Trimesh(vertices=msh.vert_properties[:, :3].astype(float),
+                              faces=msh.tri_verts, process=False))
+
+
+def _mesh_bool(_mode, *_items):
+    \"\"\"Boolean on the mesh lane (manifold3d): 0.107s on the 147k-triangle raccordo,
+    where the same cut through OCCT's B-Rep takes 81s.\"\"\"
+    ms = [_as_mesh(i) for i in _flatten(list(_items))]
+    ms = [m for m in ms if m is not None]
+    if not ms:
+        return None
+    who = "Mesh " + _mode
+    mans = [_to_manifold(m, who) for m in ms]
+    if len(mans) == 1:
+        return _from_manifold(mans[0])
+    mf = _mf()
+    op = {"union": mf.OpType.Add, "subtract": mf.OpType.Subtract,
+          "intersect": mf.OpType.Intersect}[_mode]
+    return _from_manifold(mf.Manifold.batch_boolean(mans, op))
+
+
+def _mesh_simplify(_mesh, _tolerance=0.05, _max_error=5.0):
+    \"\"\"Simplify to a BOUNDED geometric deviation (manifold3d): no surface moves
+    further than `tolerance`. On the raccordo: 0.07s, 147k -> 35k triangles, volume
+    off by -0.10%, still watertight.
+
+    Tolerance-driven rather than count-driven on purpose — in CAD you know how much
+    error you can accept, not how many triangles you want. (The MIT count-driven
+    decimators were measured and rejected: they break the part. PLAN_MESH_LANE.md §5.)
+
+    The sharp edge, and why this node checks its own work: a tolerance at or above
+    the part's feature size doesn't simplify it, it DESTROYS it — and quietly. The
+    raccordo is a thin-walled shell whose mean wall (volume/area) is 1.11mm, and
+    simplify tracks that exactly: 1 body and -0.2% volume at 0.5mm, still 1 body at
+    1.0mm, then it TEARS — 2 bodies at 1.2mm, 3 at 1.5mm, -22% volume at 3mm. You
+    cannot move a surface further than the wall is thick and still have a wall.
+
+    So we verify the outcome rather than trust the setting: if simplify moved the
+    volume more than `_max_error` percent, or broke the part into more pieces than it
+    started with, that is a failure and it is reported as one. `decompose()` makes the
+    piece count essentially free (~0.02s).\"\"\"
+    src = _as_mesh(_mesh)
+    man = _to_manifold(src, "Mesh Simplify")
+    if man is None:
+        return None
+    simple = man.simplify(float(_tolerance))
+    out = _from_manifold(simple)
+    if out is None:
+        return None
+    v0, v1 = man.volume(), simple.volume()
+    err = abs(v1 - v0) / abs(v0) * 100.0 if v0 else 0.0
+    bodies0, bodies1 = len(man.decompose()), len(simple.decompose())
+    if err > float(_max_error) or bodies1 > bodies0:
+        wall = abs(v0) / src.area if src.area else 0.0
+        raise ValueError(
+            "Mesh Simplify: tolerance %gmm is too coarse for this part — %s. Its mean "
+            "wall is %.2fmm (volume/area), and a tolerance near or above that collapses "
+            "it. Lower the tolerance%s."
+            % (float(_tolerance),
+               ("it tore the part into %d pieces" % bodies1) if bodies1 > bodies0
+               else ("it moved the volume by %.1f%% (limit %.1f%%)" % (err, float(_max_error))),
+               wall,
+               "" if bodies1 > bodies0 else " or raise `max error`"))
+    return out
+
+
+def _mesh_to_solid(_mesh, _max_tris=20000):
+    \"\"\"The ONE bridge back to the B-Rep lane: sew every triangle into a planar face,
+    then fix the shell into a solid.
+
+    It is a node and not a cast because it is brutally expensive — ~300s on a
+    147k-triangle part, and every downstream B-Rep boolean then costs ~80s on the
+    147k-FACE solid it produces. The guard refuses loudly instead of hanging the app
+    for five minutes; simplify first.\"\"\"
+    m = _as_mesh(_mesh)
+    if m is None:
+        return None
+    if m.n_tris > int(_max_tris):
+        raise ValueError(
+            "MeshToSolid refuses %d triangles (limit %d): sewing that many into a "
+            "B-Rep takes minutes, and every boolean after it tens of seconds. Put a "
+            "Mesh Simplify in front of it." % (m.n_tris, int(_max_tris)))
+    from OCP.BRepBuilderAPI import (BRepBuilderAPI_Sewing, BRepBuilderAPI_MakePolygon,
+                                    BRepBuilderAPI_MakeFace)
+    from OCP.ShapeFix import ShapeFix_Shape, ShapeFix_Solid
+    from OCP.TopoDS import TopoDS
+    from OCP.gp import gp_Pnt
+    verts = m.tm.vertices
+    sew = BRepBuilderAPI_Sewing(1e-6)
+    for tri in m.tm.faces:
+        pts = [gp_Pnt(float(verts[i][0]), float(verts[i][1]), float(verts[i][2]))
+               for i in tri]
+        poly = BRepBuilderAPI_MakePolygon(pts[0], pts[1], pts[2], True)
+        if not poly.IsDone():
+            continue
+        face = BRepBuilderAPI_MakeFace(poly.Wire())
+        if face.IsDone():
+            sew.Add(face.Face())
+    sew.Perform()
+    fixer = ShapeFix_Shape(ShapeFix_Solid().SolidFromShell(
+        TopoDS.Shell_s(sew.SewedShape())))
+    fixer.Perform()
+    return Solid(fixer.Shape())
+
+
+# --- print physics (PLAN_PRINT_PHYSICS.md) ---------------------------------
+# An FDM part is ANISOTROPIC: the bond between layers is roughly a third to two
+# thirds of the strength within a layer, depending on material and temperature. So
+# orientation is not a convenience — it decides where the part breaks. Everything
+# below measures a mesh SITTING ON THE BED (z=0), and it is a heuristic, not an FEA:
+# it captures the dominant failure mode (the part splits at the glued interface with
+# the least area) and says nothing about stress concentration around a hole.
+
+
+def _sections(_mesh, _n=48):
+    \"\"\"Cross-section area up Z. manifold3d slices in ~0.01s for 80 sections, so
+    scoring a hundred candidate orientations is free.\"\"\"
+    import numpy as _np
+    tm = _mesh.tm
+    z0, z1 = float(tm.bounds[0][2]), float(tm.bounds[1][2])
+    if z1 - z0 < 1e-6:
+        return _np.array([]), _np.array([])
+    try:
+        man = _to_manifold(_mesh, "the print check")
+    except Exception:
+        return _np.array([]), _np.array([])   # not watertight: no honest section area
+    zs = _np.linspace(z0 + (z1 - z0) * 0.02, z1 - (z1 - z0) * 0.02, int(_n))
+    return _np.array([man.slice(float(z)).area() for z in zs]), zs
+
+
+def _print_metrics(_mesh, _angle=45.0, _layer=0.2, _nsec=48):
+    \"\"\"Measure one orientation. The mesh must already sit on the bed.
+
+    The faces ON THE BED are excluded from the overhang: a flat base points straight
+    down too, and counting it as an overhang — the classic way to get this wrong —
+    makes a part that needs no support at all look like the worst option there is.\"\"\"
+    import numpy as _np
+    tm = _mesh.tm
+    n, a = tm.face_normals, tm.area_faces
+    zc = tm.triangles[:, :, 2].mean(axis=1)
+    z0 = float(tm.bounds[0][2])
+    crit = math.cos(math.radians(float(_angle)))
+    down = n[:, 2] < -crit                      # steeper than the printer can bridge
+    bed = down & (zc < z0 + max(float(_layer), 0.05) * 2.0)
+    over = down & ~bed
+    areas, zs = _sections(_mesh, _nsec)
+    i = int(_np.argmin(areas)) if len(areas) else -1
+    return {
+        "support_area": float(a[over].sum()),
+        # what the support COSTS is not its footprint but how far it must reach down
+        "support_vol": float((a[over] * (zc[over] - z0)).sum()),
+        "bed_area": float(a[bed].sum()),
+        "height": float(tm.bounds[1][2] - z0),
+        "weak_area": float(areas[i]) if i >= 0 else 0.0,
+        "weak_z": float(zs[i]) if i >= 0 else 0.0,
+        "sectioned": i >= 0,
+        "over_mask": over,
+        "n_over": int(over.sum()),
+    }
+
+
+def _support_body(_mesh, _angle=45.0, _layer=0.2, _clearance=0.2):
+    \"\"\"The support material itself, as a body you can look at — not an estimate of it.
+
+    Under every overhanging triangle, drop a prism to the bed. Union the lot, subtract the
+    part (and the part shifted down by `clearance`, which is what carves the gap the
+    support must leave under the face, or it welds itself on). What is left IS the support:
+    its volume is grams, and you can preview it.
+
+    `area x height above the bed` — the cheap proxy the search falls back on — is not this
+    number and cannot be: it counts the column under an overhang even where the part
+    itself is already sitting in the way. On a sphere of r=20 on the bed this returns
+    1.63 cm3 against 1.73 cm3 worked out with a pencil (the rest is tessellation and the
+    clearance gap). It costs 0.58s on a 20k-triangle mesh, so it is affordable per node
+    and NOT free inside a search over every pose — hence the guard in _orient_plan.\"\"\"
+    import numpy as _np
+    m = _as_mesh(_mesh)
+    if m is None:
+        return None
+    tm = m.tm
+    met = _print_metrics(m, _angle, _layer, _nsec=2)
+    over = _np.where(met["over_mask"])[0]
+    z0 = float(tm.bounds[0][2])
+    if not len(over):
+        return None
+    mf = _mf()
+    prisms = []
+    for fi in over:
+        tri = tm.triangles[fi]
+        if float(tm.area_faces[fi]) < 1e-9 or float(tri[:, 2].max()) - z0 < 0.01:
+            continue                     # a degenerate face, or one already on the bed
+        v = _np.array([[p[0], p[1], p[2]] for p in tri]
+                      + [[p[0], p[1], z0] for p in tri], dtype=_np.float32)
+        # the face's own normal points DOWN (it is an overhang), so the prism's outward
+        # normal there points UP: the top triangle is the face, wound the other way.
+        f = _np.array([[0, 2, 1], [3, 4, 5],
+                       [0, 1, 4], [0, 4, 3],
+                       [1, 2, 5], [1, 5, 4],
+                       [2, 0, 3], [2, 3, 5]], dtype=_np.uint32)
+        prisms.append(mf.Manifold(mf.Mesh(v, f)))
+    if not prisms:
+        return None
+    col = mf.Manifold.batch_boolean(prisms, mf.OpType.Add)
+    part = _to_manifold(m, "the support volume")
+    blocker = part + part.translate((0.0, 0.0, -float(_clearance)))
+    return _from_manifold(col - blocker)
+
+
+def _support_report(_mesh, _angle=45.0, _layer=0.2, _clearance=0.2, _density=1.24):
+    \"\"\"The support body, in the units that hurt — and NOT pretending they are grams on the
+    spool. This is the ENVELOPE: a slicer fills it with a 10-20% lattice, so the plastic
+    that actually goes through the nozzle is a fraction of it. Quoting the solid mass as
+    the print cost would overstate it five-fold, and a number that flatters itself is
+    worse than no number.\"\"\"
+    s = _support_body(_mesh, _angle, _layer, _clearance)
+    if s is None:
+        return None, "support     : none at all — it prints as it stands"
+    cm3 = s.volume / 1000.0
+    return s, ("support     : %.2f cm3 of envelope  (%.1f g of PLA if it were solid; a "
+               "slicer fills it\\n              sparse, so scale by your support density — "
+               "and none of that touches\\n              the hour you will spend picking "
+               "it off)" % (cm3, cm3 * float(_density)))
+
+
+def _bed_drop(_shape, _center=True, _clearance=0.0):
+    \"\"\"Sit a shape on the bed: its lowest point goes to z=0. Works on both lanes —
+    it measures on the mesh and moves the original, so a solid stays a solid.
+
+    It measures on the TESSELLATION rather than Shape.bounding_box() on purpose: the
+    fast OCCT box is oversized (which is why the live view tags its bbox `approx`),
+    and a part dropped by an oversized box hovers above the bed by up to 1% of its
+    size — invisible on screen, and a failed first layer.\"\"\"
+    if _shape is None:
+        return None
+    m = _as_mesh(_shape)
+    if m is None:
+        return _shape
+    b = m.tm.bounds
+    dz = -float(b[0][2]) + float(_clearance)
+    dx = dy = 0.0
+    if _center:
+        dx = -float(b[0][0] + b[1][0]) / 2.0
+        dy = -float(b[0][1] + b[1][1]) / 2.0
+    return _move(_shape, None, dx, dy, dz)
+
+
+# Coefficient of restitution on a hard bed, per material. Fixed values, and
+# honest about being a caricature: real restitution depends on both bodies,
+# the impact speed and the geometry. What matters here is the CONTRAST —
+# rubber keeps bouncing, lead lands with one dead thud.
+_DROP_E = {"plastic": 0.55, "rubber": 0.85, "steel": 0.65, "wood": 0.45,
+           "lead": 0.08, "clay": 0.0}
+
+
+def _drop_segs(_e):
+    \"\"\"Normalised bounce segments (duration, up-speed): the first fall lasts 1
+    time unit and lands at speed 2 (g=2, h0=1), then a geometric series of
+    parabolas, each keeping _e of the impact speed, until the apex sinks below
+    0.1% of the drop. Everything scales: real seconds are these times t0.\"\"\"
+    e = max(0.0, min(float(_e), 0.95))
+    segs = [(1.0, None)]
+    v, apex = 2.0, 1.0
+    for _ in range(60):
+        v *= e
+        apex *= e * e
+        if apex < 1e-3:
+            break
+        segs.append((v, v))            # duration 2v/g = v when g=2
+    return segs
+
+
+def _drop_height(_segs, _tnorm):
+    \"\"\"Height (in h0=1 units) at normalised time _tnorm along the bounce.\"\"\"
+    tau = _tnorm
+    for d, up in _segs:
+        if tau <= d:
+            if up is None:
+                return max(1.0 - tau * tau, 0.0)
+            return max(up * tau - tau * tau, 0.0)
+        tau -= d
+    return 0.0
+
+
+def _rodrigues(_e, _ang):
+    import numpy as _np
+    K = _np.array([[0.0, -_e[2], _e[1]], [_e[2], 0.0, -_e[0]], [-_e[1], _e[0], 0.0]])
+    return _np.eye(3) + math.sin(_ang) * K + (1.0 - math.cos(_ang)) * (K @ K)
+
+
+def _support_pick(_C2, _com2, _eps):
+    \"\"\"The stability geometry shared by the bed cascade and the pile tips:
+    given the 2D shadow of the contact points and the com's shadow, return
+    (None, None) when the com is INSIDE the support (at rest), else the
+    closest boundary point q and, when q lies in an edge's interior, that
+    edge — the pivot the part will tip about.\"\"\"
+    import numpy as _np
+    C2 = _C2
+    if len(C2) >= 3:
+        try:
+            from scipy.spatial import ConvexHull as _CH2
+            poly = C2[_CH2(C2).vertices]               # ccw
+        except Exception:
+            poly = None                                # collinear contacts
+        if poly is not None:
+            if all((poly[(i + 1) % len(poly)][0] - poly[i][0]) * (_com2[1] - poly[i][1])
+                   - (poly[(i + 1) % len(poly)][1] - poly[i][1]) * (_com2[0] - poly[i][0])
+                   >= -_eps for i in range(len(poly))):
+                return None, None                      # com inside: at rest
+            C2 = poly
+    if len(C2) == 1:
+        return C2[0], None
+    n2, best = len(C2), None
+    for i in range(n2 if n2 > 2 else 1):
+        a, b = C2[i], C2[(i + 1) % n2]
+        ed = b - a
+        L2 = float(ed @ ed)
+        tp = 0.0 if L2 < 1e-18 else max(0.0, min(1.0, float((_com2 - a) @ ed) / L2))
+        cp = a + tp * ed
+        d2 = float((_com2 - cp) @ (_com2 - cp))
+        if best is None or d2 < best[0]:
+            best = (d2, cp, a, b, tp)
+    _, q, a, b, tp = best
+    return q, ((a, b) if 1e-7 < tp < 1.0 - 1e-7 else None)
+
+
+def _pivot_axes(_q, _seg, _com, _p3, _eps):
+    \"\"\"Candidate tip axes (horizontal, through _p3), sense chosen so gravity
+    does the tipping. Balanced ties return both senses (edge) or the compass
+    (point) — the caller's energy guard decides which, if any, is a real
+    descent.\"\"\"
+    import numpy as _np
+    u = _com[:2] - _q
+    if _seg is not None:
+        e3 = _np.array([_seg[1][0] - _seg[0][0], _seg[1][1] - _seg[0][1], 0.0])
+        e3 /= _np.linalg.norm(e3)
+        if float(u @ u) > _eps * _eps:
+            return [e3] if _np.cross(e3, _com - _p3)[2] < 0.0 else [-e3]
+        return [e3, -e3]
+    if float(u @ u) > _eps * _eps:
+        d3 = _np.array([u[0], u[1], 0.0]) / math.sqrt(float(u @ u))
+        return [_np.cross(_np.array([0.0, 0.0, 1.0]), d3)]
+    return [_np.array([1.0, 0.0, 0.0]), _np.array([-1.0, 0.0, 0.0]),
+            _np.array([0.0, 1.0, 0.0]), _np.array([0.0, -1.0, 0.0])]
+
+
+def _settle_plan(_pts, _com, _max_steps=40):
+    \"\"\"The topple cascade: quasi-static rigid settling on the bed (z=0), played
+    out on the convex hull. Returns (steps, settled) — each step is (pivot,
+    axis, angle_deg, seconds) in bed coordinates, replayed in order (a partial
+    last step is a scrub position).
+
+    The mechanics: a resting body is stable iff its centre of mass projects
+    inside the support polygon — the same test OrientForPrint uses to ENUMERATE
+    the stable poses; this walks the PATH between them. If the com is outside,
+    gravity tips the body about the nearest support edge (or corner), it rolls
+    onto the next hull facet, and the loop repeats. Two rules carry all the
+    honesty: every step must strictly LOWER the centre of mass (the energy
+    guard — a tessellated sphere \"toppling\" facet to facet releases nothing
+    and is declared at rest, where a cube balanced on an edge drops its centre
+    by 20% and goes over), and perfectly balanced ties pick a deterministic
+    side (a real part would be tipped by the first draught; a graph must give
+    the same answer twice).\"\"\"
+    import numpy as _np
+    g = 9810.0
+    pts = _np.asarray(_pts, dtype=float).copy()
+    com = _np.asarray(_com, dtype=float).copy()
+    scale = float(_np.linalg.norm(pts.max(0) - pts.min(0))) or 1.0
+    eps_c = 1e-5 * scale               # this close to the bed = touching
+    eps_t = 1e-6 * scale               # com-over-support tie tolerance
+
+    def _first_touch(p, e):
+        # smallest positive rotation about the horizontal axis (p, e) at which
+        # some hull vertex reaches the bed: z(phi) = A cos(phi) + B sin(phi)
+        r = pts - p
+        A = r[:, 2]
+        Bz = _np.cross(_np.broadcast_to(e, r.shape), r)[:, 2]
+        best = None
+        for a, b in zip(A, Bz):
+            if a * a + b * b < (1e-9 * scale) ** 2:
+                continue               # on the axis: it IS the contact
+            phi = math.atan2(-a, b) % math.pi
+            if phi < 1e-6:
+                phi += math.pi
+            if best is None or phi < best:
+                best = phi
+        return best
+
+    steps = []
+    for _ in range(int(_max_steps)):
+        pts[:, 2] -= pts[:, 2].min()
+        com2 = com[:2]
+        C2 = pts[pts[:, 2] < eps_c][:, :2]
+        if len(C2) == 0:
+            return steps, False
+        q, seg = _support_pick(C2, com2, eps_t)
+        if q is None:
+            return steps, True                         # com inside: at rest
+        p3 = _np.array([q[0], q[1], 0.0])
+        took = False
+        for e3 in _pivot_axes(q, seg, com, p3, eps_t):
+            th = _first_touch(p3, e3)
+            if th is None or th > math.pi - 1e-6:
+                continue
+            R = _rodrigues(e3, th)
+            ncom = R @ (com - p3) + p3
+            npts = (R @ (pts - p3).T).T + p3
+            if com[2] - (ncom[2] - npts[:, 2].min()) <= max(1e-4 * scale, 1e-7):
+                continue                               # energy guard: no release, no
+            rc = com - p3                              # topple (rolling, or uphill)
+            rperp = rc - float(rc @ e3) * e3
+            tau = 2.0 * math.sqrt(max(float(_np.linalg.norm(rperp)), 1e-3) * th / g)
+            steps.append((tuple(p3), tuple(e3), math.degrees(th), tau))
+            pts, com = npts, ncom
+            took = True
+            break
+        if not took:
+            return steps, True                         # balanced / rolling: at rest
+    return steps, False                                # cap hit: report, don't loop
+
+
+def _bed_frame(_plane):
+    # (origin, basis) of the bed: columns of B are its x/y/z dirs, world frame
+    import numpy as _np
+    if isinstance(_plane, Plane):
+        o = _np.array(tuple(_plane.origin), dtype=float)
+        B = _np.column_stack([_np.array(tuple(d), dtype=float)
+                              for d in (_plane.x_dir, _plane.y_dir, _plane.z_dir)])
+        return o, B
+    return _np.zeros(3), _np.eye(3)
+
+
+def _drop_apply(_shape, _B, _o, _ops):
+    \"\"\"Seat _shape at one moment of its journey: _ops is the ordered event
+    prefix — ("t", dz) translations along the bed normal and ("r", p, ax, deg)
+    rotations in bed coordinates — applied in sequence on either lane.\"\"\"
+    import numpy as _np
+    n = _B[:, 2]
+    if _is_mesh(_shape):
+        M = _np.eye(4)
+        for op in _ops:
+            if op[0] == "t":
+                Tm = _np.eye(4)
+                Tm[:3, 3] = op[1] * n
+                M = Tm @ M
+            elif op[0] == "t3":
+                Tm = _np.eye(4)
+                Tm[:3, 3] = _B @ _np.asarray(op[1])
+                M = Tm @ M
+            else:
+                M = _tm().transformations.rotation_matrix(
+                    math.radians(op[3]), _B @ _np.asarray(op[2]),
+                    _B @ _np.asarray(op[1]) + _o) @ M
+        return _shape.transformed(M)
+    s = _shape
+    moved = False
+    for op in _ops:
+        if op[0] == "t":
+            s = _move(s, None, float(op[1] * n[0]), float(op[1] * n[1]), float(op[1] * n[2]))
+        elif op[0] == "t3":
+            v = _B @ _np.asarray(op[1])
+            s = _move(s, None, float(v[0]), float(v[1]), float(v[2]))
+        else:
+            pw = _B @ _np.asarray(op[1]) + _o
+            aw = _B @ _np.asarray(op[2])
+            s = s.rotate(Axis((pw[0], pw[1], pw[2]), (aw[0], aw[1], aw[2])), op[3])
+        moved = True
+    if not moved:
+        s = _move(s, None, 0.0, 0.0, 0.0)              # a COPY even at rest (tags ride results)
+    return s
+
+
+def _drop(_shape, _plane=None, _t=1.0, _material="plastic", _settle=True,
+          _collide=False):
+    \"\"\"A real fall onto the plane, scrubbed by _t: 0 = where the part is now,
+    1 = at rest. The part falls, BOUNCES (each impact keeps _DROP_E of its
+    speed), and — with `settle` — TOPPLES: once the bounces die, the quasi-
+    static cascade of _settle_plan tips it about its support edges until its
+    centre of mass sits over the contact polygon. With `collide` and several
+    shapes wired into the SAME node they fall as ONE SCENE instead of a fan
+    (_drop_collide): sequentially, each onto the bed or onto the parts already
+    down. Works on both lanes: it measures on the mesh and transforms the
+    ORIGINAL, so a solid stays a solid. A part starting under the plane
+    surfaces linearly — it cannot fall.\"\"\"
+    if _collide and isinstance(_shape, (list, tuple)):
+        return _drop_collide(list(_shape), _plane, _t, _material, _settle)
+    if _shape is None:
+        return None
+    m = _as_mesh(_shape)
+    if m is None:
+        return _shape
+    import numpy as _np
+    o, B = _bed_frame(_plane)
+    V = (m.tm.vertices - o) @ B                        # bed coordinates
+    h0 = float(V[:, 2].min())
+    t = max(0.0, min(float(_t), 1.0))
+    g = 9810.0
+    steps = []
+    if _settle:
+        tm_ = m.tm
+        try:
+            cw = _np.asarray(tm_.center_mass, dtype=float)
+            if not (tm_.is_watertight and float(tm_.volume) > 1e-9):
+                raise ValueError                       # open patch: mass centre is a lie
+        except Exception:
+            cw = _np.asarray(tm_.bounds, dtype=float).mean(axis=0)
+        com = (cw - o) @ B
+        com[2] -= h0
+        try:
+            from scipy.spatial import ConvexHull as _CH
+            hp = V[_CH(V, qhull_options="QJ").vertices].copy()
+        except Exception:
+            hp = V.copy()
+        hp[:, 2] -= h0
+        steps, _ok = _settle_plan(hp, com)
+    segs = _drop_segs(_DROP_E.get(str(_material), 0.55))
+    tot_n = sum(d for d, _ in segs)
+    t0 = math.sqrt(2.0 * abs(h0) / g)
+    Tb = t0 * (tot_n if h0 > 0.0 else 1.0)             # bounce (or surfacing) seconds
+    Ts = sum(s[3] for s in steps)                      # topple seconds
+    T = Tb + Ts
+    if T <= 1e-12:
+        return _shape                                  # already at rest, already stable
+    n = B[:, 2]
+    # The whole journey, as plain data riding on the result (mesh_extractor lifts
+    # it into the preview entry as `anim`): the editor replays it in the browser
+    # at 60fps while the slider drags — same math, world coordinates, plus the t
+    # THIS preview was baked at, so the browser can move relative to it.
+    plan = {"t": float(t), "T": float(T), "Tb": float(Tb), "h0": float(h0),
+            "tot_n": float(tot_n),
+            "n": [float(n[0]), float(n[1]), float(n[2])],
+            "segs": [[float(d), None if up is None else float(up)]
+                     for d, up in segs],
+            "steps": [{"p": [float(x) for x in (B @ _np.asarray(p) + o)],
+                       "ax": [float(x) for x in (B @ _np.asarray(ax))],
+                       "deg": float(deg), "du": float(du)}
+                      for (p, ax, deg, du) in steps]}
+
+    def _tag(_res):
+        try:
+            _res._noodle_anim = plan
+        except Exception:
+            pass
+        return _res
+
+    tau = t * T
+    if tau < Tb or not steps:                          # still in the air
+        f = tau / Tb if Tb > 0.0 else 1.0
+        h = h0 * (1.0 - f) if h0 <= 0.0 else h0 * _drop_height(segs, f * tot_n)
+        return _tag(_drop_apply(_shape, B, o, [("t", float(h - h0))]))
+    ops = [("t", float(-h0))]
+    left = tau - Tb                                    # landed: replay the topples
+    for (p, ax, deg, du) in steps:
+        if left >= du - 1e-12:
+            ops.append(("r", p, ax, deg))
+            left -= du
+        else:
+            fr = max(0.0, left / du)
+            ops.append(("r", p, ax, deg * fr * fr))    # ease-in: a topple starts slow
+            break
+    return _tag(_drop_apply(_shape, B, o, ops))
+
+
+def _quat_mat(_q):
+    # 3x3 from a pybullet quaternion (x, y, z, w)
+    import numpy as _np
+    x, y, z, w = float(_q[0]), float(_q[1]), float(_q[2]), float(_q[3])
+    return _np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def _quat_slerp(_qa, _qb, _f):
+    import numpy as _np
+    qa = _np.asarray(_qa, dtype=float)
+    qb = _np.asarray(_qb, dtype=float)
+    d = float(qa @ qb)
+    if d < 0.0:
+        qb, d = -qb, -d
+    if d > 0.9995:
+        q = qa + _f * (qb - qa)
+        return q / _np.linalg.norm(q)
+    th = math.acos(max(-1.0, min(1.0, d)))
+    return (math.sin((1 - _f) * th) * qa + math.sin(_f * th) * qb) / math.sin(th)
+
+
+def _dyn_sim(_hulls, _coms, _e, _t_max=8.0):
+    \"\"\"The rigid-body simulation behind collide: pybullet, DIRECT mode, fixed
+    timestep (deterministic for a given scene on a given build), every part a
+    CONVEX HULL of its mesh. All parts fall TOGETHER — they hit each other in
+    the air, push each other over, tumble, stack — and the run is recorded as
+    60Hz keyframes per body until everything sleeps.
+
+    Units are millimetres DIRECTLY (no down-scaling): pybullet's collision
+    margin is a fixed absolute value, so working in mm makes it a sub-micron
+    gap instead of the ~1mm it becomes when a 20mm cube is shrunk to 0.02m.
+    Tunnelling risk is scale-invariant (speed x dt / thickness), so nothing is
+    lost — and continuous collision (a swept sphere per body) covers the fast,
+    thin cases anyway. Mass is the hull VOLUME (so ratios are physical: a heavy
+    part settles a light one, not the reverse). Returns (times, [pos per body],
+    [quat per body]).\"\"\"
+    import numpy as _np
+    import pybullet as _pb
+    from scipy.spatial import ConvexHull as _CH
+    cl = _pb.connect(_pb.DIRECT)
+    try:
+        # restitutionVelocityThreshold in mm/s: BELOW it a contact is inelastic.
+        # Bullet's default is 0.2 m/s = 200mm/s; the 1mm/s I first used makes
+        # every real contact elastic, so the pile jitters forever instead of
+        # settling. With this + rolling/spinning friction + angular damping a
+        # three-box scene sleeps in ~0.6s where before it ran the full 8s.
+        _pb.setPhysicsEngineParameter(fixedTimeStep=1.0 / 240.0,
+                                      numSolverIterations=80,
+                                      restitutionVelocityThreshold=100.0,
+                                      deterministicOverlappingPairs=1,
+                                      physicsClientId=cl)
+        _pb.setGravity(0.0, 0.0, -9810.0, physicsClientId=cl)
+        plane = _pb.createCollisionShape(_pb.GEOM_PLANE, physicsClientId=cl)
+        pbody = _pb.createMultiBody(0.0, plane, physicsClientId=cl)
+        _pb.changeDynamics(pbody, -1, restitution=1.0, lateralFriction=0.8,
+                           physicsClientId=cl)
+        ids = []
+        for hv, c0 in zip(_hulls, _coms):
+            local = _np.asarray(hv, dtype=float) - c0
+            cs = _pb.createCollisionShape(_pb.GEOM_MESH, vertices=local.tolist(),
+                                          physicsClientId=cl)
+            try:
+                vol = float(_CH(local).volume)
+            except Exception:
+                vol = float(_np.prod(local.max(0) - local.min(0)))
+            r = float(_np.linalg.norm(local, axis=1).min())    # inscribed-ish radius
+            bid = _pb.createMultiBody(baseMass=max(vol, 1.0),
+                                      baseCollisionShapeIndex=cs,
+                                      basePosition=[float(x) for x in c0],
+                                      physicsClientId=cl)
+            _pb.changeDynamics(bid, -1, restitution=float(_e), lateralFriction=0.6,
+                               rollingFriction=0.06, spinningFriction=0.06,
+                               linearDamping=0.02, angularDamping=0.25,
+                               ccdSweptSphereRadius=max(r * 0.4, 0.1),
+                               physicsClientId=cl)
+            ids.append(bid)
+        times, poss, quats = [], [[] for _ in ids], [[] for _ in ids]
+        still = 0
+        steps = int(240 * _t_max)
+        for k in range(steps):
+            _pb.stepSimulation(physicsClientId=cl)
+            if k % 4:
+                continue                               # record at 60Hz (scrub lerps)
+            times.append((k + 1) / 240.0)
+            calm = True
+            for j, bid in enumerate(ids):
+                pos, q = _pb.getBasePositionAndOrientation(bid, physicsClientId=cl)
+                poss[j].append([float(p) for p in pos])
+                quats[j].append([float(x) for x in q])
+                v, w = _pb.getBaseVelocity(bid, physicsClientId=cl)
+                if (sum(x * x for x in v) > 4.0 or sum(x * x for x in w) > 0.01):
+                    calm = False
+            still = still + 1 if calm else 0
+            if still >= 30:
+                break                                  # half a second of stillness (60Hz)
+        return times, poss, quats
+    finally:
+        _pb.disconnect(physicsClientId=cl)
+
+
+def _keys_pose(_times, _pos, _quat, _tau):
+    \"\"\"Interpolated (position, quaternion) at _tau seconds: lerp + slerp between
+    the two bracketing keyframes.\"\"\"
+    import numpy as _np
+    if not _times:
+        return None, None
+    if _tau <= _times[0]:
+        return _np.asarray(_pos[0], dtype=float), _np.asarray(_quat[0], dtype=float)
+    if _tau >= _times[-1]:
+        return _np.asarray(_pos[-1], dtype=float), _np.asarray(_quat[-1], dtype=float)
+    import bisect
+    i = bisect.bisect_right(_times, _tau)
+    t0, t1 = _times[i - 1], _times[i]
+    f = (_tau - t0) / (t1 - t0) if t1 > t0 else 0.0
+    p = (1 - f) * _np.asarray(_pos[i - 1], dtype=float) \
+        + f * _np.asarray(_pos[i], dtype=float)
+    return p, _quat_slerp(_quat[i - 1], _quat[i], f)
+
+
+def _drop_collide(_shapes, _plane=None, _t=1.0, _material="plastic", _settle=True):
+    \"\"\"The multi-body drop, done with real dynamics: every shape wired into the
+    node becomes a rigid body (its convex hull) in ONE pybullet scene, and they
+    all fall TOGETHER — colliding in the air, pushing each other, tumbling,
+    stacking — until everything sleeps. The run is recorded as keyframes; the
+    timeline scrubs them, and each returned shape carries its own keyframe plan
+    (`_noodle_anim` kind "keys") so the editor can replay the whole scene in
+    the browser. Declared limits: hulls, not the true meshes (a bowl will not
+    cradle a ball); rest poses carry the solver's contact margin (a fraction of
+    a mm), not CAD exactness; deterministic for a given scene on a given build,
+    but chaotic in the physical sense — move a part a hair and the pile lands
+    differently. That is not a bug, that is what falling IS.\"\"\"
+    import numpy as _np
+    o, B = _bed_frame(_plane)
+    e = _DROP_E.get(str(_material), 0.55)
+    t = max(0.0, min(float(_t), 1.0))
+    bodies = []
+    for i, s in enumerate(_shapes):
+        m = _as_mesh(s) if s is not None else None
+        if m is None:
+            bodies.append({"i": i, "shape": s, "hull": None})
+            continue
+        Vl = (m.tm.vertices - o) @ B
+        try:
+            from scipy.spatial import ConvexHull as _CH
+            hv = Vl[_CH(Vl, qhull_options="QJ").vertices]
+        except Exception:
+            hv = Vl
+        bodies.append({"i": i, "shape": s, "hull": hv,
+                       "c0": hv.mean(axis=0)})
+    live = [b for b in bodies if b["hull"] is not None]
+    results = [bb["shape"] for bb in bodies]           # non-meshables pass through
+    if not live:
+        return results
+    times, poss, quats = _dyn_sim([b["hull"] for b in live],
+                                  [b["c0"] for b in live], e)
+    if not times:
+        return results
+    T = times[-1]
+    tau = t * T
+    for j, b in enumerate(live):
+        p_t, q_t = _keys_pose(times, poss[j], quats[j], tau)
+        if p_t is None:
+            continue
+        R = _quat_mat(q_t)                             # bed-frame pose of the body
+        ax, ang = _axis_angle(q_t)
+        c0 = b["c0"]
+        ops = []
+        if ang > 1e-9:
+            ops.append(("r", tuple(c0), tuple(ax), math.degrees(ang)))
+        ops.append(("t3", tuple(p_t - c0)))
+        res = _drop_apply(b["shape"], B, o, ops)
+        plan = {"kind": "keys", "t": float(t), "T": float(T),
+                "c0": [float(x) for x in (B @ c0 + o)],
+                "times": [float(x) for x in times],
+                "pos": [[float(x) for x in (B @ _np.asarray(pp) + o)]
+                        for pp in poss[j]],
+                "quat": [[float(x) for x in qq] for qq in quats[j]]}
+        try:
+            res._noodle_anim = plan
+        except Exception:
+            pass
+        results[b["i"]] = res
+    return results
+
+
+def _axis_angle(_q):
+    # (unit axis, angle rad) from a pybullet quaternion (x, y, z, w)
+    import numpy as _np
+    v = _np.asarray(_q[:3], dtype=float)
+    n = float(_np.linalg.norm(v))
+    if n < 1e-12:
+        return _np.array([0.0, 0.0, 1.0]), 0.0
+    return v / n, 2.0 * math.atan2(n, float(_q[3]))
+
+
+def _overhang_faces(_mesh, _angle=45.0, _layer=0.2):
+    \"\"\"Just the faces that will need support, as a mesh of their own — so the viewer
+    gives them their own colour and you SEE them on the part. Open by construction:
+    it is a patch, not a body, and MeshInspect will say so.\"\"\"
+    m = _as_mesh(_mesh)
+    if m is None:
+        return None
+    met = _print_metrics(m, _angle, _layer, _nsec=2)
+    if met["n_over"] == 0:
+        return None                              # nothing overhangs: an empty preview
+    return Mesh(m.tm.submesh([met["over_mask"]], append=True, repair=False))
+
+
+def _print_check(_mesh, _angle=45.0, _layer=0.2, _clearance=0.2):
+    \"\"\"The print report: how tall, how much support, how well it sticks — and WHERE
+    IT WILL BREAK. Wire it into a Panel.\"\"\"
+    m = _as_mesh(_mesh)
+    if m is None:
+        return "no mesh"
+    met = _print_metrics(m, _angle, _layer)
+    layers = int(met["height"] / max(float(_layer), 0.01)) + 1
+    out = [
+        "height      : %.1f mm  (%d layers at %.2f mm)" % (met["height"], layers, _layer),
+        "bed contact : %.1f mm2" % met["bed_area"],
+    ]
+    try:                                 # the real thing: prisms to the bed, minus the part
+        _, line = _support_report(m, _angle, _layer, _clearance)
+        out.append(line)
+    except Exception as _e:              # not watertight -> no boolean -> the proxy, said so
+        out.append("support     : %.0f mm2 of face overhangs past %.0f deg (area only — "
+                   "the true volume\\n              needs a closed mesh: %s)"
+                   % (met["support_area"], _angle, _e))
+    if met["sectioned"]:
+        out += [
+            "",
+            "WEAK PLANE  : %.1f mm2 at z = %.1f mm" % (met["weak_area"], met["weak_z"]),
+            "              That is the smallest glued area in the part, and a printed",
+            "              part comes apart at a layer line before it breaks anywhere",
+            "              else: across that plane the load is carried by layer",
+            "              adhesion alone (roughly a third to two thirds of the",
+            "              strength the same material has within a layer). Turn the",
+            "              part so the load runs ALONG the layers, not through them.",
+        ]
+    else:
+        out += ["", "WEAK PLANE  : not watertight — no honest cross-section to measure.",
+                "              Put a Mesh Fix in front of this."]
+    return "\\n".join(out)
+
+
+def _rest_planes(_mesh):
+    \"\"\"The faces the part could actually rest on: every face of its convex hull whose
+    polygon contains the centre of mass, projected down. That is what "stable" means —
+    let go of it and it stays. (trimesh has compute_stable_poses, but it wants networkx
+    and shapely, which are not in the image; the convex hull is scipy, which is.)\"\"\"
+    import numpy as _np
+    tm = _mesh.tm
+    hull = tm.convex_hull
+    com = _np.asarray(tm.center_mass, dtype=float)
+    # Cluster the hull's faces by normal with a TOLERANCE, not by a rounded key: one
+    # flat side of the part is many triangles whose normals agree to 6 decimals and
+    # not to 3, and a rounded key splits them into two identical "poses".
+    groups = []                                  # [(normal, [face indices])]
+    for fi, nrm in enumerate(hull.face_normals):
+        for g in groups:
+            if float(_np.dot(g[0], nrm)) > 0.999:
+                g[1].append(fi)
+                break
+        else:
+            groups.append((_np.asarray(nrm, dtype=float), [fi]))
+    seen = {tuple(g[0]): g[1] for g in groups}
+    planes = []
+    for key, faces in seen.items():
+        nrm = _np.asarray(key, dtype=float)
+        nrm /= (_np.linalg.norm(nrm) or 1.0)
+        pts = hull.vertices[_np.unique(hull.faces[faces].ravel())]
+        # is the centre of mass over the footprint? Build a 2D frame on the plane and
+        # ask whether the projected COM is inside the convex hull of the projected face.
+        u = _np.cross(nrm, [0.0, 0.0, 1.0])
+        if _np.linalg.norm(u) < 1e-6:
+            u = _np.cross(nrm, [0.0, 1.0, 0.0])
+        u /= (_np.linalg.norm(u) or 1.0)
+        v = _np.cross(nrm, u)
+        p2 = _np.column_stack([pts @ u, pts @ v])
+        c2 = _np.array([com @ u, com @ v])
+        try:
+            from scipy.spatial import ConvexHull as _CH
+            eq = _CH(p2).equations                # A x + b <= 0 inside
+            inside = bool(_np.all(eq[:, :2] @ c2 + eq[:, 2] <= 1e-6))
+        except Exception:
+            inside = True                         # degenerate footprint: keep it, and let
+        if inside:                                # the score decide
+            planes.append(nrm)
+    return planes
+
+
+def _orient_plan(_mesh, _load=None, _w_strength=1.0, _w_support=1.0, _w_speed=0.3,
+                 _angle=45.0, _layer=0.2, _exact_below=25000, _max_cand=60):
+    \"\"\"Try every stable resting pose, score it, keep the best.
+
+    STRENGTH is the term worth reading twice. With a `load` wired in (the direction the
+    part will be pulled), the score is |load . Z| after the rotation: you want the load
+    lying IN the layer plane, not crossing it, because crossing it is the printer's
+    weakest direction by a factor of two or three. With no load declared, the proxy is
+    the largest weak plane — maximise the smallest glued cross-section.\"\"\"
+    import numpy as _np
+    m = _as_mesh(_mesh)
+    if m is None:
+        return {"mesh": None, "report": "no mesh"}
+    tmesh = _tm()
+    planes = _rest_planes(m)[: int(_max_cand)]
+    load = None
+    if _load is not None:
+        v = _np.array([_load.X, _load.Y, _load.Z] if hasattr(_load, "X")
+                      else list(_load)[:3], dtype=float)
+        nv = _np.linalg.norm(v)
+        load = v / nv if nv > 1e-9 else None
+    # The real support volume is a boolean per pose (~0.6s on a 20k-triangle part): fine
+    # for a handful of poses on a modest part, not for a big mesh. Above the budget the
+    # search falls back to the `area x height` proxy — and the report says which it used,
+    # because a number whose provenance is a secret is worse than no number.
+    #
+    # It is all-or-nothing on purpose. Scoring one pose by real volume and the next by a
+    # proxy would rank two different quantities against each other and call it a decision.
+    def _score_all(exact):
+        out = []
+        for nrm in planes:
+            R = tmesh.geometry.align_vectors(nrm, [0.0, 0.0, -1.0])  # that face -> the bed
+            dropped = _bed_drop(m.transformed(R), True, 0.0)
+            met = _print_metrics(dropped, _angle, _layer)
+            if exact:
+                body = _support_body(dropped, _angle, _layer)        # may raise: not closed
+                met["support_vol"] = float(body.volume) if body is not None else 0.0
+            met["mesh"] = dropped
+            met["load_z"] = abs(float(R[:3, :3] @ load @ _np.array([0, 0, 1.0]))) \
+                if load is not None else None
+            out.append(met)
+        return out
+
+    exact = m.n_tris <= int(_exact_below)
+    try:
+        cands = _score_all(exact)
+    except Exception:
+        exact = False
+        cands = _score_all(False)
+    if not cands:
+        return {"mesh": m, "report": "no stable resting pose found"}
+    mx = lambda k: max(max(c[k] for c in cands), 1e-9)            # noqa: E731
+    hi_w, hi_s, hi_h, hi_b = mx("weak_area"), mx("support_vol"), mx("height"), mx("bed_area")
+    for c in cands:
+        strength = (c["load_z"] if c["load_z"] is not None
+                    else 1.0 - c["weak_area"] / hi_w)             # 0 = strong
+        c["score"] = (float(_w_strength) * strength
+                      + float(_w_support) * (c["support_vol"] / hi_s
+                                             + 0.4 * (1.0 - c["bed_area"] / hi_b))
+                      + float(_w_speed) * (c["height"] / hi_h))
+        c["strength"] = strength
+    cands.sort(key=lambda c: c["score"])
+    best = cands[0]
+    head = ("load declared: strength = how much of it crosses the layers (0 is best)"
+            if load is not None else
+            "no load declared: strength = the smallest glued cross-section (bigger is better)")
+    sup_unit = "cm3" if exact else "mm2xmm"
+    rows = ["%-4s %-8s %-9s %-10s %-8s %s" % ("", "score", "strength",
+                                              "support " + sup_unit, "height", "weak plane")]
+    for i, c in enumerate(cands[:5]):
+        sup = ("%.2f" % (c["support_vol"] / 1000.0)) if exact else ("%.0f" % c["support_vol"])
+        rows.append("%-4s %-8.3f %-9s %-10s %-8.1f %.0f mm2 @ z=%.1f%s" % (
+            "->" if i == 0 else " %d" % (i + 1), c["score"],
+            ("%.2f" % c["load_z"]) if c["load_z"] is not None else "%.0f mm2" % c["weak_area"],
+            sup, c["height"], c["weak_area"], c["weak_z"],
+            "   <- chosen" if i == 0 else ""))
+    prov = ("support is the REAL volume: prisms under every overhang, down to the bed, "
+            "minus the part" if exact else
+            "support is the area x height PROXY — the part is over `exact below` triangles, "
+            "and\\na boolean per pose would cost more than the answer is worth. Wire a "
+            "Support Volume\\nnode onto the winner for the true number.")
+    report = "\\n".join(
+        ["%d stable poses tried, %s" % (len(cands), head), ""] + rows
+        + ["", prov, "",
+           "Weights: strength %.1f, support %.1f, speed %.1f — they are a taste, not"
+           % (_w_strength, _w_support, _w_speed),
+           "a law. The measurements above are the part; the ranking is your priorities."])
+    return {"mesh": best["mesh"], "report": report}
+
+
+def _mesh_matrix(_kind, **_kw):
+    \"\"\"Build the 4x4 for a transform on the mesh lane. A Move/Rotate/Scale/Mirror
+    on triangles is exactly a matrix on the vertex array — the SAME operation the
+    B-Rep lane expresses as a Location, which is why one node serves both.\"\"\"
+    import numpy as _np
+    m = _np.eye(4)
+    if _kind == "move":
+        m[:3, 3] = [_kw["x"], _kw["y"], _kw["z"]]
+    elif _kind == "rotate":
+        d = _kw["axis"].direction
+        p = _kw.get("point")
+        m = _tm().transformations.rotation_matrix(
+            math.radians(float(_kw["angle"])), [d.X, d.Y, d.Z],
+            [p.X, p.Y, p.Z] if p is not None else [0, 0, 0])
+    elif _kind == "scale":
+        m[0, 0], m[1, 1], m[2, 2] = _kw["x"], _kw["y"], _kw["z"]
+    elif _kind == "mirror":
+        p = _kw["plane"]
+        o, n = p.origin, p.z_dir
+        m = _tm().transformations.reflection_matrix([o.X, o.Y, o.Z], [n.X, n.Y, n.Z])
+    return m
+
+
+def _pivot_of(_x):
+    \"\"\"The point a shape turns about when no explicit pivot is wired: the bbox
+    CENTRE, measured on the tessellation (the fast OCCT box is oversized, same
+    reason _bed_drop measures on triangles), aggregated over a list — the union
+    box of everything, so a group turns rigidly about one shared point. Planes
+    pivot on their origin; point-likes are their own pivot.\"\"\"
+    los, his = [], []
+    for it in _flatten([_x]):
+        if it is None:
+            continue
+        if isinstance(it, Plane):
+            q = it.origin
+            los.append((q.X, q.Y, q.Z)); his.append((q.X, q.Y, q.Z))
+            continue
+        q = _as_point(it)
+        if q is not None:
+            los.append((q.X, q.Y, q.Z)); his.append((q.X, q.Y, q.Z))
+            continue
+        try:
+            b = _as_mesh(it).tm.bounds
+            los.append(tuple(b[0])); his.append(tuple(b[1]))
+        except Exception:
+            continue
+    if not los:
+        return None
+    lo = [min(v[i] for v in los) for i in range(3)]
+    hi = [max(v[i] for v in his) for i in range(3)]
+    return Vector((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0)
+
+
+def _rotate(_obj, _axis, _angle, _pivot=None, _about="world"):
+    \"\"\"Rotate any spatial object — Shape, Plane OR Mesh — by _angle degrees.
+    About what: the wired _pivot point when present; else _about picks it —
+    "world" is the global axis (the old behaviour), "part"/"group" the bbox
+    centre of what came in (for a fanned list, "group" receives the collective
+    centre hoisted by the emitter, so the ensemble turns as one rigid body).
+    Uses Location algebra (Pos * Rot * Pos⁻¹ * obj) so it is polymorphic: a
+    plane rotates just like a solid; a mesh takes the equivalent 4x4.\"\"\"
     if _obj is None:
         return None
+    p = _as_point(_pivot) if _pivot is not None else None
+    if p is None and _about in ("part", "group"):
+        p = _pivot_of(_obj)
+    if _is_mesh(_obj):
+        return _obj.transformed(_mesh_matrix("rotate", axis=_axis, angle=_angle, point=p))
     d = _axis.direction
-    return Rot(d.X * _angle, d.Y * _angle, d.Z * _angle) * _obj
+    r = Rot(d.X * _angle, d.Y * _angle, d.Z * _angle)
+    if p is None:
+        return r * _obj
+    return Pos(p.X, p.Y, p.Z) * (r * (Pos(-p.X, -p.Y, -p.Z) * _obj))
 
 
 def _scale(_shape, _factor=1.0, _x=1.0, _y=1.0, _z=1.0):
@@ -655,6 +1981,9 @@ def _scale(_shape, _factor=1.0, _x=1.0, _y=1.0, _z=1.0):
     if _shape is None:
         return None
     f = float(_factor)
+    if _is_mesh(_shape):
+        return _shape.transformed(_mesh_matrix(
+            "scale", x=f * float(_x), y=f * float(_y), z=f * float(_z)))
     return scale(_shape, by=(f * float(_x), f * float(_y), f * float(_z)))
 
 
@@ -663,6 +1992,9 @@ def _mirror(_shape, _plane, _copy=False):
     result is symmetric (original + reflection).\"\"\"
     if _shape is None:
         return None
+    if _is_mesh(_shape):
+        m = _shape.transformed(_mesh_matrix("mirror", plane=_plane))
+        return _mesh_concat([_shape, m]) if _copy else m
     m = mirror(_shape, about=_plane)
     if not _copy:
         return m
@@ -914,7 +2246,7 @@ def _sort(_items, _by="X"):
 
 
 def _move(_shape, _offset, _x, _y, _z):
-    \"\"\"Translate a shape/plane. By the wired `offset` vector when present
+    \"\"\"Translate a shape/plane/mesh. By the wired `offset` vector when present
     (item-access: a list of vectors scatters the shape to each), else by the
     x/y/z widgets.\"\"\"
     if _shape is None:
@@ -925,6 +2257,8 @@ def _move(_shape, _offset, _x, _y, _z):
         v = _offset
     else:
         v = Vector(*list(_offset)[:3])
+    if _is_mesh(_shape):
+        return _shape.transformed(_mesh_matrix("move", x=v.X, y=v.Y, z=v.Z))
     return Pos(v.X, v.Y, v.Z) * _shape
 
 
@@ -1803,7 +3137,7 @@ def _export_2d(_shape, _path, _fmt="svg"):
 # Output wire types that yield a drawable preview (mesh for solids/sketches,
 # polylines for curves, dots for points). Mirrors the mesh_extractor render paths.
 _PREVIEWABLE = {catalog.WIRE_SOLID, catalog.WIRE_SURFACE, catalog.WIRE_CURVE,
-                catalog.WIRE_VECTOR}
+                catalog.WIRE_VECTOR, catalog.WIRE_MESH}
 
 # Node types whose output is always a Python list at runtime. Feeding one of
 # these into an item-access input makes the consumer fan out. (A fanned node is
@@ -1857,9 +3191,32 @@ def _substitute(template: str, values: dict) -> str:
     return _PLACEHOLDER.sub(repl, template)
 
 
+# --- memo cache (transpile(memo=True) — the execute path only) ---------------
+# A node's memo KEY is a content hash of its generated statement(s) with every
+# variable name replaced by the KEY of the node that produced it, so keys are
+# stable under var renumbering (adding an unrelated node never invalidates the
+# cache) and change exactly when the node's own params/code or ANY upstream
+# node changes. Keys address a store that the warm worker keeps alive across
+# runs (__MEMO__), so a param edit re-executes only the dirty subtree.
+_MEMO_VAR = re.compile(r"__(?:out|codeblock|ctx)_\d+(?:_vol)?\b")
+# Deterministic but with a display/export/warning side effect: keyable (lineage
+# stays cacheable downstream) yet re-executed every run so the side effect
+# happens (_select_subshapes records "selection stale" re-pick warnings).
+_MEMO_SIDEFX = ("_panel(", "_probe(", "_gate(", "_out(", "export_", "_export",
+                "_select_subshapes(")
+# Non-deterministic / reads external state: no key, poisons downstream too.
+_MEMO_NONDET = ("import_", "open(", "random.")
+
+
 class Transpiler:
-    def __init__(self, graph: Graph):
+    def __init__(self, graph: Graph, memo: bool = False):
         self.graph = graph
+        self._memo = memo
+        # var name -> memo key of the node output it carries (memo mode).
+        self._var_key: dict[str, str] = {}
+        # node id -> memo key (memo mode) — emitted as __hashes__ for the
+        # persistent preview-mesh / view cache in mesh_extractor.
+        self.key_of: dict[str, str] = {}
         self.var_of: dict[str, str] = {}
         # (node_id, output-socket name) -> var, for the rare node that emits
         # DISTINCT expressions per output (e.g. CenterOfMass: center + volume).
@@ -1958,17 +3315,105 @@ class Transpiler:
             "options": list(pdef.options) if pdef.options else None,
         }, formatted)
 
-    def _guard(self, lines: list[str], body: list[str], node) -> None:
+    @staticmethod
+    def _body_outputs(body: list[str]) -> list[str]:
+        """Ordered unique top-level assignment targets in a node's body."""
+        outs: list[str] = []
+        for bl in body:
+            m = re.match(r"(__\w+) = ", bl)
+            if m and m.group(1) not in outs:
+                outs.append(m.group(1))
+        return outs
+
+    def _memo_plan(self, node, body: list[str], key_src: str):
+        """(key, wrapped) for this node. key=None -> not cacheable (poisons
+        downstream); wrapped=False with a key -> lineage stays cacheable but the
+        body re-runs every time (display/export side effects)."""
+        outs = self._body_outputs(body)
+        # Hash the body WITHOUT preview lines, so toggling a node's eye reuses
+        # the cached shape (and the mesh cache keeps its key).
+        core = [bl for bl in body if not bl.startswith("__previews__[")]
+        text = "\n".join(core) + "\n" + key_src
+        if any(m in text for m in _MEMO_NONDET):
+            return None, False
+        own = {v: f"@o{i}" for i, v in enumerate(outs)}
+        poisoned = False
+
+        def sub(m: re.Match) -> str:
+            nonlocal poisoned
+            v = m.group(0)
+            if v in own:
+                return own[v]
+            # Node-LOCAL tokens that are not assignment targets: a CodeBlock's
+            # function name (its body is hashed via key_src) and a group's
+            # builder ctx. Never carry upstream values -> stable placeholders.
+            if v.startswith("__codeblock_"):
+                return "@fn"
+            if v.startswith("__ctx_"):
+                return "@ctx"
+            k = self._var_key.get(v)
+            if k is None:           # upstream not cacheable -> neither are we
+                poisoned = True
+                return "@x"
+            return k
+
+        norm = _MEMO_VAR.sub(sub, text)
+        if poisoned:
+            return None, False
+        key = hashlib.sha1(norm.encode()).hexdigest()[:16]
+        for i, v in enumerate(outs):
+            self._var_key[v] = f"{key}#{i}"
+        self.key_of[node.id] = key
+        wrapped = bool(outs) and not any(m in text for m in _MEMO_SIDEFX)
+        return key, wrapped
+
+    def _guard(self, lines: list[str], body: list[str], node,
+               key_src: str = "") -> None:
         """Wrap a node's statement(s) in try/except so one node's runtime error
-        is recorded in __errors__ and doesn't abort the rest of the workflow."""
+        is recorded in __errors__ and doesn't abort the rest of the workflow.
+        In memo mode, also wrap the body in a cache lookup: on a hit the node's
+        output vars are restored from the persistent store and the body is
+        skipped entirely (preview assignments still run), and the node brackets
+        itself in _ev() progress events so the editor can light it up live."""
+        key = wrapped = None
+        if self._memo:
+            key, wrapped = self._memo_plan(node, body, key_src)
         lines.append("try:")
         lines.append("    _t0 = _perf()")
-        for bl in body:
-            if bl:
+        if self._memo:
+            lines.append(f"    _ev('s', {node.id!r})")
+        if wrapped:
+            outs = self._body_outputs(body)
+            tail = [bl for bl in body if bl.startswith("__previews__[")]
+            core = [bl for bl in body if not bl.startswith("__previews__[")]
+            tup = ", ".join(outs) + ("," if len(outs) == 1 else "")
+            lines.append(f"    _m = _memo_get({key!r})")
+            lines.append("    if _m is None:")
+            for bl in core:
+                if bl:
+                    lines.append("        " + bl)
+            lines.append(f"        _memo_put({key!r}, ({tup}))")
+            lines.append("    else:")
+            lines.append(f"        ({tup}) = _m")
+            lines.append(f"        __cached__[{node.id!r}] = True")
+            for bl in tail:
                 lines.append("    " + bl)
+        else:
+            for bl in body:
+                if bl:
+                    lines.append("    " + bl)
         lines.append(f"    __timings__[{node.id!r}] = _perf() - _t0")
+        if self._memo:
+            lines.append(
+                f"    _ev('e', {node.id!r}, __timings__[{node.id!r}], "
+                f"__cached__.get({node.id!r}, False))"
+            )
         lines.append("except Exception as _e:")
         lines.append(f"    __timings__[{node.id!r}] = _perf() - _t0")
+        if self._memo:
+            lines.append(
+                f"    _ev('e', {node.id!r}, __timings__[{node.id!r}], False, True)"
+            )
         var = self.var_of.get(node.id)
         if var:
             lines.append(f"    {var} = None")
@@ -1997,6 +3442,10 @@ class Transpiler:
             if chosen is None:
                 chosen = v
         lines.append(f"{var} = {chosen or 'None'}{_annot(node)}  # bypassed")
+        # A bypass is a pure alias: it carries the SAME value as its source, so
+        # in memo mode its var inherits the upstream key (lineage continues).
+        if self._memo and chosen in self._var_key:
+            self._var_key[var] = self._var_key[chosen]
 
     def _emit_select(self, node, lines: list[str]) -> None:
         """Sub-shape selector (SelectEdge/Face/Vertex): resolve the picked set
@@ -2045,6 +3494,28 @@ class Transpiler:
                 f"{volvar} = _volume_of({src})"]
         self.out_var_of[(node.id, "center")] = var
         self.out_var_of[(node.id, "volume")] = volvar
+        self._guard(lines, body, node)
+
+    def _emit_orient(self, node, lines: list[str]) -> None:
+        """OrientForPrint: one search, two outputs — the oriented mesh and the table
+        that says why it won. Same shape as _emit_center: the node's two output
+        sockets need distinct expressions, so they are registered in out_var_of. The
+        plan is computed ONCE and both outputs read it (scoring 60 poses means 60
+        slicings; doing it twice because a Panel is wired in would be daft)."""
+        ndef = catalog.get(node.type)
+        var = self._new_var(node.id)                 # var_of[node] = the mesh
+        vals = self._input_values(node.id, ndef)
+        p = self._param_values(node, ndef)          # keeps the editable-literal spans
+        args = ", ".join([vals.get("mesh", "None"), vals.get("load", "None"),
+                          p["strength"], p["supports"], p["speed"],
+                          p["angle"], p["layer"], p["exact_below"]])
+        plan, rep = var + "_plan", var + "_rep"
+        lines.append(f"{rep} = None")                # defined even if the body throws
+        body = [f"{plan} = _orient_plan({args}){_annot(node)}",
+                f"{var} = {plan}['mesh']",
+                f"{rep} = {plan}['report']"]
+        self.out_var_of[(node.id, "result")] = var
+        self.out_var_of[(node.id, "report")] = rep
         self._guard(lines, body, node)
 
     def _emit_codeblock(self, node, lines: list[str]) -> None:
@@ -2128,7 +3599,9 @@ class Transpiler:
         body = [f"{var} = {call}{_annot(node)}"]
         if self._previewed(node, ndef):
             body.append(f"__previews__[{node.id!r}] = {var}")
-        self._guard(lines, body, node)
+        # The def lines live outside the guarded body: hash the user code too,
+        # so editing the block's code invalidates its cache entry.
+        self._guard(lines, body, node, key_src=user_code)
 
     def _cast(self, src, sock, var: str) -> str:
         """Auto-apply a boundary cast when the effective upstream type needs one to
@@ -2172,6 +3645,26 @@ class Transpiler:
                 else:
                     subs[sock.name] = self._cast(srcs[0], sock, vars_[0])
 
+        # Drop with `collide`: the shapes wired into the node are ONE scene, not
+        # a fan — hand the whole list to the runtime (which stacks them against
+        # each other) and mark the output a list so downstream still fans.
+        if (node.type == "Drop" and subs.get("collide") == "True"
+                and "shape" in fan):
+            subs["shape"] = fan.pop("shape")
+            self._produces_list.add(node.id)
+
+        # `about="group"` while the shape input fans out: every item must pivot
+        # about the ONE collective centre, or each piece spins about itself —
+        # hoist the centre out of the per-item lambda. Unfanned there is nothing
+        # to do: _rotate sees the whole value and its bbox IS the group box.
+        hoist = None
+        if (subs.get("about") == "'group'" and "shape" in fan
+                and subs.get("pivot") in (None, "None")):
+            self._counter += 1
+            pv = f"__pivot_{self._counter}"
+            hoist = f"{pv} = _pivot_of({fan['shape']})"
+            subs["pivot"] = pv
+
         template = ndef.code_template.get("algebra")
         if template is None:
             raise ValueError(f"Node {node.type} has no algebra template")
@@ -2193,7 +3686,7 @@ class Transpiler:
 
         if ndef.outputs:
             var = self._new_var(node.id)
-            body = [f"{var} = {expr}{_annot(node)}"]
+            body = ([hoist] if hoist else []) + [f"{var} = {expr}{_annot(node)}"]
             if self._previewed(node, ndef):
                 body.append(f"__previews__[{node.id!r}] = {var}")
             self._guard(lines, body, node)
@@ -2248,7 +3741,7 @@ class Transpiler:
                 return True
         used_as_source = {c.from_node for c in self.graph.connections
                           if _has_outputs(c.to_node)}
-        geometry_like = {catalog.WIRE_SOLID, catalog.WIRE_SURFACE}
+        geometry_like = {catalog.WIRE_SOLID, catalog.WIRE_SURFACE, catalog.WIRE_MESH}
         candidates = []
         for nid in order:
             if nid not in self.var_of:
@@ -2325,6 +3818,8 @@ class Transpiler:
                 self._emit_vectorize(node, body)
             elif node.type == "CenterOfMass":
                 self._emit_center(node, body)
+            elif node.type == "OrientForPrint":
+                self._emit_orient(node, body)
             else:
                 self._emit_simple(node, body)
 
@@ -2337,15 +3832,26 @@ class Transpiler:
         out.append("")
         out.append("# --- result for preview ---")
         out.append(f"__result__ = {result_var}" if result_var else "__result__ = None")
+        if self._memo and self.key_of:
+            hashes = dict(self.key_of)
+            result_nid = next((nid for nid, v in self.var_of.items()
+                               if v == result_var), None)
+            if result_nid in hashes:
+                hashes["__result__"] = hashes[result_nid]
+            out.append("# node content keys -> persistent mesh/view cache")
+            out.append(f"__hashes__.update({hashes!r})")
         text = "\n".join(out) + "\n"
         if emit_map:
             return self._extract_spans(text)
         return text
 
 
-def transpile(graph: Graph) -> str:
-    """Convenience: transpile a Graph to build123d source."""
-    return Transpiler(graph).run()
+def transpile(graph: Graph, memo: bool = False) -> str:
+    """Convenience: transpile a Graph to build123d source. memo=True (the
+    execute path) wraps each cacheable node in a persistent-store lookup so a
+    warm worker re-runs only what changed; the default output stays clean for
+    the /ui code view."""
+    return Transpiler(graph, memo=memo).run()
 
 
 def transpile_with_map(graph: Graph) -> tuple[str, list[dict]]:

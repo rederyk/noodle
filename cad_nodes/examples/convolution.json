@@ -1,0 +1,563 @@
+{
+ "name": "convolution",
+ "nodes": [
+  {
+   "id": "n1",
+   "type": "IntegerSlider",
+   "params": {
+    "value": 1,
+    "_ui": {
+     "value": {
+      "min": 0,
+      "max": 3,
+      "step": 1
+     }
+    }
+   },
+   "position": [
+    40,
+    200
+   ],
+   "preview": false
+  },
+  {
+   "id": "n2",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# THE IMAGE: a small grid of brightness values. Nothing exotic \u2014 a shape on a\n# background, which is all a convolution ever really sees.\nsize = 15      #@param int min=7 max=21\npicture = 0    #@param int min=0 max=2   # 0 = a disc\nseed = 4       #@param int min=1 max=999\nrng = random.Random(int(seed))\nN = int(size)\nimg = []\nfor i in range(N):\n    row = []\n    for j in range(N):\n        x, y = j - N / 2, i - N / 2\n        if picture == 0:                      # a disc: curved edges everywhere\n            v = 1.0 if x * x + y * y < (N * 0.28) ** 2 else 0.0\n        elif picture == 1:                    # a square and a stripe: straight edges\n            v = 1.0 if (abs(x) < N * 0.22 and abs(y) < N * 0.22) or abs(y - N * 0.35) < 1 else 0.0\n        else:                                 # noise: no structure at all\n            v = rng.random()\n        row.append(v)\n    img.append(row)\nresult = {\"img\": img, \"N\": N, \"W\": 62.0, \"H\": 16.0}\n"
+   },
+   "position": [
+    40,
+    340
+   ],
+   "preview": false,
+   "size": [
+    380,
+    320
+   ]
+  },
+  {
+   "id": "n3",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# THE KERNEL: nine numbers. Slide them over the image, multiply each by the pixel it\n# is sitting on, add it all up, and write the total in the middle. That is the whole\n# of convolution \u2014 and the whole of what the first layer of a vision network does.\npreset = 1     #@param int min=0 max=3\nk11 = 0.0      #@param float min=-4 max=4 step=0.1\nk12 = 0.0      #@param float min=-4 max=4 step=0.1\nk13 = 0.0      #@param float min=-4 max=4 step=0.1\nk21 = 0.0      #@param float min=-4 max=4 step=0.1\nk22 = 1.0      #@param float min=-4 max=4 step=0.1\nk23 = 0.0      #@param float min=-4 max=4 step=0.1\nk31 = 0.0      #@param float min=-4 max=4 step=0.1\nk32 = 0.0      #@param float min=-4 max=4 step=0.1\nk33 = 0.0      #@param float min=-4 max=4 step=0.1\n# the presets are the famous ones. Pick 0 and the nine sliders below are yours.\nP = {1: [[1, 1, 1], [1, 1, 1], [1, 1, 1]],            # BLUR: everyone averages with its neighbours\n     2: [[0, -1, 0], [-1, 5, -1], [0, -1, 0]],        # SHARPEN: me, minus my neighbours\n     3: [[-1, -1, -1], [-1, 8, -1], [-1, -1, -1]]}    # EDGES: zero unless I differ from them\np = int(preset)\nif p in P:\n    k = [row[:] for row in P[p]]\nelse:\n    k = [[k11, k12, k13], [k21, k22, k23], [k31, k32, k33]]\ntot = sum(sum(r) for r in k)\nnorm = tot if (p == 1 and tot) else 1.0        # a blur must not brighten the picture\nnames = {0: \"your own nine numbers\", 1: \"BLUR\", 2: \"SHARPEN\", 3: \"EDGE DETECT\"}\nresult = {\"k\": k, \"norm\": norm, \"name\": names.get(p, \"?\"), \"p\": p}\n"
+   },
+   "position": [
+    40,
+    720
+   ],
+   "preview": false,
+   "size": [
+    380,
+    460
+   ]
+  },
+  {
+   "id": "n4",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# THE CONVOLUTION itself: four lines. For every pixel, look at its 3x3 neighbourhood,\n# multiply by the kernel, add up. The edges of the image have no neighbours, so they\n# are simply left out (that is why the answer is a little smaller than the question).\nI, K = in_0, in_1\nimg, N = I[\"img\"], I[\"N\"]\nk, norm = K[\"k\"], K[\"norm\"]\nout = []\nfor i in range(1, N - 1):\n    row = []\n    for j in range(1, N - 1):\n        acc = 0.0\n        for di in (-1, 0, 1):\n            for dj in (-1, 0, 1):\n                acc += img[i + di][j + dj] * k[di + 1][dj + 1]\n        row.append(acc / norm)\n    out.append(row)\nresult = {\"out\": out, \"M\": N - 2, \"N\": N, \"W\": I[\"W\"], \"H\": I[\"H\"],\n          \"name\": K[\"name\"], \"k\": k}\n"
+   },
+   "position": [
+    470,
+    500
+   ],
+   "preview": false,
+   "size": [
+    380,
+    340
+   ]
+  },
+  {
+   "id": "n5",
+   "type": "CodeBlock",
+   "params": {
+    "code": "D = in_0\nimg, H = D[\"img\"], D[\"H\"]\nresult = [max(v * H, 0.2) for row in img for v in row]\n"
+   },
+   "position": [
+    900,
+    200
+   ],
+   "preview": false,
+   "size": [
+    320,
+    140
+   ]
+  },
+  {
+   "id": "n6",
+   "type": "CodeBlock",
+   "params": {
+    "code": "D = in_0\nN, W, H = D[\"N\"], D[\"W\"], D[\"H\"]\nc = W / N\nresult = [Vector(-52 - W / 2 + (j + 0.5) * c, W / 2 - (i + 0.5) * c, max(v * H, 0.2) / 2)\n          for i, row in enumerate(D[\"img\"]) for j, v in enumerate(row)]\n"
+   },
+   "position": [
+    900,
+    360
+   ],
+   "preview": false,
+   "size": [
+    320,
+    170
+   ]
+  },
+  {
+   "id": "n7",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = in_0[\"W\"] / in_0[\"N\"] * 0.88"
+   },
+   "position": [
+    900,
+    560
+   ],
+   "preview": false,
+   "size": [
+    300,
+    110
+   ]
+  },
+  {
+   "id": "n8",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    1250,
+    200
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n9",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    1250,
+    360
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n10",
+   "type": "Box",
+   "params": {},
+   "position": [
+    1500,
+    260
+   ],
+   "preview": true,
+   "color": "#7a8899"
+  },
+  {
+   "id": "n11",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# scaled by the LARGEST answer, not by a fixed factor: an edge kernel can return 8\n# where a blur returns 1, and a fixed scale would send the columns through the roof.\n# Same trick as the exp weights in the `softmax` example \u2014 the shape is what matters.\nD = in_0\nmx = max((abs(v) for row in D[\"out\"] for v in row), default=1.0) or 1.0\nresult = [max(abs(v) / mx * D[\"H\"], 0.2) for row in D[\"out\"] for v in row]\n"
+   },
+   "position": [
+    900,
+    740
+   ],
+   "preview": false,
+   "size": [
+    320,
+    140
+   ]
+  },
+  {
+   "id": "n12",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# a negative answer hangs BELOW the plane: an edge kernel says \"brighter on this side\"\n# with a positive number and \"darker\" with a negative one. The sign is the direction.\nD = in_0\nM, W, H = D[\"M\"], D[\"W\"], D[\"H\"]\nc = W / D[\"N\"]\noff = 52 - W / 2 + c\nmx = max((abs(v) for row in D[\"out\"] for v in row), default=1.0) or 1.0\nresult = [Vector(off + (j + 0.5) * c, W / 2 - (i + 1.5) * c, (v / mx * H) / 2)\n          for i, row in enumerate(D[\"out\"]) for j, v in enumerate(row)]\n"
+   },
+   "position": [
+    900,
+    900
+   ],
+   "preview": false,
+   "size": [
+    340,
+    200
+   ]
+  },
+  {
+   "id": "n13",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    1250,
+    740
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n14",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    1250,
+    900
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n15",
+   "type": "Box",
+   "params": {},
+   "position": [
+    1500,
+    800
+   ],
+   "preview": true,
+   "color": "#3fb87f"
+  },
+  {
+   "id": "n16",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = [max(abs(v) * 6, 0.3) for row in in_0[\"k\"] for v in row]"
+   },
+   "position": [
+    900,
+    1120
+   ],
+   "preview": false,
+   "size": [
+    320,
+    110
+   ]
+  },
+  {
+   "id": "n17",
+   "type": "CodeBlock",
+   "params": {
+    "code": "D = in_0\nresult = [Vector((j - 1) * 5, (1 - i) * 5, (v * 6) / 2)\n          for i, row in enumerate(D[\"k\"]) for j, v in enumerate(row)]\n"
+   },
+   "position": [
+    900,
+    1260
+   ],
+   "preview": false,
+   "size": [
+    320,
+    150
+   ]
+  },
+  {
+   "id": "n18",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    1250,
+    1120
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n19",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    1250,
+    1260
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n20",
+   "type": "Box",
+   "params": {
+    "width": 4.4,
+    "height": 4.4
+   },
+   "position": [
+    1500,
+    1180
+   ],
+   "preview": true,
+   "color": "#e0902f"
+  },
+  {
+   "id": "n21",
+   "type": "CodeBlock",
+   "params": {
+    "code": "size = 4.0  #@param float min=2 max=12 step=0.5\nD = in_0\ndef _t(s, x, y, fs):          # lying flat: this scene is read from above\n    return extrude(Pos(x, y, 0) * Text(s, font_size=fs), amount=0.8)\nresult = [_t(\"CONVOLUTION\", 0, 68, size * 1.8),\n          _t(f\"the kernel: {D['name']}\", 0, 57, size * 1.1),\n          _t(\"image\", -52, -42, size * 1.2),\n          _t(\"kernel\", 0, -20, size),\n          _t(\"result\", 52, -42, size * 1.2)]\n"
+   },
+   "position": [
+    1500,
+    1360
+   ],
+   "preview": true,
+   "color": "#e8e8e8",
+   "size": [
+    340,
+    200
+   ]
+  },
+  {
+   "id": "n22",
+   "type": "Note",
+   "params": {
+    "text": "NINE NUMBERS, AND EVERY EDGE IN THE PICTURE.\n\nOn the left: an image, as a field of columns (tall = bright). In the middle, up at the back: the KERNEL, nine numbers. On the right: what you get by sliding the kernel over the image, multiplying, and adding up. That is convolution \u2014 all of it \u2014 and it is exactly what the first layer of a vision network does. The difference is only that a network LEARNS these nine numbers instead of being handed them.\n\nTRY THIS \u2014 drag `preset`:\n1 = BLUR. All nines are 1: every pixel becomes the average of its neighbours. The shape goes soft at the edges.\n2 = SHARPEN. 5 in the middle, -1 around it: each pixel is amplified by however much it disagrees with its neighbours.\n3 = EDGE DETECT. 8 in the middle, -1 around: if a pixel agrees with all its neighbours the sum is exactly ZERO and the column vanishes. Only where the picture CHANGES does anything survive \u2014 and what is left is the outline. The flat interior of the disc goes completely flat; the rim lights up.\n0 = your own nine numbers on the sliders. Break it. Make one up.\n\nSome of the result columns hang BELOW the plane: the answer has a sign. An edge kernel does not just say 'there is an edge here' \u2014 it says which side is brighter."
+   },
+   "position": [
+    40,
+    1240
+   ],
+   "size": [
+    640,
+    460
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "id": "l1",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n3",
+   "to_socket": "preset"
+  },
+  {
+   "id": "l2",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n4",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l3",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n4",
+   "to_socket": "in_1"
+  },
+  {
+   "id": "l4",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n5",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l5",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n6",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l6",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l7",
+   "from_node": "n5",
+   "from_socket": "result",
+   "to_node": "n8",
+   "to_socket": "items"
+  },
+  {
+   "id": "l8",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n9",
+   "to_socket": "items"
+  },
+  {
+   "id": "l9",
+   "from_node": "n7",
+   "from_socket": "result",
+   "to_node": "n10",
+   "to_socket": "width"
+  },
+  {
+   "id": "l10",
+   "from_node": "n7",
+   "from_socket": "result",
+   "to_node": "n10",
+   "to_socket": "height"
+  },
+  {
+   "id": "l11",
+   "from_node": "n8",
+   "from_socket": "result",
+   "to_node": "n10",
+   "to_socket": "depth"
+  },
+  {
+   "id": "l12",
+   "from_node": "n9",
+   "from_socket": "result",
+   "to_node": "n10",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l13",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n11",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l14",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n12",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l15",
+   "from_node": "n11",
+   "from_socket": "result",
+   "to_node": "n13",
+   "to_socket": "items"
+  },
+  {
+   "id": "l16",
+   "from_node": "n12",
+   "from_socket": "result",
+   "to_node": "n14",
+   "to_socket": "items"
+  },
+  {
+   "id": "l17",
+   "from_node": "n7",
+   "from_socket": "result",
+   "to_node": "n15",
+   "to_socket": "width"
+  },
+  {
+   "id": "l18",
+   "from_node": "n7",
+   "from_socket": "result",
+   "to_node": "n15",
+   "to_socket": "height"
+  },
+  {
+   "id": "l19",
+   "from_node": "n13",
+   "from_socket": "result",
+   "to_node": "n15",
+   "to_socket": "depth"
+  },
+  {
+   "id": "l20",
+   "from_node": "n14",
+   "from_socket": "result",
+   "to_node": "n15",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l21",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n16",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l22",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n17",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l23",
+   "from_node": "n16",
+   "from_socket": "result",
+   "to_node": "n18",
+   "to_socket": "items"
+  },
+  {
+   "id": "l24",
+   "from_node": "n17",
+   "from_socket": "result",
+   "to_node": "n19",
+   "to_socket": "items"
+  },
+  {
+   "id": "l25",
+   "from_node": "n18",
+   "from_socket": "result",
+   "to_node": "n20",
+   "to_socket": "depth"
+  },
+  {
+   "id": "l26",
+   "from_node": "n19",
+   "from_socket": "result",
+   "to_node": "n20",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l27",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n21",
+   "to_socket": "in_0"
+  }
+ ],
+ "groups": [
+  {
+   "title": "1 - THE IMAGE",
+   "bounding": [
+    10,
+    280,
+    420,
+    400
+   ],
+   "color": "#3f589e"
+  },
+  {
+   "title": "2 - THE KERNEL: nine numbers",
+   "bounding": [
+    10,
+    700,
+    420,
+    500
+   ],
+   "color": "#8a5a2c"
+  },
+  {
+   "title": "3 - SLIDE, MULTIPLY, ADD",
+   "bounding": [
+    450,
+    460,
+    400,
+    400
+   ],
+   "color": "#7a2c5a"
+  },
+  {
+   "title": "4 - IMAGE, KERNEL, RESULT",
+   "bounding": [
+    870,
+    140,
+    960,
+    1420
+   ],
+   "color": "#2c7a52"
+  }
+ ]
+}

@@ -113,7 +113,9 @@ _EPILOGUE = """
 import sys as _sys
 _sys.path.insert(0, {repo_root!r})
 from cad_nodes.mesh_extractor import extract_and_write
-extract_and_write(__result__, {stl!r}, {view!r}, __panels__, __previews__, {lin}, {ang}, __errors__, __timings__)
+extract_and_write(__result__, {stl!r}, {view!r}, __panels__, __previews__, {lin}, {ang}, __errors__, __timings__,
+                  hashes=globals().get("__hashes__") or {{}}, memo=globals().get("__MEMO__"),
+                  cached_nodes=globals().get("__cached__") or {{}})
 """
 
 # Tessellation level-of-detail: (linear_frac of bbox diagonal, angular tol rad).
@@ -126,12 +128,18 @@ _QUALITY = {
 
 
 def build_script(code: str, stl_path: Path, view_path: Path,
-                 quality: str = "live", write_stl: bool = True) -> str:
+                 quality: str = "live", write_stl: bool = True,
+                 progress_path: Path | None = None) -> str:
     lin, ang = _QUALITY.get(quality, _QUALITY["live"])
+    # The PREAMBLE guards __PROGRESS_PATH__ with try/except NameError (same idiom
+    # as __MEMO__), so assigning it *before* the transpiled code sticks: the node
+    # _ev() calls then append to this file while the run is still going, and the
+    # editor tails it. No header = progress is a no-op.
+    head = f"__PROGRESS_PATH__ = {str(progress_path)!r}\n" if progress_path else ""
     # write_stl=False (live runs) skips the STL export in the epilogue — an empty
     # path makes extract_and_write no-op it. The STL is regenerated on demand by
     # the download/render routes, saving ~0.9s on every live re-run.
-    return code + _EPILOGUE.format(
+    return head + code + _EPILOGUE.format(
         repo_root=_REPO_ROOT, stl=(str(stl_path) if write_stl else ""),
         view=str(view_path), lin=lin, ang=ang,
     )
@@ -281,6 +289,7 @@ def _finalize(code: str, script_text: str, stdout: str, stderr,
         "warnings": [],
         "node_errors": {},
         "node_timings": (view or {}).get("node_timings") or {},
+        "node_cached": (view or {}).get("node_cached") or [],
         "stl": str(stl_path) if stl_path.exists() else None,
     }
 
@@ -336,11 +345,17 @@ def execute_code(code: str, workdir: Path, timeout: int = 120,
     stl_path = workdir / "output.stl"
     view_path = workdir / "view.json"
     script_path = workdir / "_run.py"
+    progress_path = workdir / "progress.jsonl"
 
     if view_path.exists():
         view_path.unlink()
+    # Truncate rather than unlink: a tailer already attached (the editor opens the
+    # stream before it POSTs) sees the size drop below its offset and knows a new
+    # run started, instead of replaying the previous one's events.
+    progress_path.write_text("")
 
-    script_text = build_script(code, stl_path, view_path, quality, write_stl)
+    script_text = build_script(code, stl_path, view_path, quality, write_stl,
+                               progress_path=progress_path)
     script_path.write_text(script_text)
 
     # --- warm path -------------------------------------------------------
@@ -370,8 +385,10 @@ def execute_code(code: str, workdir: Path, timeout: int = 120,
 
 def execute_graph(graph: Graph, workdir: Path, timeout: int = 120,
                   quality: str = "live", write_stl: bool = True) -> dict:
-    """Transpile + execute a graph end-to-end."""
-    code = transpile(graph)
+    """Transpile + execute a graph end-to-end. memo=True: on the warm worker,
+    nodes whose content hash is unchanged are restored from the persistent
+    cache (shapes AND preview meshes) — only the dirty subtree re-runs."""
+    code = transpile(graph, memo=True)
     return execute_code(code, workdir, timeout=timeout, quality=quality,
                         write_stl=write_stl)
 
@@ -405,7 +422,9 @@ def extract_subshapes_for_node(graph: Graph, node_id: str, kind: str,
     except KeyError:
         return {"success": False, "error": f"no node {node_id!r}"}
 
-    code = transpile(graph)
+    # memo=True: right after an execute, the whole graph is warm in the cache,
+    # so the picker's re-run costs almost nothing.
+    code = transpile(graph, memo=True)
     out_path = workdir / "subshapes.json"
     script_path = workdir / "_subshapes.py"
     if out_path.exists():
@@ -518,7 +537,7 @@ def slice_summary_graph(graph: Graph, workdir: Path, n_per_axis: int = 10,
                         timeout: int = 120) -> dict:
     """Symbolic slice summary of the graph's own result (the verify half of
     the retro-engineering loop — see cad_nodes/slice_summary.py)."""
-    return _run_slice(transpile(graph), workdir, "summarize",
+    return _run_slice(transpile(graph, memo=True), workdir, "summarize",
                       f"n_per_axis={int(n_per_axis)}", timeout)
 
 
@@ -532,7 +551,7 @@ def slice_summary_file(path: Path, workdir: Path, n_per_axis: int = 10,
 def section_outline_graph(graph: Graph, workdir: Path, axis: str = "z",
                           position: float = 0.0, timeout: int = 120) -> dict:
     """Exact edge-by-edge outline of ONE section of the graph's result."""
-    return _run_slice(transpile(graph), workdir, "outline",
+    return _run_slice(transpile(graph, memo=True), workdir, "outline",
                       f"axis={str(axis)!r}, position={float(position)}", timeout)
 
 

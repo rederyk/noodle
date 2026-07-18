@@ -12,6 +12,18 @@ build123d==0.11.0
 numpy==2.1.3
 # Voronoi2D / spatial helpers in the worker (BSD-3)
 scipy==1.14.1
+# the mesh lane — triangle geometry build123d cannot model (MIT).
+# See PLAN_MESH_LANE.md: OCCT needs 300s to open a 147k-tri STL and 81s per
+# boolean; trimesh opens it in 0.16s and repairs it in 0.31s.
+trimesh==4.12.2
+# mesh booleans + tolerance-bounded simplify, on the mesh lane (Apache-2.0).
+# 0.107s for a boolean OCCT needs 81s for; simplify() holds volume to -0.10%.
+manifold3d==3.5.2
+# rigid-body dynamics for Drop's collide mode (zlib license): the parts fall
+# TOGETHER, hit each other in the air, tumble and settle — simulated once in
+# the worker at a fixed timestep (deterministic), recorded as keyframes that
+# both the t slider and the browser live-replay scrub through.
+pybullet==3.2.7
 
 # HTTP API (MIT)
 fastapi==0.115.0

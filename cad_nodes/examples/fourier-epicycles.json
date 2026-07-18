@@ -1,0 +1,422 @@
+{
+ "name": "fourier-epicycles",
+ "nodes": [
+  {
+   "id": "n1",
+   "type": "IntegerSlider",
+   "params": {
+    "value": 5,
+    "_ui": {
+     "value": {
+      "min": 1,
+      "max": 40,
+      "step": 1
+     }
+    }
+   },
+   "position": [
+    40,
+    200
+   ],
+   "preview": false
+  },
+  {
+   "id": "n2",
+   "type": "NumberSlider",
+   "params": {
+    "value": 0.25,
+    "_ui": {
+     "value": {
+      "min": 0,
+      "max": 1,
+      "step": 0.005
+     }
+    }
+   },
+   "position": [
+    40,
+    330
+   ],
+   "preview": false
+  },
+  {
+   "id": "n3",
+   "type": "CodeBlock",
+   "params": {
+    "code": "# THE FOURIER SERIES: every circle is one harmonic. Its radius = how much it counts,\n# its speed = its frequency. Add them up and you get ANY periodic wave.\nharmonics = 5   #@param int min=1 max=40\nt = 0.25        #@param float min=0 max=1 step=0.005\nshape = 0       #@param int min=0 max=2\nscale = 30.0    #@param float min=10 max=60 step=1\n# shape: 0 = SQUARE wave, 1 = SAWTOOTH, 2 = TRIANGLE.\n# All that changes is WHICH harmonics you take and with what radius. Nothing else.\nterms = []\nfor i in range(int(harmonics)):\n    if shape == 0:\n        k, r = 2 * i + 1, 1.0 / (2 * i + 1)          # odd only, radius 1/k\n    elif shape == 1:\n        k, r = i + 1, 1.0 / (i + 1)                  # all of them, radius 1/k\n    else:\n        k, r = 2 * i + 1, 1.0 / (2 * i + 1) ** 2     # odd only, radius 1/k^2\n    terms.append((k, scale * r))\n\ndef total(tt):\n    \"\"\"where the pen is at time tt: the chain of circles, summed.\"\"\"\n    a = 2 * math.pi * tt\n    p = Vector(0, 0, 0)\n    for k, R in terms:\n        p = p + Vector(R * math.cos(k * a), R * math.sin(k * a), 0)\n    return p\n\n# the chain at time t: each circle is centred on the tip of the previous one\ncentres, radii, p, ang = [], [], Vector(0, 0, 0), 2 * math.pi * t\nfor k, R in terms:\n    centres.append(Vector(p.X, p.Y, 0))\n    radii.append(max(R, 0.15))          # a circle of radius 0 is degenerate\n    p = p + Vector(R * math.cos(k * ang), R * math.sin(k * ang), 0)\ntip = Vector(p.X, p.Y, 0)\n\n# THE WAVE: the pen's Y coordinate, unrolled through time to the right.\n# At the left edge of the chart the wave equals EXACTLY where the pen is now \u2014\n# which is why the horizontal thread joining them is straight.\nX0, LEN = 46.0, 130.0\nwave = [Vector(X0 + s / 200 * LEN, total(t + s / 200).Y, 0) for s in range(201)]\nthread = [tip, Vector(X0, tip.Y, 0)]\nresult = {\"centres\": centres, \"radii\": radii, \"tip\": tip, \"wave\": wave,\n          \"thread\": thread, \"n\": len(terms), \"shape\": int(shape), \"t\": t}\n"
+   },
+   "position": [
+    40,
+    470
+   ],
+   "preview": false,
+   "size": [
+    380,
+    460
+   ]
+  },
+  {
+   "id": "n4",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = in_0[\"centres\"]"
+   },
+   "position": [
+    500,
+    200
+   ],
+   "preview": false,
+   "size": [
+    300,
+    110
+   ]
+  },
+  {
+   "id": "n5",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = in_0[\"radii\"]"
+   },
+   "position": [
+    500,
+    340
+   ],
+   "preview": false,
+   "size": [
+    300,
+    110
+   ]
+  },
+  {
+   "id": "n6",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    840,
+    200
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n7",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    840,
+    340
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n8",
+   "type": "Circle",
+   "params": {},
+   "position": [
+    1080,
+    260
+   ],
+   "preview": true,
+   "color": "#5a7fb8"
+  },
+  {
+   "id": "n9",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = in_0[\"wave\"]"
+   },
+   "position": [
+    500,
+    490
+   ],
+   "preview": false,
+   "size": [
+    300,
+    110
+   ]
+  },
+  {
+   "id": "n10",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    840,
+    490
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n11",
+   "type": "Polyline",
+   "params": {},
+   "position": [
+    1080,
+    490
+   ],
+   "preview": true,
+   "color": "#ffd166"
+  },
+  {
+   "id": "n12",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = in_0[\"thread\"]"
+   },
+   "position": [
+    500,
+    640
+   ],
+   "preview": false,
+   "size": [
+    300,
+    110
+   ]
+  },
+  {
+   "id": "n13",
+   "type": "ListCreate",
+   "params": {},
+   "position": [
+    840,
+    640
+   ],
+   "preview": false,
+   "multi": [
+    "items"
+   ]
+  },
+  {
+   "id": "n14",
+   "type": "Polyline",
+   "params": {},
+   "position": [
+    1080,
+    640
+   ],
+   "preview": true,
+   "color": "#7a8899"
+  },
+  {
+   "id": "n15",
+   "type": "CodeBlock",
+   "params": {
+    "code": "result = in_0[\"tip\"]"
+   },
+   "position": [
+    500,
+    790
+   ],
+   "preview": false,
+   "size": [
+    300,
+    110
+   ]
+  },
+  {
+   "id": "n16",
+   "type": "Sphere",
+   "params": {
+    "radius": 2.2
+   },
+   "position": [
+    840,
+    790
+   ],
+   "preview": true,
+   "color": "#e94560"
+  },
+  {
+   "id": "n17",
+   "type": "CodeBlock",
+   "params": {
+    "code": "size = 4.0  #@param float min=2 max=12 step=0.5\nD = in_0\nnames = {0: \"SQUARE wave\", 1: \"SAWTOOTH\", 2: \"TRIANGLE\"}\ndef _t(s, x, y, fs):          # lying flat: this scene is read from above\n    return extrude(Pos(x, y, 0) * Text(s, font_size=fs), amount=0.8)\nresult = [_t(\"FOURIER SERIES\", -18, 62, size * 1.7),\n          _t(f\"{D['n']} circles  ->  {names.get(D['shape'], '?')}\", -18, 50, size * 1.2),\n          _t(f\"t = {D['t']:.2f}\", 100, 50, size * 1.2),\n          _t(\"the wave, unrolled in time ->\", 108, -48, size)]\n"
+   },
+   "position": [
+    1080,
+    790
+   ],
+   "preview": true,
+   "color": "#e8e8e8",
+   "size": [
+    340,
+    200
+   ]
+  },
+  {
+   "id": "n18",
+   "type": "Note",
+   "params": {
+    "text": "ANY WAVE IS A SUM OF CIRCLES.\n\nEach circle turns at its own speed (the harmonic k) and has its own radius (how much that harmonic counts). Each one is pinned to the tip of the previous one. The red ball is the pen.\n\nOn the right is the same thing, unrolled in time: the HEIGHT of the pen, instant by instant. That is the wave.\n\nTRY THIS\n1. Drag `t` from 0 to 1: the wheels turn and the pen draws. One full turn = one period of the wave.\n2. Set `harmonics` to 1: a single circle, and the wave is a perfect sine. It cannot do anything else.\n3. Go up to 3, 7, 20: the square wave's corners sharpen in front of you. They NEVER arrive \u2014 that would take infinitely many circles. The ripples left over at the corners have a name: the Gibbs phenomenon.\n4. Change `shape` (0 square, 1 sawtooth, 2 triangle): all that changes is WHICH circles you take and how big they are. The machine is the same."
+   },
+   "position": [
+    40,
+    990
+   ],
+   "size": [
+    600,
+    380
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "id": "l1",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n3",
+   "to_socket": "harmonics"
+  },
+  {
+   "id": "l2",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n3",
+   "to_socket": "t"
+  },
+  {
+   "id": "l3",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n4",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l4",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n5",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l5",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n6",
+   "to_socket": "items"
+  },
+  {
+   "id": "l6",
+   "from_node": "n5",
+   "from_socket": "result",
+   "to_node": "n7",
+   "to_socket": "items"
+  },
+  {
+   "id": "l7",
+   "from_node": "n7",
+   "from_socket": "result",
+   "to_node": "n8",
+   "to_socket": "radius"
+  },
+  {
+   "id": "l8",
+   "from_node": "n6",
+   "from_socket": "result",
+   "to_node": "n8",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l9",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n9",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l10",
+   "from_node": "n9",
+   "from_socket": "result",
+   "to_node": "n10",
+   "to_socket": "items"
+  },
+  {
+   "id": "l11",
+   "from_node": "n10",
+   "from_socket": "result",
+   "to_node": "n11",
+   "to_socket": "points"
+  },
+  {
+   "id": "l12",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n12",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l13",
+   "from_node": "n12",
+   "from_socket": "result",
+   "to_node": "n13",
+   "to_socket": "items"
+  },
+  {
+   "id": "l14",
+   "from_node": "n13",
+   "from_socket": "result",
+   "to_node": "n14",
+   "to_socket": "points"
+  },
+  {
+   "id": "l15",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n15",
+   "to_socket": "in_0"
+  },
+  {
+   "id": "l16",
+   "from_node": "n15",
+   "from_socket": "result",
+   "to_node": "n16",
+   "to_socket": "origin"
+  },
+  {
+   "id": "l17",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n17",
+   "to_socket": "in_0"
+  }
+ ],
+ "groups": [
+  {
+   "title": "1 - THE KNOBS",
+   "bounding": [
+    10,
+    140,
+    400,
+    220
+   ],
+   "color": "#3f589e"
+  },
+  {
+   "title": "2 - THE SERIES: the coefficients",
+   "bounding": [
+    10,
+    400,
+    400,
+    560
+   ],
+   "color": "#8a5a2c"
+  },
+  {
+   "title": "3 - THE CIRCLES AND THE WAVE",
+   "bounding": [
+    470,
+    140,
+    960,
+    900
+   ],
+   "color": "#2c7a52"
+  }
+ ]
+}

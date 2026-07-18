@@ -28,7 +28,7 @@ from typing import Any, Optional
 # ---------------------------------------------------------------------------
 from .casts import (  # noqa: E402,F401
     WIRE_SOLID, WIRE_SURFACE, WIRE_CURVE, WIRE_DATA, WIRE_TREE,
-    WIRE_PLANE, WIRE_VECTOR, WIRE_SELECTION, WIRE_TYPES,
+    WIRE_PLANE, WIRE_VECTOR, WIRE_SELECTION, WIRE_MESH, WIRE_TYPES,
     wires_compatible, cast_helper, build_compatible, build_input_accepts,
 )
 
@@ -191,6 +191,10 @@ def _data(name="result"):
 
 def _cv(name="result"):
     return [Socket(name, WIRE_CURVE)]
+
+
+def _mesh(name="result"):
+    return [Socket(name, WIRE_MESH)]
 
 
 def _origin_in():
@@ -936,8 +940,13 @@ register(NodeDef("Split", "modifiers", "Split",
 # ===========================================================================
 # 6. Transforms
 # ===========================================================================
+# The `shape` socket of every transform also accepts WIRE_MESH: a Move/Rotate/
+# Scale/Mirror on triangles is the same operation as on a B-Rep, just expressed
+# as a 4x4 on the vertex array instead of a Location (see the PREAMBLE's
+# _mesh_matrix). `output_follows="shape"` then carries the mesh type back out, so
+# the mesh lane reuses these nodes instead of duplicating them. PLAN_MESH_LANE.md §3.
 register(NodeDef("Move", "transform", "Move",
-    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE]),
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE, WIRE_MESH]),
             Socket("offset", WIRE_VECTOR, required=False)],
     params=[_f("x", 0, -500, 500), _f("y", 0, -500, 500), _f("z", 0, -500, 500)],
     outputs=_geo(),
@@ -950,20 +959,30 @@ register(NodeDef("Move", "transform", "Move",
                 "to each position (one moved copy per vector)."))
 
 register(NodeDef("Rotate", "transform", "Rotate",
-    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE])] + _pin("angle"),
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE, WIRE_MESH]),
+            Socket("pivot", WIRE_VECTOR, required=False)] + _pin("angle"),
     params=[_f("angle", 90, -360, 360),
             Param("axis", "select", "axis", "Z", widget="select",
                   options=["X", "Y", "Z"],
-                  code_map={"X": "Axis.X", "Y": "Axis.Y", "Z": "Axis.Z"})],
+                  code_map={"X": "Axis.X", "Y": "Axis.Y", "Z": "Axis.Z"}),
+            Param("about", "select", "about", "world", widget="select",
+                  options=["world", "part", "group"])],
     outputs=_geo(),
     gizmo={"kind": "rotate", "binds": ["angle"], "axisParam": "axis",
            "anchor": "origin", "lock": ["angle"]},
-    code_template={"algebra": "_rotate({shape}, {axis}, {angle})"},
+    code_template={"algebra": "_rotate({shape}, {axis}, {angle}, {pivot}, {about})"},
     output_follows="shape",
-    description="Rotate a shape (or a plane) around a global axis."))
+    description="Rotate a shape (or a plane, or a mesh). `about` picks the centre: "
+                "`world` turns about the global axis (a part away from the origin "
+                "ORBITS — the old behaviour), `part` about its own bbox centre (it "
+                "turns in place), `group` about the collective bbox centre when a "
+                "list is wired in — the ensemble turns as one rigid body. Wire a "
+                "point into `pivot` to name the centre exactly; it overrides the "
+                "dropdown. The centre is measured on the tessellation (the fast "
+                "OCCT box is oversized — same reason Place on Bed does)."))
 
 register(NodeDef("Scale", "transform", "Scale",
-    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE])] + _pin("factor"),
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE, WIRE_MESH])] + _pin("factor"),
     params=[_f("factor", 2, 0.01, 100),
             _f("x", 1, 0.01, 100, label="x"), _f("y", 1, 0.01, 100, label="y"),
             _f("z", 1, 0.01, 100, label="z")],
@@ -984,7 +1003,7 @@ register(NodeDef("ToPlane", "transform", "To Plane",
                 "perpendicular to the curve, ready to Loft."))
 
 register(NodeDef("Mirror", "transform", "Mirror",
-    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE])],
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE, WIRE_MESH])],
     params=[Param("plane", "select", "plane", "XZ", widget="select",
                   options=["XY", "XZ", "YZ"],
                   code_map={"XY": "Plane.XY", "XZ": "Plane.XZ", "YZ": "Plane.YZ"}),
@@ -1678,6 +1697,248 @@ register(NodeDef("RefImage", "import", "Reference Image",
                 "if a Trace Image node uses the same file the quad snaps to that "
                 "trace's scale/position so the reference and the traced curves match "
                 "1:1; otherwise place it manually via plane, width (mm), centre (x,y,z)."))
+
+# ===========================================================================
+# 12b. The mesh lane (PLAN_MESH_LANE.md)
+#
+# Triangles are their own kind of geometry, not a degenerate B-Rep. build123d
+# cannot model them: `import_stl` gives a Face with no surface (booleans on it
+# are refused), and `Mesher.read` sews every triangle into a planar B-Rep face —
+# 300s to open a 147k-triangle part, 81s per boolean. These nodes run on trimesh
+# instead: 0.16s to open the same file, 0.31s to repair it.
+#
+# Transforms are NOT duplicated here — Move/Rotate/Scale/Mirror take a mesh
+# directly (§6 above). The bridge back to the B-Rep lane (MeshToSolid) and the
+# booleans (manifold3d) land in phase 2.
+# ===========================================================================
+register(NodeDef("ImportMesh", "mesh", "Import Mesh",
+    params=[_asset("path", [".stl", ".obj", ".ply", ".3mf"])],
+    outputs=_mesh(),
+    code_template={"algebra": "_mesh_load({path})"},
+    description="Load an STL/OBJ/PLY/3MF as a real triangle mesh you can repair "
+                "and operate on. Prefer this over Import STL, which hands the mesh "
+                "to the B-Rep kernel as a surface with no volume."))
+
+register(NodeDef("ToMesh", "mesh", "To Mesh",
+    inputs=[Socket("shape", WIRE_SOLID)],
+    params=[_f("tolerance", 0.1, 0.001, 5.0, 0.01, label="tolerance")],
+    outputs=_mesh(),
+    code_template={"algebra": "_to_mesh({shape}, {tolerance})"},
+    description="Tessellate a solid/surface into a mesh. `tolerance` is the max "
+                "deviation in mm — smaller means more triangles. (Wiring a solid "
+                "straight into a mesh input does this for you.)"))
+
+register(NodeDef("MeshFix", "mesh", "Mesh Fix",
+    inputs=[Socket("mesh", WIRE_MESH)],
+    params=[_i("min_body", 16, 0, 5000, label="min body (tris)"),
+            Param("fill_holes", "bool", "fill holes", True, widget="checkbox")],
+    outputs=_mesh(),
+    code_template={"algebra": "_mesh_fix({mesh}, {min_body}, {fill_holes})"},
+    description="Repair a mesh so boolean ops will accept it: merge duplicate "
+                "vertices, drop duplicate/degenerate faces, discard stray shards "
+                "smaller than `min body`, fill holes, fix normals. Most STLs that "
+                "'fail' need only this."))
+
+register(NodeDef("MeshInspect", "mesh", "Mesh Inspect",
+    inputs=[Socket("mesh", WIRE_MESH)],
+    outputs=_data("report"),
+    code_template={"algebra": "_mesh_inspect({mesh})"},
+    description="Report a mesh's health as text — triangles, watertight, bodies, "
+                "boundary and non-manifold edges, euler, volume, area. Wire it into "
+                "a Panel to see WHY a mesh misbehaves before you operate on it."))
+
+register(NodeDef("ExportMesh", "mesh", "Export Mesh",
+    inputs=[Socket("mesh", WIRE_MESH)],
+    params=[Param("path", "str", "path", "output.stl", widget="input")],
+    outputs=[],
+    code_template={"algebra": "_mesh_export({mesh}, _out({path}))"},
+    description="Write a mesh to STL/OBJ/PLY/3MF (the extension picks the format), "
+                "into the project's exports/ folder."))
+
+# --- mesh booleans (manifold3d, Apache-2.0) --------------------------------
+# Same shape as the B-Rep boolean nodes above, so the two lanes read alike: a
+# collector Union, a Subtract whose `b` swallows a whole list of tools. Inputs
+# must be closed volumes — an open mesh raises a message pointing at Mesh Fix.
+register(NodeDef("MeshUnion", "mesh", "Mesh Union",
+    inputs=[Socket("shapes", WIRE_MESH, multiple=True)],
+    outputs=_mesh(),
+    code_template={"algebra": "_mesh_bool('union', {shapes})"},
+    description="Boolean union of meshes — fuses everything wired in. 0.1s on a "
+                "147k-triangle part, where the B-Rep lane needs 81s. Inputs must be "
+                "watertight (use Mesh Fix)."))
+
+register(NodeDef("MeshSubtract", "mesh", "Mesh Subtract",
+    inputs=[Socket("a", WIRE_MESH), Socket("b", WIRE_MESH, list_access=True)],
+    outputs=_mesh(),
+    code_template={"algebra": "_mesh_bool('subtract', {a}, {b})"},
+    description="Boolean difference A - B on meshes. `b` may be a single mesh or a "
+                "whole list of cutters (all subtracted)."))
+
+register(NodeDef("MeshIntersect", "mesh", "Mesh Intersect",
+    inputs=[Socket("a", WIRE_MESH), Socket("b", WIRE_MESH)],
+    outputs=_mesh(),
+    code_template={"algebra": "_mesh_bool('intersect', {a}, {b})"},
+    description="Boolean intersection A & B on meshes."))
+
+register(NodeDef("MeshSimplify", "mesh", "Mesh Simplify",
+    inputs=[Socket("mesh", WIRE_MESH)],
+    params=[_f("tolerance", 0.05, 0.001, 5.0, 0.01, label="tolerance (mm)"),
+            _f("max_error", 5.0, 0.1, 100.0, 0.5, label="max error (% vol)")],
+    outputs=_mesh(),
+    code_template={"algebra": "_mesh_simplify({mesh}, {tolerance}, {max_error})"},
+    description="Reduce triangle count within a BOUNDED deviation: `tolerance` is the "
+                "most any surface may move, in mm — say how much error you accept, not "
+                "how many triangles you want. 147k -> 35k triangles at 0.05mm costs "
+                "0.07s and 0.1% of the volume. Keep the tolerance BELOW the part's wall "
+                "thickness: above it, simplify tears thin walls apart. The node checks "
+                "its own result and fails loudly (volume moved past `max error`, or the "
+                "part came out in more pieces) rather than handing back a broken mesh."))
+
+register(NodeDef("MeshToSolid", "mesh", "Mesh to Solid",
+    inputs=[Socket("mesh", WIRE_MESH)],
+    params=[_i("max_tris", 20000, 100, 200000, label="max tris", soft_max=50000)],
+    outputs=_geo(),
+    code_template={"algebra": "_mesh_to_solid({mesh}, {max_tris})"},
+    description="The bridge BACK to the B-Rep lane: sew the triangles into a solid you "
+                "can Fillet/Shell/export as STEP. Know what you get — every triangle "
+                "becomes a planar FACE, so it is a faceted solid, not a reconstructed "
+                "CAD model: 35k triangles took 54s to sew and wrote a 92MB STEP; 147k "
+                "takes ~300s and cripples every boolean after it. Simplify first, and "
+                "the guard refuses above `max tris` rather than hanging. To get a REAL "
+                "parametric model out of a mesh, rebuild it with nodes (retroeng, "
+                "PLAN_RETROENG.md) — don't sew it."))
+
+
+# ===========================================================================
+# 12c. Print physics — how it lands, what it costs, where it breaks
+# ===========================================================================
+# A printed part is ANISOTROPIC: the bond between two layers is roughly a third to
+# two thirds as strong as the material within a layer. So the orientation is not a
+# convenience — it decides where the part breaks, and by how much. These four nodes
+# measure that (PLAN_PRINT_PHYSICS.md). They are heuristics, not an FEA: they catch
+# the dominant failure mode (the part splits at the glued interface with the least
+# area) and say nothing about a stress riser around a hole.
+
+register(NodeDef("PlaceOnBed", "print", "Place on Bed",
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_SURFACE, WIRE_MESH])],
+    params=[Param("center", "bool", "centre in XY", True, widget="checkbox"),
+            _f("clearance", 0.0, 0.0, 10, label="clearance")],
+    outputs=_geo(),
+    output_follows="shape",
+    code_template={"algebra": "_bed_drop({shape}, {center}, {clearance})"},
+    description="Sit the part on the bed: its lowest point goes to z=0. Works on both "
+                "lanes — a solid stays a solid, a mesh stays a mesh. It measures on the "
+                "tessellation rather than the bounding box on purpose: the fast OCCT box "
+                "is oversized (the live view marks its bbox `approx`), so a part dropped "
+                "by it hovers above the bed by up to 1% of its size — invisible on "
+                "screen, and a failed first layer."))
+
+register(NodeDef("Drop", "print", "Drop on Plane",
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_SURFACE, WIRE_MESH]),
+            Socket("plane", WIRE_PLANE, required=False)] + _pin("t"),
+    params=[_f("t", 1.0, 0.0, 1.0, step=0.01, label="timeline"),
+            Param("material", "select", "material", "plastic", widget="select",
+                  options=["plastic", "rubber", "steel", "wood", "lead", "clay"]),
+            Param("settle", "bool", "settle (topple)", True, widget="checkbox"),
+            Param("collide", "bool", "collide (stack)", False, widget="checkbox")],
+    outputs=_geo(),
+    output_follows="shape",
+    gizmo={"kind": "timeline", "binds": ["t"], "anchor": "preview", "lock": ["t"]},
+    code_template={"algebra": "_drop({shape}, {plane}, {t}, {material}, {settle}, {collide})"},
+    description="Place on Bed, but as a FALL you can scrub: drag `timeline` from 0 "
+                "(where the part is now) to 1 (at rest on the plane). The part drops "
+                "under gravity, BOUNCES — each impact keeps a fixed fraction of the "
+                "speed, set by `material`: rubber keeps going (e=0.85), plastic "
+                "clatters (0.55), lead lands with one dead thud (0.08), clay just "
+                "stops — and then, with `settle`, TOPPLES for real: if its centre of "
+                "mass is not over the contact patch it tips about the support edge, "
+                "rolls onto the next face of its hull, and repeats until it rests in "
+                "a genuinely stable pose (a cube dropped on its edge falls flat; a "
+                "sphere is left alone — rolling releases no energy and is not a "
+                "topple). t=1 is always fully at rest — material and topples change "
+                "the SHAPE of the journey, not its length. Falls along the wired "
+                "plane's normal (default: the bed, z=0). Wire a Number Slider into "
+                "`t` to drive several Drops from ONE timeline, or a list of times to "
+                "scatter the trajectory as a motion trail. With `collide` on, SEVERAL "
+                "shapes wired into this one node fall as ONE SCENE instead of a fan: "
+                "real rigid-body dynamics (pybullet), so they fall TOGETHER — colliding "
+                "in mid-air, pushing each other over, tumbling and stacking — simulated "
+                "once and recorded as keyframes the slider scrubs (and the browser "
+                "replays live). It costs real compute, hence the toggle. Each body is "
+                "its convex HULL (a bowl will not cradle a ball), and the pile is "
+                "deterministic for a given scene but chaotic like real falling — nudge "
+                "a part and it lands differently. Both lanes — a solid stays a solid."))
+
+register(NodeDef("PrintCheck", "print", "Print Check",
+    inputs=[Socket("mesh", WIRE_MESH)],
+    params=[_f("angle", 45, 20, 80, label="overhang angle"),
+            _f("layer", 0.2, 0.05, 1.0, label="layer height", step=0.05),
+            _f("clearance", 0.2, 0, 2, label="support gap", step=0.05)],
+    outputs=_data("report"),
+    code_template={"algebra": "_print_check({mesh}, {angle}, {layer}, {clearance})"},
+    description="The print report, as text — wire it into a Panel. Height and layer "
+                "count, bed contact, the support material in cm3 and grams (the REAL "
+                "volume — prisms under every overhang down to the bed, minus the part — "
+                "not an area), and WHERE IT WILL BREAK: the weak plane is the smallest "
+                "glued cross-section in the part, and a printed part comes apart at a "
+                "layer line before it breaks anywhere else. Put the part on the bed "
+                "first."))
+
+register(NodeDef("SupportVolume", "print", "Support Volume",
+    inputs=[Socket("mesh", WIRE_MESH)],
+    params=[_f("angle", 45, 20, 80, label="overhang angle"),
+            _f("layer", 0.2, 0.05, 1.0, label="layer height", step=0.05),
+            _f("clearance", 0.2, 0, 2, label="support gap", step=0.05)],
+    outputs=_mesh(),
+    code_template={"algebra": "_support_body({mesh}, {angle}, {layer}, {clearance})"},
+    description="The support material itself, as a BODY — drop a prism from every "
+                "overhanging triangle to the bed, union them, subtract the part (and the "
+                "part shifted down by `support gap`, which carves the clearance the "
+                "support must leave or it welds itself on). Preview it to see what you "
+                "are about to pay for, wire it into a Mesh Inspect for the volume, or "
+                "export it. This is the honest number that `area x height` only "
+                "gestures at: on a sphere of r=20 sitting on the bed it returns 1.63 cm3 "
+                "against 1.73 worked out with a pencil. ~0.6s on a 20k-triangle part."))
+
+register(NodeDef("OverhangFaces", "print", "Overhang Faces",
+    inputs=[Socket("mesh", WIRE_MESH)],
+    params=[_f("angle", 45, 20, 80, label="overhang angle"),
+            _f("layer", 0.2, 0.05, 1.0, label="layer height", step=0.05)],
+    outputs=_mesh(),
+    code_template={"algebra": "_overhang_faces({mesh}, {angle}, {layer})"},
+    description="Just the faces that will need support, as a mesh of their own — so the "
+                "viewer gives them their own colour and you SEE them on the part. The "
+                "faces resting ON the bed are excluded: a flat base points straight down "
+                "too, and calling that an overhang is the classic way to get this wrong. "
+                "It is an open patch, not a body — MeshInspect will say so, and it is "
+                "right to."))
+
+register(NodeDef("OrientForPrint", "print", "Orient for Print",
+    inputs=[Socket("mesh", WIRE_MESH),
+            Socket("load", WIRE_VECTOR, required=False)],
+    params=[_f("strength", 1.0, 0, 3, label="strength", step=0.1),
+            _f("supports", 1.0, 0, 3, label="fewer supports", step=0.1),
+            _f("speed", 0.3, 0, 3, label="speed (height)", step=0.1),
+            _f("angle", 45, 20, 80, label="overhang angle"),
+            _f("layer", 0.2, 0.05, 1.0, label="layer height", step=0.05),
+            _i("exact_below", 25000, 0, 200000, label="exact below (tris)",
+               soft_max=50000)],
+    outputs=[Socket("result", WIRE_MESH), Socket("report", WIRE_DATA)],
+    code_template={"algebra": ""},   # handled by the transpiler (_emit_orient), not a template
+    description="Try every stable resting pose (the faces of the convex hull the centre "
+                "of mass sits over — let go of the part and it stays), score each, and "
+                "return the winner already sitting on the bed. `report` is the table of "
+                "the top five, so you can see why. Wire a vector into `load` — the "
+                "direction the part will actually be pulled — and strength becomes the "
+                "real question: how much of that load crosses the layers instead of "
+                "running along them. With no load declared it falls back to maximising "
+                "the smallest glued cross-section. Support is the TRUE volume (a boolean "
+                "per pose) while the part is under `exact below` triangles, and the "
+                "area x height proxy above it — the report says which it used, all-or-"
+                "nothing, because ranking one pose by volume and the next by a proxy "
+                "would compare two different quantities and call it a decision. The "
+                "weights are a taste, not a law."))
+
 
 # ===========================================================================
 # 13. Export / IO

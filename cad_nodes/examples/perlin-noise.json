@@ -1,0 +1,336 @@
+{
+  "name": "perlin-noise",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "IntegerSlider",
+      "params": {
+        "value": 4,
+        "_ui": {
+          "value": {
+            "min": 1,
+            "max": 6,
+            "step": 1
+          }
+        }
+      },
+      "position": [
+        40,
+        200
+      ],
+      "preview": false
+    },
+    {
+      "id": "n2",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# PERLIN NOISE \u2014 random, but not RANDOM. Ken Perlin built this in 1983 for the film Tron,\n# and got an Oscar for it, because nobody could make a computer draw anything that looked\n# natural: everything came out either dead straight or full of static.\n#\n# The trick: do not put a random NUMBER at each point. Put a random DIRECTION at each\n# corner of a grid, and ask a point how well it agrees with the corners around it. Two\n# points close together share the same corners, so they must agree \u2014 the noise is forced\n# to be smooth. It is random and continuous at once, and that is what nature looks like.\noctaves = 4        #@param int min=1 max=6\npersistence = 0.5  #@param float min=0.15 max=0.9 step=0.05\nscale = 3.0        #@param float min=1 max=8 step=0.25\nseed = 11          #@param int min=1 max=999\nresolution = 44    #@param int min=16 max=64\nrng = random.Random(int(seed))\nperm = list(range(256))\nrng.shuffle(perm)\nperm += perm                                   # doubled, so the wrap-around needs no ifs\nGRAD = [(1, 1), (-1, 1), (1, -1), (-1, -1), (1, 0), (-1, 0), (0, 1), (0, -1)]\n\ndef _fade(t):\n    return t * t * t * (t * (t * 6 - 15) + 10)  # smooth at the corners in value AND slope,\n                                                # or the grid would show as a plaid of creases\ndef _dot(h, x, y):\n    gx, gy = GRAD[h & 7]\n    return gx * x + gy * y\n\ndef pnoise(x, y):\n    xi, yi = int(math.floor(x)) & 255, int(math.floor(y)) & 255\n    xf, yf = x - math.floor(x), y - math.floor(y)\n    u, v = _fade(xf), _fade(yf)\n    aa, ab = perm[perm[xi] + yi], perm[perm[xi] + yi + 1]\n    ba, bb = perm[perm[xi + 1] + yi], perm[perm[xi + 1] + yi + 1]\n    x1 = _dot(aa, xf, yf) + u * (_dot(ba, xf - 1, yf) - _dot(aa, xf, yf))\n    x2 = _dot(ab, xf, yf - 1) + u * (_dot(bb, xf - 1, yf - 1) - _dot(ab, xf, yf - 1))\n    return x1 + v * (x2 - x1)\n\n# OCTAVES: the same noise again at twice the frequency and a fraction of the height, over\n# and over. One octave is rolling hills. Four is a mountain range with boulders on it.\n# It is the same idea as a Fourier series (see `fourier-epicycles`), run backwards: build\n# detail by ADDING scales, instead of taking a shape apart into them.\ndef fbm(x, y):\n    total, freq, amp, norm = 0.0, 1.0, 1.0, 0.0\n    for _ in range(int(octaves)):\n        total += pnoise(x * freq, y * freq) * amp\n        norm += amp\n        freq *= 2.0\n        amp *= float(persistence)\n    return total / norm\n\nN = int(resolution)\nS = float(scale)\nh = [[fbm(i / N * S, j / N * S) for j in range(N)] for i in range(N)]\nlo = min(min(r) for r in h)\nhi = max(max(r) for r in h)\nresult = {\"h\": h, \"N\": N, \"lo\": lo, \"hi\": hi, \"octaves\": int(octaves),\n          \"persistence\": float(persistence), \"seed\": int(seed),\n          \"W\": 130.0, \"AMP\": 26.0, \"SEA\": 0.42}\n"
+      },
+      "position": [
+        330,
+        190
+      ],
+      "preview": false
+    },
+    {
+      "id": "n3",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# A SEA. Nothing in the noise says \"island\" \u2014 the sea is just a plane, and everything the\n# noise happened to push above it becomes a coastline. Drag `sea_level` and continents\n# appear and drown, out of numbers that never changed.\nsea_level = 0.42   #@param float min=0 max=1 step=0.02\nD = in_0\nW, AMP = D[\"W\"], D[\"AMP\"]\nz = (float(sea_level) - 0.5) * AMP\nresult = Pos(0, 0, z - 0.35) * Box(W + 14, W + 14, 0.7)\n"
+      },
+      "position": [
+        700,
+        240
+      ],
+      "preview": true
+    },
+    {
+      "id": "n4",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# WHITE NOISE, for comparison: a fresh random number at every point, over the same range.\n# This is what \"random\" actually looks like, and it looks like nothing. No valleys, no\n# ridges, no coastlines \u2014 because neighbouring points were never made to agree about\n# anything. Smoothness is not a cosmetic touch on top of randomness. It IS the invention.\nD = in_0\nrng2 = random.Random(D[\"seed\"] * 977)\nM = 22\nresult = [max(rng2.random() * D[\"AMP\"] * 0.82, 0.3) for _ in range(M * M)]\n"
+      },
+      "position": [
+        700,
+        400
+      ],
+      "preview": false
+    },
+    {
+      "id": "n5",
+      "type": "CodeBlock",
+      "params": {
+        "code": "D = in_0\nrng2 = random.Random(D[\"seed\"] * 977)\nM, W, AMP = 22, D[\"W\"], D[\"AMP\"]\nX0 = W / 2 + 34\nc = 64.0 / M\nresult = [Vector(X0 + i * c, -32 + j * c, max(rng2.random() * AMP * 0.82, 0.3) / 2 - AMP / 2)\n          for i in range(M) for j in range(M)]\n"
+      },
+      "position": [
+        700,
+        530
+      ],
+      "preview": false
+    },
+    {
+      "id": "n6",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        950,
+        400
+      ],
+      "preview": false
+    },
+    {
+      "id": "n7",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        950,
+        530
+      ],
+      "preview": false
+    },
+    {
+      "id": "n8",
+      "type": "Box",
+      "params": {
+        "width": 2.4,
+        "height": 2.4,
+        "depth": 10
+      },
+      "position": [
+        1120,
+        400
+      ],
+      "preview": true
+    },
+    {
+      "id": "n9",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE TERRAIN \u2014 as TRIANGLES, not as a B-Rep surface, and that is not a shortcut.\n# `Face.make_surface_from_array_of_points` INTERPOLATES: it fits a spline that must pass\n# exactly through every sample, and asked to do that on rough data it rings like a struck\n# bell \u2014 a 44x44 Perlin field sends it to +-45,000 mm from numbers that live inside +-13.\n# A landscape is not a smooth analytic function, and it should not be asked to pretend it\n# is one. It is triangles. (This is noodle's mesh lane: see PLAN_MESH_LANE.md.)\n#\n# Top skin from the height field, a flat floor under it, four walls between \u2014 closed,\n# watertight, and printable.\nbase = -18.0   #@param float min=-40 max=-4 step=1\nimport trimesh\nD = in_0\nN, W, AMP = D[\"N\"], D[\"W\"], D[\"AMP\"]\nh, lo, hi = D[\"h\"], D[\"lo\"], D[\"hi\"]\nrg = (hi - lo) or 1.0\ndef _v(i, j, z):\n    return (-W / 2 + i / (N - 1) * W, -W / 2 + j / (N - 1) * W, z)\nverts, idx = [], {}\nfor tag, zf in ((\"t\", lambda i, j: ((h[i][j] - lo) / rg - 0.5) * AMP),\n                (\"b\", lambda i, j: float(base))):\n    for i in range(N):\n        for j in range(N):\n            idx[(tag, i, j)] = len(verts)\n            verts.append(_v(i, j, zf(i, j)))\nF = []\nfor i in range(N - 1):\n    for j in range(N - 1):\n        a, b, c, d = (idx[(\"t\", i, j)], idx[(\"t\", i + 1, j)],\n                      idx[(\"t\", i + 1, j + 1)], idx[(\"t\", i, j + 1)])\n        F += [[a, b, c], [a, c, d]]                     # the skin, facing up\n        a, b, c, d = (idx[(\"b\", i, j)], idx[(\"b\", i + 1, j)],\n                      idx[(\"b\", i + 1, j + 1)], idx[(\"b\", i, j + 1)])\n        F += [[a, c, b], [a, d, c]]                     # the floor, facing down\nfor i in range(N - 1):                                  # two walls along y\n    for jj, flip in ((0, True), (N - 1, False)):\n        t0, t1 = idx[(\"t\", i, jj)], idx[(\"t\", i + 1, jj)]\n        b0, b1 = idx[(\"b\", i, jj)], idx[(\"b\", i + 1, jj)]\n        F += ([[t0, b0, b1], [t0, b1, t1]] if flip else [[t0, b1, b0], [t0, t1, b1]])\nfor j in range(N - 1):                                  # ...and two along x\n    for ii, flip in ((0, False), (N - 1, True)):\n        t0, t1 = idx[(\"t\", ii, j)], idx[(\"t\", ii, j + 1)]\n        b0, b1 = idx[(\"b\", ii, j)], idx[(\"b\", ii, j + 1)]\n        F += ([[t0, b0, b1], [t0, b1, t1]] if flip else [[t0, b1, b0], [t0, t1, b1]])\n# process=False on purpose \u2014 see PLAN_MESH_LANE.md: trimesh's default re-merge silently\n# breaks an already-welded manifold.\nresult = Mesh(trimesh.Trimesh(vertices=verts, faces=F, process=False))\n"
+      },
+      "position": [
+        700,
+        90
+      ],
+      "preview": false
+    },
+    {
+      "id": "n10",
+      "type": "MeshFix",
+      "params": {
+        "min_body": 16,
+        "fill_holes": true
+      },
+      "position": [
+        1000,
+        90
+      ],
+      "preview": true
+    },
+    {
+      "id": "n11",
+      "type": "MeshInspect",
+      "params": {},
+      "position": [
+        1250,
+        90
+      ],
+      "preview": false
+    },
+    {
+      "id": "n12",
+      "type": "Display",
+      "params": {},
+      "position": [
+        1450,
+        90
+      ],
+      "preview": false
+    },
+    {
+      "id": "n13",
+      "type": "CodeBlock",
+      "params": {
+        "code": "D = in_0\namp, det = 1.0, []\nfor o in range(D[\"octaves\"]):\n    det.append(f\"{amp:.2f}\")\n    amp *= D[\"persistence\"]\nresult = (f\"octaves: {D['octaves']}   persistence: {D['persistence']:.2f}\\n\"\n          f\"each octave is twice the detail at {D['persistence']:.2f} of the height: \"\n          + \" + \".join(det) + \"\\n\"\n          f\"one function, {D['N'] * D['N']:,} samples, no data \u2014 the mountain is not \"\n          f\"stored anywhere. It is computed.\")\n"
+      },
+      "position": [
+        700,
+        680
+      ],
+      "preview": false
+    },
+    {
+      "id": "n14",
+      "type": "Display",
+      "params": {},
+      "position": [
+        1000,
+        680
+      ],
+      "preview": false
+    },
+    {
+      "id": "n15",
+      "type": "CodeBlock",
+      "params": {
+        "code": "size = 4.2  #@param float min=2 max=12 step=0.2\nD = in_0\nW = D[\"W\"]\ndef _flat(s, x, y, fs):\n    return extrude(Pos(x, y, D[\"AMP\"] * 0.62) * Text(s, font_size=fs), amount=0.8)\nout = [_flat(\"PERLIN NOISE\", -12, W / 2 + 26, size * 1.9),\n       _flat(f\"{D['octaves']} octaves, persistence {D['persistence']:.2f}\",\n             -12, W / 2 + 14, size * 1.05),\n       _flat(\"smooth: random, and continuous\", -W / 2 + 30, -W / 2 - 12, size),\n       _flat(\"white noise: random, and nothing else\", W / 2 + 66, -W / 2 - 12, size)]\nresult = out\n"
+      },
+      "position": [
+        1400,
+        300
+      ],
+      "preview": true
+    },
+    {
+      "id": "n16",
+      "type": "Note",
+      "params": {
+        "text": "RANDOM, BUT NOT RANDOM.\n\nOn the right is what \"random\" actually looks like: a fresh number at every point. Static. It has no valleys, no ridges, no coastlines, and it never will, because no two neighbouring points were ever made to agree about anything.\n\nOn the left is Perlin noise, and it is a landscape. The difference is one idea, and Ken Perlin got an Academy Award for it: do not put a random NUMBER at each point \u2014 put a random DIRECTION at each corner of a grid, and ask each point how much it agrees with the corners around it. Two nearby points share the same corners, so they are FORCED to agree. Randomness and continuity at the same time. That is what nature looks like, and until 1983 nobody could make a computer draw it.\n\nTRY THIS \u2014 drag `octaves` from 1 to 6.\nOne octave is bare rolling hills \u2014 smooth, and far too smooth to be a mountain. Each octave adds the same noise again at twice the frequency and a fraction of the height (that fraction is `persistence`): ridges get boulders, boulders get gravel. It is a Fourier series run backwards \u2014 building detail by ADDING scales instead of taking a shape apart into them. Push `persistence` up towards 0.9 and the small stuff stops being small: the landscape turns into a jagged, alien thing. Down at 0.2 the detail is a whisper and you are back to hills.\n\nNothing here says \"island\". The sea is just a flat plane, and every coastline you can see is an accident of where the noise happened to cross it. Drag `sea_level` and continents surface and drown, out of numbers that never changed.\n\nAnd the mountain is not stored anywhere. There is no heightmap, no file, no data \u2014 there is a function, and 44 x 44 places where somebody asked it a question. That is what \"procedural\" means, and it is why a game can hold a planet in a few kilobytes. It is also a real B-Rep solid: unlike most of this family of examples, you can print it."
+      },
+      "position": [
+        1400,
+        560
+      ],
+      "preview": false
+    }
+  ],
+  "connections": [
+    {
+      "id": "l1",
+      "from_node": "n1",
+      "from_socket": "result",
+      "to_node": "n2",
+      "to_socket": "octaves"
+    },
+    {
+      "id": "l2",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n3",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l3",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n4",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l4",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n5",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l5",
+      "from_node": "n4",
+      "from_socket": "result",
+      "to_node": "n6",
+      "to_socket": "items"
+    },
+    {
+      "id": "l6",
+      "from_node": "n5",
+      "from_socket": "result",
+      "to_node": "n7",
+      "to_socket": "items"
+    },
+    {
+      "id": "l7",
+      "from_node": "n6",
+      "from_socket": "result",
+      "to_node": "n8",
+      "to_socket": "depth"
+    },
+    {
+      "id": "l8",
+      "from_node": "n7",
+      "from_socket": "result",
+      "to_node": "n8",
+      "to_socket": "origin"
+    },
+    {
+      "id": "l9",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n9",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l10",
+      "from_node": "n9",
+      "from_socket": "result",
+      "to_node": "n10",
+      "to_socket": "mesh"
+    },
+    {
+      "id": "l11",
+      "from_node": "n9",
+      "from_socket": "result",
+      "to_node": "n11",
+      "to_socket": "mesh"
+    },
+    {
+      "id": "l12",
+      "from_node": "n11",
+      "from_socket": "report",
+      "to_node": "n12",
+      "to_socket": "value"
+    },
+    {
+      "id": "l13",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n13",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l14",
+      "from_node": "n13",
+      "from_socket": "result",
+      "to_node": "n14",
+      "to_socket": "value"
+    },
+    {
+      "id": "l15",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n15",
+      "to_socket": "in_0"
+    }
+  ],
+  "groups": [
+    {
+      "title": "1 - HOW MUCH DETAIL",
+      "bounding": [
+        10,
+        140,
+        260,
+        200
+      ],
+      "color": "#3f589e"
+    },
+    {
+      "title": "2 - THE NOISE",
+      "bounding": [
+        300,
+        130,
+        350,
+        460
+      ],
+      "color": "#8a5a2c"
+    },
+    {
+      "title": "3 - A LANDSCAPE, AND A PILE OF STATIC",
+      "bounding": [
+        670,
+        20,
+        640,
+        780
+      ],
+      "color": "#2c7a52"
+    }
+  ]
+}

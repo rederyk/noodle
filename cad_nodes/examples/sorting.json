@@ -1,0 +1,363 @@
+{
+  "name": "sorting",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "IntegerSlider",
+      "params": {
+        "value": 0,
+        "_ui": {
+          "value": {
+            "min": 0,
+            "max": 3,
+            "step": 1
+          }
+        }
+      },
+      "position": [
+        40,
+        200
+      ],
+      "preview": false
+    },
+    {
+      "id": "n2",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# FOUR WAYS TO SORT THE SAME BARS, and they all end in the same place. What differs is\n# how much WORK they do to get there \u2014 and that difference is not a detail, it is the\n# whole of what \"an algorithm\" means.\n#\n# Every algorithm below is written to record a frame at each COMPARISON: the array as it\n# stands, and the two bars it is looking at. `step` scrubs through those frames, so the\n# slider is not an animation of the code \u2014 it IS the code, stopped.\nn = 12      #@param int min=6 max=20\nalgo = 0    #@param int min=0 max=3\nstep = 30   #@param int min=0 max=400\nseed = 5    #@param int min=1 max=999\nNAMES = [\"bubble\", \"insertion\", \"selection\", \"quicksort\"]\n\ndef _run(kind, a, rec=True):\n    a = list(a)\n    frames = []                                  # (snapshot, i, j) at every comparison\n    tally = [0]\n    def cmp(i, j):\n        tally[0] += 1\n        if rec:                                  # counting 20,000 comparisons is free;\n            frames.append((list(a), i, j))       # photographing all of them is not\n    if kind == 0:                                # BUBBLE: swap neighbours until nobody is\n        for p in range(len(a)):                  # out of order. The dumbest thing that works.\n            done = True\n            for i in range(len(a) - 1 - p):\n                cmp(i, i + 1)\n                if a[i] > a[i + 1]:\n                    a[i], a[i + 1] = a[i + 1], a[i]\n                    done = False\n            if done:\n                break\n    elif kind == 1:                              # INSERTION: how you sort a hand of cards.\n        for i in range(1, len(a)):               # Fast when the data is nearly sorted already.\n            j = i\n            while j > 0:\n                cmp(j - 1, j)\n                if a[j - 1] <= a[j]:\n                    break\n                a[j - 1], a[j] = a[j], a[j - 1]\n                j -= 1\n    elif kind == 2:                              # SELECTION: find the smallest, put it first.\n        for i in range(len(a)):                  # Always n^2/2 comparisons \u2014 it cannot get lucky.\n            m = i\n            for j in range(i + 1, len(a)):\n                cmp(m, j)\n                if a[j] < a[m]:\n                    m = j\n            a[i], a[m] = a[m], a[i]\n    else:                                        # QUICKSORT: split around a pivot, and never\n        stack = [(0, len(a) - 1)]                # compare across the split again. That is the\n        while stack:                             # whole trick, and it is worth n^2 -> n log n.\n            lo, hi = stack.pop()\n            if lo >= hi:\n                continue\n            pivot, i = a[hi], lo\n            for j in range(lo, hi):\n                cmp(j, hi)\n                if a[j] <= pivot:\n                    a[i], a[j] = a[j], a[i]\n                    i += 1\n            a[i], a[hi] = a[hi], a[i]\n            stack.extend([(lo, i - 1), (i + 1, hi)])\n    frames.append((list(a), -1, -1))             # the last frame: sorted, nothing to look at\n    return a, frames, tally[0]\n\nrng = random.Random(int(seed))\nstart = [rng.randint(2, 26) for _ in range(int(n))]\ncosts = {k: _run(k, start, rec=False)[2] for k in range(4)}\n# ...and the same four, on two hundred numbers. Nothing is drawn for these: they are here\n# because the gap between n^2 and n log n does not become visible at twelve. It becomes\n# visible at two hundred, and it becomes fatal long before a million.\nbig = [rng.randint(2, 999) for _ in range(200)]\ncosts200 = {k: _run(k, big, rec=False)[2] for k in range(4)}\nfinal, frames, _ = _run(int(algo), start)\nk = min(max(int(step), 0), len(frames) - 1)\narr, ai, aj = frames[k]\nresult = {\"arr\": arr, \"i\": ai, \"j\": aj, \"k\": k, \"frames\": len(frames) - 1,\n          \"costs\": costs, \"costs200\": costs200, \"name\": NAMES[int(algo)], \"algo\": int(algo), \"n\": int(n),\n          \"done\": k >= len(frames) - 1, \"W\": 108.0, \"H\": 2.4}\n"
+      },
+      "position": [
+        330,
+        190
+      ],
+      "preview": false
+    },
+    {
+      "id": "n3",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE TWO BARS IT IS LOOKING AT RIGHT NOW. Everything an algorithm does, it does by\n# comparing two things \u2014 and this is the pair, at step k. Nothing else on the screen is\n# under its eye at this instant.\nD = in_0\nresult = [max(D[\"arr\"][x] * D[\"H\"], 0.3) for x in (D[\"i\"], D[\"j\"]) if x >= 0]\n"
+      },
+      "position": [
+        700,
+        60
+      ],
+      "preview": false
+    },
+    {
+      "id": "n4",
+      "type": "CodeBlock",
+      "params": {
+        "code": "D = in_0\nW, H = D[\"W\"], D[\"H\"]\ncell = W / len(D[\"arr\"])\nresult = [Vector(-W / 2 + (x + 0.5) * cell, 0, max(D[\"arr\"][x] * H, 0.3) / 2)\n          for x in (D[\"i\"], D[\"j\"]) if x >= 0]\n"
+      },
+      "position": [
+        700,
+        190
+      ],
+      "preview": false
+    },
+    {
+      "id": "n5",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        950,
+        60
+      ],
+      "preview": false
+    },
+    {
+      "id": "n6",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        950,
+        190
+      ],
+      "preview": false
+    },
+    {
+      "id": "n7",
+      "type": "Box",
+      "params": {
+        "width": 8.4,
+        "height": 8.4,
+        "depth": 10
+      },
+      "position": [
+        1120,
+        60
+      ],
+      "preview": true
+    },
+    {
+      "id": "n8",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE BILL. The same twelve numbers, sorted four ways, and the columns are how many\n# comparisons each way needed. They all produce the identical answer. One of them does it\n# for a fraction of the price, and the gap is not 20% \u2014 drag `n` and watch it become a\n# chasm.\nD = in_0\nout = []\nmx = max(D[\"costs\"].values()) or 1\nfor a in range(4):\n    h = max(D[\"costs\"][a] / mx * 40.0, 0.4)\n    out.append(Pos(72.0, -30 + a * 15.0, h / 2) * Box(9, 9, h))\nresult = out\n"
+      },
+      "position": [
+        700,
+        330
+      ],
+      "preview": true
+    },
+    {
+      "id": "n9",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE ARRAY, as it stands at step k. Last of the geometry on purpose: the \"pair under the\n# eye\" above is legitimately empty on the final frame, when there is nothing left to\n# compare, and __result__ is the last GEOMETRY node.\nD = in_0\nresult = [max(v * D[\"H\"], 0.3) for v in D[\"arr\"]]\n"
+      },
+      "position": [
+        700,
+        470
+      ],
+      "preview": false
+    },
+    {
+      "id": "n10",
+      "type": "CodeBlock",
+      "params": {
+        "code": "D = in_0\nW, H = D[\"W\"], D[\"H\"]\ncell = W / len(D[\"arr\"])\nresult = [Vector(-W / 2 + (i + 0.5) * cell, 0, max(v * H, 0.3) / 2)\n          for i, v in enumerate(D[\"arr\"])]\n"
+      },
+      "position": [
+        700,
+        600
+      ],
+      "preview": false
+    },
+    {
+      "id": "n11",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        950,
+        470
+      ],
+      "preview": false
+    },
+    {
+      "id": "n12",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        950,
+        600
+      ],
+      "preview": false
+    },
+    {
+      "id": "n13",
+      "type": "Box",
+      "params": {
+        "width": 6.4,
+        "height": 6.4,
+        "depth": 10
+      },
+      "position": [
+        1120,
+        470
+      ],
+      "preview": true
+    },
+    {
+      "id": "n14",
+      "type": "CodeBlock",
+      "params": {
+        "code": "D = in_0\nNAMES = [\"bubble\", \"insertion\", \"selection\", \"quicksort\"]\nc = D[\"costs\"]\nlines = [f\"{D['name']}   step {D['k']} of {D['frames']}\"\n         + (\"   \u2014 SORTED\" if D[\"done\"] else f\"   (comparing {D['i']} and {D['j']})\"),\n         \"comparisons on these \" + str(D[\"n\"]) + \" numbers:\"]\nlines += [f\"   {NAMES[a]:<10s} {c[a]:5d}\" + (\"   <-- you are here\" if a == D[\"algo\"] else \"\")\n          for a in range(4)]\nc2 = D[\"costs200\"]\nlines.append(\"\")\nlines.append(\"the same four, on 200 numbers (nothing is drawn \u2014 just counted):\")\nlines += [f\"   {NAMES[a]:<10s} {c2[a]:7,d}\" for a in range(4)]\nlines.append(f\"   ratio: {c2[0] / max(c2[3], 1):.0f}x  \u2014  and it grows with every number \"\n             \"you add\")\nresult = \"\\n\".join(lines)\n"
+      },
+      "position": [
+        700,
+        740
+      ],
+      "preview": false
+    },
+    {
+      "id": "n15",
+      "type": "Display",
+      "params": {},
+      "position": [
+        1000,
+        740
+      ],
+      "preview": false
+    },
+    {
+      "id": "n16",
+      "type": "CodeBlock",
+      "params": {
+        "code": "size = 3.6  #@param float min=2 max=10 step=0.2\nD = in_0\nNAMES = [\"bubble\", \"insertion\", \"selection\", \"quicksort\"]\ndef _up(s, x, z, fs):\n    return extrude(Pos(x, 12, z) * (Plane.XZ * Text(s, font_size=fs)), amount=0.6)\ndef _flat(s, x, y, fs):\n    return extrude(Pos(x, y, 0) * Text(s, font_size=fs), amount=0.6)\nhead = (\"sorted \u2014 and it will not touch them again\" if D[\"done\"]\n        else f\"step {D['k']} of {D['frames']}: comparing two bars\")\nout = [_up(\"SORTING, ONE COMPARISON AT A TIME\", -6, 78, size * 1.7),\n       _up(f\"{D['name']}  \u2014  {head}\", -6, 68, size * 1.15),\n       _up(\"comparisons\", 72, 50, size * 1.1)]\nfor a in range(4):\n    out.append(_flat(f\"{NAMES[a]}: {D['costs'][a]}\", 100, -30 + a * 15.0, size * 0.85))\nresult = out\n"
+      },
+      "position": [
+        1400,
+        380
+      ],
+      "preview": true
+    },
+    {
+      "id": "n17",
+      "type": "Note",
+      "params": {
+        "text": "THE SAME ANSWER, AT FOUR DIFFERENT PRICES.\n\nTwelve numbers, four algorithms, one slider. `step` (on the Code Block) scrubs through the run: every frame is one COMPARISON, with the two bars under the eye drawn in their own colour. That is all any of these algorithms ever does \u2014 look at two numbers and decide which is bigger. Everything else is bookkeeping.\n\nDrag `step` from 0 to the end and watch the bars settle. Then switch `algo` and watch a completely different route to the identical destination:\n0 BUBBLE \u2014 swap neighbours until nobody is out of order. The dumbest thing that works, and it takes forever.\n1 INSERTION \u2014 how you sort a hand of cards. Nearly-sorted data barely costs it anything, which is why real sorting libraries fall back to it on small chunks.\n2 SELECTION \u2014 find the smallest, put it first, repeat. It always costs n\u00b2/2 comparisons: it cannot get lucky, and it cannot get unlucky either.\n3 QUICKSORT \u2014 split the array around a pivot, and never compare across the split again. That single refusal is worth the whole difference between n\u00b2 and n log n.\n\nThe four columns on the right are the bill: how many comparisons each one needed on THESE twelve numbers. At twelve, honestly, nobody cares \u2014 bubble asks 66 and quicksort 40, and any of them would do. The Panel underneath quietly runs all four on TWO HUNDRED numbers instead, and there the polite little gap has become 19,900 against about 1,500. Add a zero to the input and the gap squares itself again.\n\nThat is what \"n\u00b2 versus n log n\" means when it stops being a phrase in a textbook. It is not that the slow algorithm is slow. It is that it stops being an option at all, at a size the fast one has not even noticed.\n\nThe answer was never in doubt. Choosing how to get there is the entire discipline."
+      },
+      "position": [
+        1400,
+        640
+      ],
+      "preview": false
+    }
+  ],
+  "connections": [
+    {
+      "id": "l1",
+      "from_node": "n1",
+      "from_socket": "result",
+      "to_node": "n2",
+      "to_socket": "algo"
+    },
+    {
+      "id": "l2",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n3",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l3",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n4",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l4",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n5",
+      "to_socket": "items"
+    },
+    {
+      "id": "l5",
+      "from_node": "n4",
+      "from_socket": "result",
+      "to_node": "n6",
+      "to_socket": "items"
+    },
+    {
+      "id": "l6",
+      "from_node": "n5",
+      "from_socket": "result",
+      "to_node": "n7",
+      "to_socket": "depth"
+    },
+    {
+      "id": "l7",
+      "from_node": "n6",
+      "from_socket": "result",
+      "to_node": "n7",
+      "to_socket": "origin"
+    },
+    {
+      "id": "l8",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n8",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l9",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n9",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l10",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n10",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l11",
+      "from_node": "n9",
+      "from_socket": "result",
+      "to_node": "n11",
+      "to_socket": "items"
+    },
+    {
+      "id": "l12",
+      "from_node": "n10",
+      "from_socket": "result",
+      "to_node": "n12",
+      "to_socket": "items"
+    },
+    {
+      "id": "l13",
+      "from_node": "n11",
+      "from_socket": "result",
+      "to_node": "n13",
+      "to_socket": "depth"
+    },
+    {
+      "id": "l14",
+      "from_node": "n12",
+      "from_socket": "result",
+      "to_node": "n13",
+      "to_socket": "origin"
+    },
+    {
+      "id": "l15",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n14",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l16",
+      "from_node": "n14",
+      "from_socket": "result",
+      "to_node": "n15",
+      "to_socket": "value"
+    },
+    {
+      "id": "l17",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n16",
+      "to_socket": "in_0"
+    }
+  ],
+  "groups": [
+    {
+      "title": "1 - WHICH ALGORITHM",
+      "bounding": [
+        10,
+        140,
+        260,
+        200
+      ],
+      "color": "#3f589e"
+    },
+    {
+      "title": "2 - THE ALGORITHM, FRAME BY FRAME",
+      "bounding": [
+        300,
+        130,
+        350,
+        460
+      ],
+      "color": "#8a5a2c"
+    },
+    {
+      "title": "3 - THE BARS, AND THE BILL",
+      "bounding": [
+        670,
+        10,
+        640,
+        850
+      ],
+      "color": "#2c7a52"
+    }
+  ]
+}

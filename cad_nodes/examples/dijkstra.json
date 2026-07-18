@@ -1,0 +1,419 @@
+{
+  "name": "dijkstra",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "IntegerSlider",
+      "params": {
+        "value": 0,
+        "_ui": {
+          "value": {
+            "min": 0,
+            "max": 2,
+            "step": 1
+          }
+        }
+      },
+      "position": [
+        40,
+        200
+      ],
+      "preview": false
+    },
+    {
+      "id": "n2",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE SHORTEST PATH ACROSS A LANDSCAPE. Each cell costs what it is tall \u2014 a mountain is\n# expensive, a valley is cheap \u2014 and you want the cheapest way from the near corner to\n# the far one. All three algorithms below are the SAME loop with one line changed: which\n# cell do you open next?\n#\n# 0 DIJKSTRA:      the cheapest one so far.               (cost = g)\n# 1 A*:            the cheapest one so far, plus a guess\n#                  of what is left to go.                 (cost = g + h)\n# 2 GREEDY:        whichever LOOKS closest to the goal.   (cost = h)\n#\n# Dijkstra is blind but honest: it will not go anywhere until it has ruled out everywhere\n# cheaper, so it spreads in a circle. A* is given a hint \u2014 the straight-line distance \u2014\n# and leans towards the goal, opening a corridor instead of a disc. Both find the SAME\n# best path, because the hint never over-promises (it cannot: no route is shorter than\n# the straight line). Greedy drops the g and just runs downhill towards the goal \u2014 it\n# opens almost nothing, and its path is not the best one. Two out of three, pick two.\nimport heapq, itertools\nsize = 22       #@param int min=10 max=28\nmode = 0        #@param int min=0 max=2\nroughness = 1.0 #@param float min=0 max=2.5 step=0.1\nwall = 8.0      #@param float min=0 max=14 step=0.5\nseed = 8        #@param int min=1 max=999\nN = int(size)\nrng = random.Random(int(seed))\n# Mountains: a handful of narrow peaks on a plain that mostly costs 1. That plain is not\n# decoration \u2014 it is what makes the straight-line guess a GOOD guess, and a good guess is\n# the whole of A*'s advantage. Flood the map with cost and the hint stops meaning anything\n# (raise `roughness` and watch A* slide back towards Dijkstra).\nhills = [(rng.uniform(0, N), rng.uniform(0, N), rng.uniform(4, 10), rng.uniform(1.1, 1.9))\n         for _ in range(6)]\n# ...and a RIDGE right across the diagonal, with a single pass through it near one corner.\n# Without a barrier, \"towards the goal\" and \"the best way\" happen to agree, and greedy\n# looks clever by accident.\ngx = 0.2 * N\ncost = [[1.0\n         + float(roughness) * sum(h * math.exp(-((x - hx) ** 2 + (y - hy) ** 2) / (2 * s * s))\n                                  for hx, hy, h, s in hills)\n         + float(wall) * math.exp(-((x + y - (N - 1)) ** 2) / (2 * 1.1 ** 2))\n                       * (1.0 - math.exp(-((x - gx) ** 2) / (2 * 1.5 ** 2)))\n         for y in range(N)] for x in range(N)]\nstart, goal = (0, 0), (N - 1, N - 1)\n\ndef _search(kind):\n    g_ = {start: 0.0}\n    prev, seen, order = {}, set(), []\n    tick = itertools.count()                                 # ties: first come, first served.\n    def h(c):                                                # (break them by cost and greedy\n        return abs(c[0] - goal[0]) + abs(c[1] - goal[1])     # is secretly Dijkstra again)\n    pq = [(0.0, next(tick), 0.0, start)]                     # h never over-promises: every\n    while pq:                                                # step costs at least 1\n        _, _, gc, c = heapq.heappop(pq)\n        if c in seen:\n            continue\n        seen.add(c)\n        order.append(c)                       # the order cells were OPENED = the search's shape\n        if c == goal:\n            break\n        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):\n            nx, ny = c[0] + dx, c[1] + dy\n            if not (0 <= nx < N and 0 <= ny < N) or (nx, ny) in seen:\n                continue\n            ng = gc + cost[nx][ny]\n            if ng < g_.get((nx, ny), 1e18):\n                g_[(nx, ny)] = ng\n                prev[(nx, ny)] = c\n                key = ng if kind == 0 else (ng + h((nx, ny)) if kind == 1 else h((nx, ny)))\n                heapq.heappush(pq, (key, next(tick), ng, (nx, ny)))\n    path, c = [], goal\n    while c in prev or c == start:\n        path.append(c)\n        if c == start:\n            break\n        c = prev[c]\n    path.reverse()\n    # what the path ACTUALLY cost to walk \u2014 not what the queue thought at the time. Greedy\n    # never keeps an honest running total, so asking it would be asking the wrong witness.\n    walked = sum(cost[x][y] for x, y in path[1:])\n    return {\"order\": order, \"path\": path, \"cost\": walked}\n\nruns = [_search(k) for k in range(3)]\nR = runs[int(mode)]\nNAMES = [\"Dijkstra\", \"A*\", \"greedy best-first\"]\nresult = {\"N\": N, \"cost\": cost, \"order\": R[\"order\"], \"path\": R[\"path\"],\n          \"opened\": len(R[\"order\"]), \"total\": R[\"cost\"], \"mode\": int(mode),\n          \"name\": NAMES[int(mode)],\n          \"stats\": [(NAMES[k], len(runs[k][\"order\"]), runs[k][\"cost\"]) for k in range(3)],\n          \"C\": 6.0, \"HZ\": 3.4}      # mm per cell, mm per unit of cost\n"
+      },
+      "position": [
+        330,
+        190
+      ],
+      "preview": false
+    },
+    {
+      "id": "n3",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# EVERY CELL THE SEARCH OPENED. Not the answer \u2014 the WORK. This is the part of the\n# landscape the algorithm had to think about before it could be sure, and it is the only\n# thing that separates the three of them.\nD = in_0\nresult = [max(D[\"cost\"][x][y] * D[\"HZ\"], 0.4) + 2.5 for x, y in D[\"order\"]]\n"
+      },
+      "position": [
+        700,
+        60
+      ],
+      "preview": false
+    },
+    {
+      "id": "n4",
+      "type": "CodeBlock",
+      "params": {
+        "code": "D = in_0\nN, C, HZ = D[\"N\"], D[\"C\"], D[\"HZ\"]\noff = (N - 1) * C / 2\nresult = [Vector(x * C - off, y * C - off, (max(D[\"cost\"][x][y] * HZ, 0.4) + 2.5) / 2)\n          for x, y in D[\"order\"]]\n"
+      },
+      "position": [
+        700,
+        190
+      ],
+      "preview": false
+    },
+    {
+      "id": "n5",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        950,
+        60
+      ],
+      "preview": false
+    },
+    {
+      "id": "n6",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        950,
+        190
+      ],
+      "preview": false
+    },
+    {
+      "id": "n7",
+      "type": "Box",
+      "params": {
+        "width": 5.2,
+        "height": 5.2,
+        "depth": 10
+      },
+      "position": [
+        1120,
+        60
+      ],
+      "preview": true
+    },
+    {
+      "id": "n8",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE PATH. Dijkstra and A* return the same one, every time, whatever the terrain \u2014 the\n# hint changed how hard they looked, not what they found. Greedy's is a different path,\n# and a worse one.\nD = in_0\nN, C, HZ = D[\"N\"], D[\"C\"], D[\"HZ\"]\noff = (N - 1) * C / 2\nresult = [Vector(x * C - off, y * C - off, D[\"cost\"][x][y] * HZ + 4.0)\n          for x, y in D[\"path\"]]\n"
+      },
+      "position": [
+        700,
+        330
+      ],
+      "preview": false
+    },
+    {
+      "id": "n9",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        950,
+        330
+      ],
+      "preview": false
+    },
+    {
+      "id": "n10",
+      "type": "Sphere",
+      "params": {
+        "radius": 1.9,
+        "arc": 360
+      },
+      "position": [
+        1120,
+        330
+      ],
+      "preview": true
+    },
+    {
+      "id": "n11",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# where you are, and where you are going\nD = in_0\nN, C, HZ = D[\"N\"], D[\"C\"], D[\"HZ\"]\noff = (N - 1) * C / 2\nout = []\nfor x, y in ((0, 0), (N - 1, N - 1)):\n    out.append(Pos(x * C - off, y * C - off, D[\"cost\"][x][y] * HZ + 12) * Cylinder(2.2, 22))\nresult = out\n"
+      },
+      "position": [
+        700,
+        470
+      ],
+      "preview": true
+    },
+    {
+      "id": "n12",
+      "type": "CodeBlock",
+      "params": {
+        "code": "# THE LANDSCAPE ITSELF \u2014 every cell, tall where it is expensive. Drawn last, because it\n# is the one thing on this canvas that always exists.\nD = in_0\nresult = [max(D[\"cost\"][x][y] * D[\"HZ\"], 0.4)\n          for x in range(D[\"N\"]) for y in range(D[\"N\"])]\n"
+      },
+      "position": [
+        700,
+        610
+      ],
+      "preview": false
+    },
+    {
+      "id": "n13",
+      "type": "CodeBlock",
+      "params": {
+        "code": "D = in_0\nN, C, HZ = D[\"N\"], D[\"C\"], D[\"HZ\"]\noff = (N - 1) * C / 2\nresult = [Vector(x * C - off, y * C - off, max(D[\"cost\"][x][y] * HZ, 0.4) / 2)\n          for x in range(N) for y in range(N)]\n"
+      },
+      "position": [
+        700,
+        740
+      ],
+      "preview": false
+    },
+    {
+      "id": "n14",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        950,
+        610
+      ],
+      "preview": false
+    },
+    {
+      "id": "n15",
+      "type": "ListCreate",
+      "params": {},
+      "position": [
+        950,
+        740
+      ],
+      "preview": false
+    },
+    {
+      "id": "n16",
+      "type": "Box",
+      "params": {
+        "width": 5.6,
+        "height": 5.6,
+        "depth": 10
+      },
+      "position": [
+        1120,
+        610
+      ],
+      "preview": true
+    },
+    {
+      "id": "n17",
+      "type": "CodeBlock",
+      "params": {
+        "code": "D = in_0\ncells = D[\"N\"] * D[\"N\"]\nlines = [f\"{D['name']}:  opened {D['opened']} of {cells} cells   |   \"\n         f\"path cost {D['total']:.1f}\", \"\"]\nbest = min(s[2] for s in D[\"stats\"])\nfor nm, op, ct in D[\"stats\"]:\n    tag = \"optimal\" if ct <= best + 1e-6 else f\"{(ct / best - 1) * 100:.0f}% worse\"\n    lines.append(f\"   {nm:<18s} opened {op:4d}   cost {ct:6.1f}   ({tag})\")\nlines.append(\"\")\nlines.append(\"A* opens a fraction of what Dijkstra opens and finds the SAME path. \"\n             \"Greedy opens even less, and does not.\")\nresult = \"\\n\".join(lines)\n"
+      },
+      "position": [
+        700,
+        880
+      ],
+      "preview": false
+    },
+    {
+      "id": "n18",
+      "type": "Display",
+      "params": {},
+      "position": [
+        1000,
+        880
+      ],
+      "preview": false
+    },
+    {
+      "id": "n19",
+      "type": "CodeBlock",
+      "params": {
+        "code": "size = 4.0  #@param float min=2 max=12 step=0.2\nD = in_0\nN, C = D[\"N\"], D[\"C\"]\noff = (N - 1) * C / 2\ndef _flat(s, x, y, fs):       # a map is read from above\n    return extrude(Pos(x, y, 0.2) * Text(s, font_size=fs), amount=0.8)\nout = [_flat(\"THE SHORTEST WAY THROUGH\", 0, off + 26, size * 1.7),\n       _flat(f\"{D['name']}  \u2014  opened {D['opened']} of {N * N} cells,  \"\n             f\"path cost {D['total']:.1f}\", 0, off + 15, size * 1.05),\n       _flat(\"start\", -off, -off - 9, size * 0.9),\n       _flat(\"goal\", off, off + 6, size * 0.9)]\nresult = out\n"
+      },
+      "position": [
+        1400,
+        400
+      ],
+      "preview": true
+    },
+    {
+      "id": "n20",
+      "type": "Note",
+      "params": {
+        "text": "THE SAME LOOP, WITH ONE LINE CHANGED.\n\nA landscape where every cell costs what it is tall, and you want the cheapest way from the near corner to the far one. The tall pale cells are the ones the search OPENED \u2014 the work it had to do \u2014 and the balls are the path it came back with.\n\nAll three of these are the identical algorithm. The only difference is which cell you take out of the queue next:\nDIJKSTRA takes the cheapest cell reached so far. It knows nothing about where the goal is, so it cannot rule anything out, and it spreads in a circle until the goal happens to fall inside it. Blind, and honest: whatever it returns is the best path, always.\nA* takes the cheapest-so-far PLUS a guess at what is left (the straight-line distance to the goal). The guess never over-promises \u2014 no route can be shorter than a straight line \u2014 and that one property is enough to guarantee it still finds the true best path. Watch the opened cells: the disc becomes a corridor. Same answer, a fraction of the thinking.\nGREEDY throws away the cost-so-far and just runs at the goal. It opens almost nothing, arrives fast, and the path it brings back is NOT the cheapest. It walks straight over a mountain because the mountain was in the right direction.\n\nLook at the Panel: A* opens far fewer cells than Dijkstra and returns a path of exactly the same cost. That is not luck, it is a theorem \u2014 and it is the reason a routing engine can answer in milliseconds instead of exploring the whole of Europe.\n\nThere is a RIDGE across the diagonal with one pass through it, over near the left. Greedy heads straight at the goal, climbs the ridge where it is highest, and pays 34% more for the privilege. Dijkstra and A* both go round through the pass. Set `wall` to 0 and greedy suddenly looks clever \u2014 with no barrier in the way, \"towards the goal\" and \"the best way\" happen to coincide, and a wrong method that gets the right answer is the most expensive kind of lesson.\n\nRaise `roughness` and A*'s advantage narrows, which is worth understanding: the hint (straight-line distance) assumes each step costs 1, so it is a good estimate only while most of the map IS cheap. Flood the map with cost and the guess becomes a wild underestimate, A* stops being able to rule anything out, and it slides back into being Dijkstra. Set roughness to 0 instead and the guess becomes EXACT \u2014 A* opens barely more than the path itself.\n\nThe better your guess, the less you have to think. A perfect guess would be the answer."
+      },
+      "position": [
+        1400,
+        700
+      ],
+      "preview": false
+    }
+  ],
+  "connections": [
+    {
+      "id": "l1",
+      "from_node": "n1",
+      "from_socket": "result",
+      "to_node": "n2",
+      "to_socket": "mode"
+    },
+    {
+      "id": "l2",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n3",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l3",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n4",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l4",
+      "from_node": "n3",
+      "from_socket": "result",
+      "to_node": "n5",
+      "to_socket": "items"
+    },
+    {
+      "id": "l5",
+      "from_node": "n4",
+      "from_socket": "result",
+      "to_node": "n6",
+      "to_socket": "items"
+    },
+    {
+      "id": "l6",
+      "from_node": "n5",
+      "from_socket": "result",
+      "to_node": "n7",
+      "to_socket": "depth"
+    },
+    {
+      "id": "l7",
+      "from_node": "n6",
+      "from_socket": "result",
+      "to_node": "n7",
+      "to_socket": "origin"
+    },
+    {
+      "id": "l8",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n8",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l9",
+      "from_node": "n8",
+      "from_socket": "result",
+      "to_node": "n9",
+      "to_socket": "items"
+    },
+    {
+      "id": "l10",
+      "from_node": "n9",
+      "from_socket": "result",
+      "to_node": "n10",
+      "to_socket": "origin"
+    },
+    {
+      "id": "l11",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n11",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l12",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n12",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l13",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n13",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l14",
+      "from_node": "n12",
+      "from_socket": "result",
+      "to_node": "n14",
+      "to_socket": "items"
+    },
+    {
+      "id": "l15",
+      "from_node": "n13",
+      "from_socket": "result",
+      "to_node": "n15",
+      "to_socket": "items"
+    },
+    {
+      "id": "l16",
+      "from_node": "n14",
+      "from_socket": "result",
+      "to_node": "n16",
+      "to_socket": "depth"
+    },
+    {
+      "id": "l17",
+      "from_node": "n15",
+      "from_socket": "result",
+      "to_node": "n16",
+      "to_socket": "origin"
+    },
+    {
+      "id": "l18",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n17",
+      "to_socket": "in_0"
+    },
+    {
+      "id": "l19",
+      "from_node": "n17",
+      "from_socket": "result",
+      "to_node": "n18",
+      "to_socket": "value"
+    },
+    {
+      "id": "l20",
+      "from_node": "n2",
+      "from_socket": "result",
+      "to_node": "n19",
+      "to_socket": "in_0"
+    }
+  ],
+  "groups": [
+    {
+      "title": "1 - WHICH CELL NEXT?",
+      "bounding": [
+        10,
+        140,
+        260,
+        200
+      ],
+      "color": "#3f589e"
+    },
+    {
+      "title": "2 - THE SEARCH",
+      "bounding": [
+        300,
+        130,
+        350,
+        460
+      ],
+      "color": "#8a5a2c"
+    },
+    {
+      "title": "3 - THE MAP, THE WORK, THE PATH",
+      "bounding": [
+        670,
+        10,
+        640,
+        980
+      ],
+      "color": "#2c7a52"
+    }
+  ]
+}

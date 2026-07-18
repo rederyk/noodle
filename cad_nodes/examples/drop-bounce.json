@@ -1,0 +1,227 @@
+{
+ "name": "drop-bounce",
+ "nodes": [
+  {
+   "id": "t",
+   "type": "NumberSlider",
+   "params": {
+    "value": 0.45,
+    "_ui": {
+     "value": {
+      "min": 0,
+      "max": 1,
+      "step": 0.01
+     }
+    }
+   },
+   "position": [
+    60,
+    420
+   ]
+  },
+  {
+   "id": "b1",
+   "type": "Box",
+   "params": {
+    "width": 20,
+    "height": 20,
+    "depth": 20
+   },
+   "position": [
+    60,
+    120
+   ]
+  },
+  {
+   "id": "b2",
+   "type": "Cylinder",
+   "params": {
+    "radius": 10,
+    "height": 20
+   },
+   "position": [
+    60,
+    600
+   ]
+  },
+  {
+   "id": "b3",
+   "type": "Sphere",
+   "params": {
+    "radius": 10
+   },
+   "position": [
+    60,
+    820
+   ]
+  },
+  {
+   "id": "m1",
+   "type": "Move",
+   "params": {
+    "z": 50
+   },
+   "position": [
+    320,
+    120
+   ]
+  },
+  {
+   "id": "m2",
+   "type": "Move",
+   "params": {
+    "x": 40,
+    "z": 50
+   },
+   "position": [
+    320,
+    600
+   ]
+  },
+  {
+   "id": "m3",
+   "type": "Move",
+   "params": {
+    "x": -40,
+    "z": 50
+   },
+   "position": [
+    320,
+    820
+   ]
+  },
+  {
+   "id": "r1",
+   "type": "Rotate",
+   "params": {
+    "angle": 45,
+    "axis": "X",
+    "about": "part"
+   },
+   "position": [
+    460,
+    120
+   ]
+  },
+  {
+   "id": "d1",
+   "type": "Drop",
+   "params": {
+    "material": "plastic"
+   },
+   "position": [
+    680,
+    160
+   ],
+   "preview": true
+  },
+  {
+   "id": "d2",
+   "type": "Drop",
+   "params": {
+    "material": "lead"
+   },
+   "position": [
+    600,
+    600
+   ],
+   "preview": true
+  },
+  {
+   "id": "d3",
+   "type": "Drop",
+   "params": {
+    "material": "rubber"
+   },
+   "position": [
+    600,
+    840
+   ],
+   "preview": true
+  }
+ ],
+ "connections": [
+  {
+   "id": "c1",
+   "from_node": "b1",
+   "from_socket": "result",
+   "to_node": "m1",
+   "to_socket": "shape"
+  },
+  {
+   "id": "c2",
+   "from_node": "b2",
+   "from_socket": "result",
+   "to_node": "m2",
+   "to_socket": "shape"
+  },
+  {
+   "id": "c3",
+   "from_node": "b3",
+   "from_socket": "result",
+   "to_node": "m3",
+   "to_socket": "shape"
+  },
+  {
+   "id": "c4",
+   "from_node": "m1",
+   "from_socket": "result",
+   "to_node": "r1",
+   "to_socket": "shape"
+  },
+  {
+   "id": "c4b",
+   "from_node": "r1",
+   "from_socket": "result",
+   "to_node": "d1",
+   "to_socket": "shape"
+  },
+  {
+   "id": "c5",
+   "from_node": "m2",
+   "from_socket": "result",
+   "to_node": "d2",
+   "to_socket": "shape"
+  },
+  {
+   "id": "c6",
+   "from_node": "m3",
+   "from_socket": "result",
+   "to_node": "d3",
+   "to_socket": "shape"
+  },
+  {
+   "id": "c7",
+   "from_node": "t",
+   "from_socket": "result",
+   "to_node": "d1",
+   "to_socket": "t"
+  },
+  {
+   "id": "c8",
+   "from_node": "t",
+   "from_socket": "result",
+   "to_node": "d2",
+   "to_socket": "t"
+  },
+  {
+   "id": "c9",
+   "from_node": "t",
+   "from_socket": "result",
+   "to_node": "d3",
+   "to_socket": "t"
+  }
+ ],
+ "groups": [
+  {
+   "title": "one timeline, three materials",
+   "bounding": [
+    20,
+    60,
+    780,
+    900
+   ],
+   "color": "#3f589e"
+  }
+ ]
+}

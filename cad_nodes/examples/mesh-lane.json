@@ -1,0 +1,171 @@
+{
+ "name": "mesh-lane",
+ "nodes": [
+  {
+   "id": "n1",
+   "type": "Box",
+   "params": {
+    "width": 40,
+    "height": 30,
+    "depth": 20
+   },
+   "position": [
+    40,
+    160
+   ]
+  },
+  {
+   "id": "n2",
+   "type": "Sphere",
+   "params": {
+    "radius": 13
+   },
+   "position": [
+    40,
+    420
+   ]
+  },
+  {
+   "id": "n3",
+   "type": "Move",
+   "params": {
+    "x": 16,
+    "y": 0,
+    "z": 10
+   },
+   "position": [
+    280,
+    420
+   ]
+  },
+  {
+   "id": "n4",
+   "type": "MeshSubtract",
+   "params": {},
+   "position": [
+    540,
+    220
+   ]
+  },
+  {
+   "id": "n5",
+   "type": "MeshSimplify",
+   "params": {
+    "tolerance": 0.05,
+    "max_error": 5.0
+   },
+   "position": [
+    790,
+    220
+   ],
+   "preview": true
+  },
+  {
+   "id": "n6",
+   "type": "MeshInspect",
+   "params": {},
+   "position": [
+    1040,
+    400
+   ]
+  },
+  {
+   "id": "n7",
+   "type": "Display",
+   "params": {},
+   "position": [
+    1280,
+    400
+   ]
+  },
+  {
+   "id": "n8",
+   "type": "ExportMesh",
+   "params": {
+    "path": "mesh_lane.stl"
+   },
+   "position": [
+    1040,
+    200
+   ]
+  },
+  {
+   "id": "n9",
+   "type": "Note",
+   "params": {
+    "text": "The mesh lane \u2014 triangles, not B-Rep\n\nThe same Box and Sphere, but the moment they touch a mesh input they tessellate into triangles. MeshSubtract cuts them with manifold3d in ~0.1s, where the exact B-Rep kernel needs 81s for the same cut.\n\nThe price is exactness: a mesh is an approximation, and MeshSimplify trades triangles for tolerance. Note the Sphere rides the SAME Move node the B-Rep lane uses \u2014 the two lanes share the graph, and you choose which one to be in. See PLAN_MESH_LANE.md."
+   },
+   "position": [
+    40,
+    -100
+   ],
+   "size": [
+    520,
+    230
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "id": "l1",
+   "from_node": "n1",
+   "from_socket": "result",
+   "to_node": "n4",
+   "to_socket": "a"
+  },
+  {
+   "id": "l2",
+   "from_node": "n2",
+   "from_socket": "result",
+   "to_node": "n3",
+   "to_socket": "shape"
+  },
+  {
+   "id": "l3",
+   "from_node": "n3",
+   "from_socket": "result",
+   "to_node": "n4",
+   "to_socket": "b"
+  },
+  {
+   "id": "l4",
+   "from_node": "n4",
+   "from_socket": "result",
+   "to_node": "n5",
+   "to_socket": "mesh"
+  },
+  {
+   "id": "l5",
+   "from_node": "n5",
+   "from_socket": "result",
+   "to_node": "n6",
+   "to_socket": "mesh"
+  },
+  {
+   "id": "l6",
+   "from_node": "n6",
+   "from_socket": "report",
+   "to_node": "n7",
+   "to_socket": "value"
+  },
+  {
+   "id": "l7",
+   "from_node": "n5",
+   "from_socket": "result",
+   "to_node": "n8",
+   "to_socket": "mesh"
+  }
+ ],
+ "groups": [
+  {
+   "title": "the mesh lane \u2014 solids tessellate in, triangles do the work",
+   "bounding": [
+    520,
+    120,
+    760,
+    400
+   ],
+   "color": "#14b8a6"
+  }
+ ]
+}

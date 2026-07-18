@@ -15,15 +15,30 @@ from __future__ import annotations
 import json
 
 
+def _is_mesh(value) -> bool:
+    """True for a value on the `mesh` wire (PLAN_MESH_LANE.md).
+
+    The Mesh class lives in the transpiler PREAMBLE — i.e. in the *generated
+    script's* globals — so this module can't import it and isinstance is out.
+    Mesh carries a `_noodle_mesh` marker exactly so this check stays honest."""
+    return getattr(value, "_noodle_mesh", False)
+
+
 def _as_shape(result):
-    """Normalise __result__ (Part/Sketch/Solid/Compound or list) to one shape."""
-    if result is None:
-        return None
+    """Normalise __result__ (Part/Sketch/Solid/Compound/Mesh or list) to one shape."""
+    if result is None or _is_mesh(result):
+        return result
     if isinstance(result, (list, tuple)):
-        from build123d import Compound
         shapes = [s for s in result if s is not None]
         if not shapes:
             return None
+        if all(_is_mesh(s) for s in shapes):
+            if len(shapes) == 1:
+                return shapes[0]
+            import trimesh
+            merged = trimesh.util.concatenate([s.tm for s in shapes])
+            return type(shapes[0])(merged)      # a Mesh again, engine-agnostic
+        from build123d import Compound
         try:
             return Compound(children=shapes)
         except Exception:
@@ -49,6 +64,15 @@ def _count(shape, attr):
         return None
 
 
+def _live_bbox(shape):
+    """Approximate bounding box for the LIVE preview path. optimal=True (the
+    build123d default) computes the exact box from geometry — ~2s on a complex
+    filleted part, and it used to run up to 3x per execute (deflection scaling,
+    view summary, preview entry). optimal=False uses curve/surface poles: <10ms,
+    within ~0.5% (never smaller). Exports and picker signatures don't use it."""
+    return shape.bounding_box(optimal=False)
+
+
 def _deflection(shape, linear_frac: float) -> float:
     """Linear tessellation deflection scaled to the shape size, so big and
     small parts get comparable visual quality (and triangle counts). Heavy shapes
@@ -56,7 +80,7 @@ def _deflection(shape, linear_frac: float) -> float:
     preview stays snappy; this only affects the on-screen mesh, never the exported
     STL/STEP (those tessellate via export_stl/export_step, not this path)."""
     try:
-        bb = shape.bounding_box()
+        bb = _live_bbox(shape)
         diag = (bb.size.X ** 2 + bb.size.Y ** 2 + bb.size.Z ** 2) ** 0.5
         frac = linear_frac
         try:
@@ -90,6 +114,11 @@ def _summarize(value, _depth: int = 0):
     try:
         if value is None or isinstance(value, (bool, int, float, str)):
             return value
+        # a mesh (the `mesh` wire) — report what actually matters about triangles
+        if _is_mesh(value):
+            return {"kind": "shape", "type": "Mesh", "volume": value.volume,
+                    "area": value.area, "faces": value.n_tris,
+                    "edges": None, "vertices": len(value.tm.vertices)}
         # vector / point / vertex: anything with X,Y,Z components
         if all(hasattr(value, a) for a in ("X", "Y", "Z")):
             return {"kind": "point", "x": _num(lambda: value.X),
@@ -125,21 +154,57 @@ def _summarize(value, _depth: int = 0):
         return {"kind": "repr", "type": "unknown", "repr": repr(value)[:200]}
 
 
+def _mesh_geometry(m) -> dict:
+    """Vertices/triangles + bbox for a Mesh. Nothing to tessellate — it already IS
+    triangles, which makes the mesh lane the cheapest thing here to draw."""
+    verts, tris = m.arrays()
+    return {"mesh": {"vertices": verts, "triangles": tris},
+            "bbox": _bbox_of_coords(verts)}
+
+
+def _mesh_view(m, with_mesh: bool) -> dict:
+    """The `view.json` summary for a mesh result (the Mesh branch of extract_view)."""
+    geom = _mesh_geometry(m)
+    bb = geom["bbox"]
+    view: dict = {
+        "success": True,
+        "kind": "Mesh",
+        "bbox": dict(bb, approx=False) if bb else None,
+        "volume": m.volume,
+        "area": m.area,
+        "center": None,
+        "counts": {"vertices": len(geom["mesh"]["vertices"]), "edges": None,
+                   "faces": m.n_tris, "solids": None},
+        "watertight": m.watertight,
+    }
+    if bb:
+        view["center"] = [(bb["min"][i] + bb["max"][i]) / 2 for i in range(3)]
+    if with_mesh:
+        view["mesh"] = geom["mesh"]
+    return view
+
+
 def extract_view(shape, linear_frac: float = 0.02, angular: float = 0.4,
                  with_mesh: bool = True) -> dict:
     shape = _as_shape(shape)
     if shape is None:
         return {"success": False, "error": "no result shape"}
+    if _is_mesh(shape):
+        return _mesh_view(shape, with_mesh)
 
     view: dict = {"success": True, "kind": type(shape).__name__}
 
-    # Bounding box
+    # Bounding box — approximate (poles-based, ~0.5% oversized, never smaller):
+    # the exact box costs ~2s on complex parts and this one only drives viewer
+    # framing + the info footer. `approx` flags it for agents (retroeng should
+    # seal on slice_summary/volume, not on this box).
     try:
-        bb = shape.bounding_box()
+        bb = _live_bbox(shape)
         view["bbox"] = {
             "min": [bb.min.X, bb.min.Y, bb.min.Z],
             "max": [bb.max.X, bb.max.Y, bb.max.Z],
             "size": [bb.size.X, bb.size.Y, bb.size.Z],
+            "approx": True,
         }
     except Exception:
         view["bbox"] = None
@@ -227,6 +292,42 @@ def _bbox_of_coords(coords) -> dict | None:
 
 
 def _preview_of(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict | None:
+    """Compact per-node preview: _preview_geom's geometry, plus any animation
+    plan the node runtime attached to its result (`_noodle_anim` — today the
+    Drop node's fall/topple timeline). The plan rides the preview entry as
+    `anim`, reaches the editor through view.json, and lets the browser replay
+    the motion at 60fps while the slider drags — no engine round trip."""
+    # A fanned collide result is a LIST whose items each carry their own
+    # keyframe plan — render them as a SCENE of independently-animated bodies
+    # (one sub-mesh + anim each) so the browser can replay the whole pile, not
+    # a single merged blob frozen at one t.
+    if isinstance(value, (list, tuple)) and any(
+            getattr(v, "_noodle_anim", None) is not None for v in value):
+        bodies, lo, hi = [], [1e30, 1e30, 1e30], [-1e30, -1e30, -1e30]
+        for v in value:
+            g = _preview_geom(v, linear_frac, angular)
+            if g is None:
+                continue
+            g["anim"] = getattr(v, "_noodle_anim", None)
+            bodies.append(g)
+            bb = g.get("bbox")
+            if bb:
+                lo = [min(lo[i], bb["min"][i]) for i in range(3)]
+                hi = [max(hi[i], bb["max"][i]) for i in range(3)]
+        if bodies:
+            box = ({"min": lo, "max": hi,
+                    "size": [hi[i] - lo[i] for i in range(3)]}
+                   if hi[0] > -1e30 else None)
+            return {"kind": "Scene", "bodies": bodies, "bbox": box}
+
+    entry = _preview_geom(value, linear_frac, angular)
+    anim = getattr(value, "_noodle_anim", None)
+    if entry is not None and anim is not None:
+        entry["anim"] = anim
+    return entry
+
+
+def _preview_geom(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict | None:
     """Compact per-node preview. Three render paths, tried in order:
       - points    : a Vector or list of Vectors -> dots
       - mesh      : a solid/sketch -> tessellated triangles
@@ -241,6 +342,13 @@ def _preview_of(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict 
     if shape is None:
         return None
 
+    # 1b) a mesh: already triangles, so no tessellation step at all
+    if _is_mesh(shape):
+        entry = _mesh_geometry(shape)
+        entry["kind"] = "Mesh"
+        entry["volume"] = shape.volume
+        return entry
+
     # 2) meshable surface/solid
     verts, tris = [], []
     try:
@@ -252,7 +360,7 @@ def _preview_of(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict 
                        "mesh": {"vertices": [[v.X, v.Y, v.Z] for v in verts],
                                 "triangles": [list(t) for t in tris]}}
         try:
-            bb = shape.bounding_box()
+            bb = _live_bbox(shape)
             entry["bbox"] = {"min": [bb.min.X, bb.min.Y, bb.min.Z],
                              "max": [bb.max.X, bb.max.Y, bb.max.Z],
                              "size": [bb.size.X, bb.size.Y, bb.size.Z]}
@@ -438,22 +546,68 @@ def extract_subshapes(shape, kind: str = "edge",
     return out
 
 
+# Same LRU cap as the transpiler PREAMBLE's _memo_put (the store is shared).
+_MEMO_CAP = 256
+
+
+def _cache_get(memo, key):
+    if memo is None or key is None:
+        return None
+    v = memo.get(key)
+    if v is not None:
+        memo.pop(key, None)      # LRU touch
+        memo[key] = v
+    return v
+
+
+def _cache_put(memo, key, value) -> None:
+    if memo is None or key is None or value is None:
+        return
+    while len(memo) >= _MEMO_CAP:
+        memo.pop(next(iter(memo)))
+    memo[key] = value
+
+
 def extract_and_write(result, stl_path: str, view_path: str, panels=None,
                       previews=None, linear_frac: float = 0.02,
-                      angular: float = 0.4, errors=None, timings=None) -> dict:
-    """Write STL + view.json. Returns the view dict."""
+                      angular: float = 0.4, errors=None, timings=None,
+                      hashes=None, memo=None, cached_nodes=None) -> dict:
+    """Write STL + view.json. Returns the view dict.
+
+    hashes/memo (memo-mode runs on the warm worker): per-node content keys +
+    the persistent store. Preview meshes and the terminal view summary — the
+    two OCCT-heavy steps — are cached by (content key, LOD), so an unchanged
+    node is never re-tessellated.
+
+    cached_nodes: ids the memo store served without re-running, so the editor
+    can tell a cache hit from a real re-execution (view["node_cached"])."""
+    hashes = hashes or {}
     shape = _as_shape(result)
     # When previews carry the render geometry, skip the redundant terminal mesh.
-    view = extract_view(shape, linear_frac, angular, with_mesh=not previews)
+    with_mesh = not previews
+    vkey = hashes.get("__result__")
+    vck = f"view:{vkey}:{int(with_mesh)}:{linear_frac}:{angular}" if vkey else None
+    cached = _cache_get(memo, vck)
+    if cached is not None:
+        view = dict(cached)      # copy: node_errors/timings/stl get added below
+    else:
+        view = extract_view(shape, linear_frac, angular, with_mesh=with_mesh)
+        if view.get("success"):
+            _cache_put(memo, vck, dict(view))
     if errors:
         view["node_errors"] = dict(errors)
     if timings:
         view["node_timings"] = {k: round(float(v), 4) for k, v in timings.items()}
+    if cached_nodes:
+        view["node_cached"] = sorted(cached_nodes)
 
     if shape is not None and stl_path:
         try:
-            from build123d import export_stl
-            export_stl(shape, stl_path)
+            if _is_mesh(shape):
+                shape.tm.export(stl_path)     # already triangles — no meshing step
+            else:
+                from build123d import export_stl
+                export_stl(shape, stl_path)
             view["stl"] = stl_path
         except Exception as e:
             view["stl_error"] = str(e)
@@ -464,10 +618,15 @@ def extract_and_write(result, stl_path: str, view_path: str, panels=None,
     if previews:
         out: dict = {}
         for nid, val in previews.items():
-            try:
-                entry = _preview_of(val, linear_frac, angular)
-            except Exception:
-                entry = None
+            key = hashes.get(nid)
+            pck = f"mesh:{key}:{linear_frac}:{angular}" if key else None
+            entry = _cache_get(memo, pck)
+            if entry is None:
+                try:
+                    entry = _preview_of(val, linear_frac, angular)
+                except Exception:
+                    entry = None
+                _cache_put(memo, pck, entry)
             if entry:
                 out[nid] = entry
         if out:
