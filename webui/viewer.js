@@ -376,7 +376,20 @@ export class CadViewer {
   _clearPreviewGroup() {
     for (let i = this.previewGroup.children.length - 1; i >= 0; i--) {
       const c = this.previewGroup.children[i]; this.previewGroup.remove(c);
-      c.geometry.dispose(); c.material.dispose();
+      // A collide Scene is a GROUP of bodies, not a Mesh: it carries no geometry
+      // of its own, and reaching for one threw — aborting the clear mid-loop, so
+      // the stale meshes stayed and every re-render after the first was broken
+      // (that is what "Live doesn't work" looked like). Dispose the whole
+      // subtree, and only what actually has something to dispose.
+      c.traverse(o => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) {
+          for (const m of (Array.isArray(o.material) ? o.material : [o.material])) {
+            if (m.map) m.map.dispose();
+            m.dispose();
+          }
+        }
+      });
     }
     this.previewGroup.position.set(0, 0, 0);
   }
