@@ -2146,13 +2146,71 @@ def _union(*_items):
     return out
 
 
-def _round(_items, _mode="fillet", _size=1.0):
+def _reanchor(_target, _items, _verify=True):
+    \"\"\"Point picked sub-shapes at the shape they must actually operate on.
+
+    build123d's algebra-mode fillet()/chamfer() take NO target argument: with no
+    builder context they read `_items[0].topo_parent`. That back-link survives
+    booleans still naming the PRE-boolean operand — so filleting a corner of a
+    Union ran on that operand alone and silently returned it, dropping
+    everything the Union added (measured: a 24000mm3 fused pair came back as
+    15940, and a 6402mm2 fused sketch as 3512). The node knows the real target:
+    it is the shape wired into `part`. Anchor the picks to it.
+
+    Mutating topo_parent in place is deliberate — chamfer()'s 2D branch matches
+    `v in object_list` by TShape identity, so handing it copies would match
+    nothing. `_verify` checks the picks really belong to the target (O(1) per
+    pick, hash/eq are TShape-based) so a mismatched wire keeps its old
+    behaviour instead of failing deep inside OCCT; callers that took the items
+    off the target themselves pass _verify=False and skip the set build.\"\"\"
+    if _target is None:
+        return _items
+    _own, _kinds = {}, {"Vertex": "vertices", "Edge": "edges", "Face": "faces"}
+    for _it in _items:
+        _attr = _kinds.get(type(_it).__name__)
+        if _attr is None:
+            continue
+        if _verify:
+            if _attr not in _own:
+                try:
+                    _own[_attr] = set(getattr(_target, _attr)())
+                except Exception:
+                    _own[_attr] = set()
+            if _it not in _own[_attr]:
+                continue
+        try:
+            _it.topo_parent = _target
+        except Exception:
+            pass
+    return _items
+
+
+def _round(_part, _items, _mode="fillet", _size=1.0):
     \"\"\"Round (fillet) or bevel (chamfer) a set of sub-shapes — edges (3D) or
     vertices (2D corners). One node, `_mode` picks the operation: build123d uses
-    radius= for fillet and length= for chamfer.\"\"\"
+    radius= for fillet and length= for chamfer. `_part` is the shape the picks
+    belong to; without it build123d guesses (see _reanchor) and a part built by
+    a boolean comes back truncated.\"\"\"
+    _sel = [_s for _s in _flatten([_items]) if _s is not None]
+    if not _sel:
+        raise ValueError(
+            "nothing selected to fillet/chamfer — the picks no longer match the "
+            "geometry, re-pick them in the Select node")
+    _reanchor(_part, _sel)
     if _mode == "chamfer":
-        return chamfer(_items, length=_size)
-    return fillet(_items, radius=_size)
+        return chamfer(_sel, length=_size)
+    return fillet(_sel, radius=_size)
+
+
+def _round_corners(_shape, _mode="fillet", _size=1.0):
+    \"\"\"The 2D corner round/bevel: fill the input to a face ONCE and work on that
+    face's own vertices. One _face() call, not two — the picks must belong to
+    the very face being modified for _reanchor (and build123d's 2D branch) to
+    match them.\"\"\"
+    _f = _face(_shape)
+    if _f is None:
+        return None
+    return _round(_f, list(_f.vertices()), _mode, _size)
 
 
 def _round_all(_part, _mode="fillet", _size=1.0):
@@ -2168,6 +2226,7 @@ def _round_all(_part, _mode="fillet", _size=1.0):
         return None
     try:
         _edges = _part.edges()
+        _reanchor(_part, _edges, _verify=False)   # they came off _part: no check
     except Exception:
         _edges = _part                       # already a sub-shape list
     _op = ((lambda _z: chamfer(_edges, length=_z)) if _mode == "chamfer"
