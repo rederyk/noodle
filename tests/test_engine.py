@@ -657,6 +657,21 @@ def _round_graph(node_type, params, part_socket, sel_socket=None):
     return g
 
 
+# --- the preview eye reaches every emit path ------------------------------
+# The eye was wired to nothing on the five special-cased emit paths: they never
+# called _previewed(), so switching it on for a selector, CenterOfMass,
+# TraceImage, OrientForPrint or a bypassed node silently did nothing. Only
+# _emit_simple/_emit_group/_emit_codeblock honoured it.
+
+def _eye_graph(node_type, params=None, extra=None, conns=None, **flags):
+    nodes = [{"id": "b", "type": "Box", "params": {}},
+             dict({"id": "e", "type": node_type, "params": params or {}}, **flags)]
+    nodes += extra or []
+    g = Graph.from_dict({"nodes": nodes, "connections": conns or []})
+    g.validate()
+    return g
+
+
 def test_selected_rounding_passes_the_part_not_just_the_picks():
     code = transpile(_round_graph("FilletChamferSelected",
                                   {"mode": "chamfer", "size": 15},
@@ -690,3 +705,60 @@ def test_round_all_still_takes_the_part_itself():
     code = transpile(_round_graph("FilletChamfer", {"mode": "fillet", "size": 1},
                                   "part"))
     assert "_round_all(__out_3, 'fillet', 1.0)" in code
+def _previews(code):
+    import re
+    return set(re.findall(r"__previews__\['(\w+)'\]", code))
+
+
+def test_eye_on_a_selector_draws_the_picked_set():
+    # A selector's output wire is `selection`, which says how it may be WIRED,
+    # not what it holds — at run time it is drawable sub-shapes.
+    for t in ("SelectEdge", "SelectFace", "SelectVertex", "SelectShape"):
+        sock = "shapes" if t == "SelectShape" else "geometry"
+        g = _eye_graph(t, {"selection": {"kind": "edge", "indices": [0]}},
+                       conns=[{"id": "1", "from_node": "b", "from_socket": "result",
+                               "to_node": "e", "to_socket": sock}],
+                       preview=True)
+        assert "e" in _previews(transpile(g)), t
+
+
+def test_a_selector_never_draws_itself_unasked():
+    # Opt-in only: a real graph is full of wired selectors and auto-drawing them
+    # all would bury the part under its own picks.
+    for eye in (None, False):
+        g = _eye_graph("SelectEdge", {"selection": {"kind": "edge", "indices": [0]}},
+                       conns=[{"id": "1", "from_node": "b", "from_socket": "result",
+                               "to_node": "e", "to_socket": "geometry"}],
+                       **({"preview": eye} if eye is not None else {}))
+        assert "e" not in _previews(transpile(g)), eye
+
+
+def test_eye_on_the_special_emit_paths():
+    # Each of these has a previewable output and its own emit path that used to
+    # skip the hook entirely.
+    for t, params in (("CenterOfMass", {}), ("TraceImage", {}),
+                      ("OrientForPrint", {})):
+        sock = {"CenterOfMass": "shape", "OrientForPrint": "mesh"}.get(t)
+        conns = ([{"id": "1", "from_node": "b", "from_socket": "result",
+                   "to_node": "e", "to_socket": sock}] if sock else [])
+        g = _eye_graph(t, params, conns=conns, preview=True)
+        assert "e" in _previews(transpile(g)), t
+
+
+def test_eye_off_still_wins_on_the_special_paths():
+    g = _eye_graph("CenterOfMass", conns=[{"id": "1", "from_node": "b",
+                                           "from_socket": "result",
+                                           "to_node": "e", "to_socket": "shape"}],
+                   preview=False)
+    assert "e" not in _previews(transpile(g))
+
+
+def test_bypassing_a_node_does_not_un_draw_it():
+    # A bypassed node still carries a value (its upstream's), so it still
+    # answers to the eye.
+    g = _eye_graph("Move", conns=[{"id": "1", "from_node": "b",
+                                   "from_socket": "result",
+                                   "to_node": "e", "to_socket": "shape"}],
+                   preview=True, bypassed=True)
+    code = transpile(g)
+    assert "# bypassed" in code and "e" in _previews(code)

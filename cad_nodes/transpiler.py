@@ -3396,6 +3396,11 @@ def _export_2d(_shape, _path, _fmt="svg"):
 _PREVIEWABLE = {catalog.WIRE_SOLID, catalog.WIRE_SURFACE, catalog.WIRE_CURVE,
                 catalog.WIRE_VECTOR, catalog.WIRE_MESH}
 
+# Pick-based selectors. Their output wire is `selection`/`data`, but at run time
+# they hold sub-shapes the viewer can draw, so the eye works on them (opt-in
+# only — see _previewed). Same list the emit dispatcher routes to _emit_select.
+_SELECT_TYPES = ("SelectEdge", "SelectFace", "SelectVertex", "SelectShape")
+
 # Node types whose output is always a Python list at runtime. Feeding one of
 # these into an item-access input makes the consumer fan out. (A fanned node is
 # added to this set dynamically as the graph is walked, so lists propagate.)
@@ -3506,11 +3511,17 @@ class Transpiler:
         """Whether this node draws in the viewport. Per-node eye:
         True/False force it; None (auto) shows only terminal geometry nodes
         (those whose output isn't consumed downstream)."""
+        eye = getattr(node, "preview", None)
         previewable = (node.type == "CodeBlock" or
                        (ndef.outputs and ndef.outputs[0].wire_type in _PREVIEWABLE))
         if not previewable:
-            return False
-        eye = getattr(node, "preview", None)
+            # A selector's runtime value IS drawable — a ShapeList of picked
+            # edges/faces/vertices — its declared first output just happens to be
+            # a `selection` (or `data`) wire, which says how it may be WIRED, not
+            # what it holds. Honour an explicit eye on it, but never auto-draw:
+            # a real graph is full of wired selectors and highlighting them all
+            # unasked would bury the part under its own picks.
+            return eye is True and node.type in _SELECT_TYPES
         if eye is True:
             return True
         if eye is False:
@@ -3703,6 +3714,11 @@ class Transpiler:
         # in memo mode its var inherits the upstream key (lineage continues).
         if self._memo and chosen in self._var_key:
             self._var_key[var] = self._var_key[chosen]
+        # Bypassing a node must not silently un-draw it: it still carries a value
+        # (its upstream's), so it still answers to the eye. Unguarded, like the
+        # alias itself — there is no operation here that could throw.
+        if self._previewed(node, ndef):
+            lines.append(f"__previews__[{node.id!r}] = {var}")
 
     def _emit_select(self, node, lines: list[str]) -> None:
         """Sub-shape selector (SelectEdge/Face/Vertex): resolve the picked set
@@ -3722,6 +3738,11 @@ class Transpiler:
         # consumed WHOLE (Fillet/… inputs are list_access); its geometry output
         # (edges/faces/points) fans out downstream, so mark it a list-producer.
         self._produces_list.add(node.id)
+        # With the eye on, DRAW the picked set — edges as polylines, faces as a
+        # mesh, vertices as dots. Seeing what you picked is the whole point of a
+        # picker, and until this hook existed the eye on a selector did nothing.
+        if self._previewed(node, ndef):
+            body.append(f"__previews__[{node.id!r}] = {var}")
         self._guard(lines, body, node)
 
     def _emit_vectorize(self, node, lines: list[str]) -> None:
@@ -3735,6 +3756,8 @@ class Transpiler:
         scale = trace.get("scale", 1.0) or 1.0
         imgh = trace.get("imgH")
         body = [f"{var} = _trace_curves({contours!r}, {scale!r}, {imgh!r}){_annot(node)}"]
+        if self._previewed(node, catalog.get(node.type)):
+            body.append(f"__previews__[{node.id!r}] = {var}")
         self._guard(lines, body, node)
 
     def _emit_center(self, node, lines: list[str]) -> None:
@@ -3751,6 +3774,8 @@ class Transpiler:
                 f"{volvar} = _volume_of({src})"]
         self.out_var_of[(node.id, "center")] = var
         self.out_var_of[(node.id, "volume")] = volvar
+        if self._previewed(node, ndef):          # the centre, drawn as a dot
+            body.append(f"__previews__[{node.id!r}] = {var}")
         self._guard(lines, body, node)
 
     def _emit_orient(self, node, lines: list[str]) -> None:
@@ -3773,6 +3798,8 @@ class Transpiler:
                 f"{rep} = {plan}['report']"]
         self.out_var_of[(node.id, "result")] = var
         self.out_var_of[(node.id, "report")] = rep
+        if self._previewed(node, ndef):          # the ORIENTED mesh, not the input
+            body.append(f"__previews__[{node.id!r}] = {var}")
         self._guard(lines, body, node)
 
     def _emit_codeblock(self, node, lines: list[str]) -> None:
@@ -4069,7 +4096,7 @@ class Transpiler:
                 self._emit_group(node, body)
             elif node.type == "CodeBlock":
                 self._emit_codeblock(node, body)
-            elif node.type in ("SelectEdge", "SelectFace", "SelectVertex", "SelectShape"):
+            elif node.type in _SELECT_TYPES:
                 self._emit_select(node, body)
             elif node.type == "TraceImage":
                 self._emit_vectorize(node, body)
