@@ -292,7 +292,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
     <!-- ZONA ESECUZIONE -->
     <div class="tb-zone">
       <button class="tb-btn primary" id="btn-run" onclick="runGraph()" title="Run the graph (Ctrl+Enter)">▶ Run</button>
-      <button class="tb-btn toggle js-live-btn" id="btn-live" onclick="toggleLive()" title="Auto-run on every change">Live</button>
+      <button class="tb-btn toggle js-live-btn" id="btn-live" onclick="toggleLive()" title="Auto-run on every change — and drags (Move/Rotate/Scale, a Drop timeline) replay live in the viewport while you hold them. Settings ⚙ turns that anticipation off.">Live</button>
       <button class="tb-btn toggle js-cost-btn" id="btn-cost" onclick="toggleCost()" title="Show each node's cost from the last run (blue = served by the cache)">Costi</button>
       <div class="status-pill" id="status">Ready</div>
       <span class="health-dot" id="health" title="Backend health"></span>
@@ -357,7 +357,6 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
           <button class="tb-icon" onclick="frameView()" title="Fit to view (F · dbl-click)">⛶</button>
           <button class="tb-icon on" id="btn-grid" onclick="toggleGrid()" title="Show / hide grid">▦</button>
           <button class="tb-icon" id="btn-proj" onclick="toggleProjection()" title="Perspective / Orthographic (O)">⧉</button>
-          <button class="tb-icon" id="btn-fast" onclick="toggleFastDrag()" title="Drag Move/Rotate/Scale/Drop timeline = instant local preview">✥</button>
           <button class="tb-icon" id="btn-isolate" onclick="toggleIsolate()" title="Isolate selected — show only the selected nodes'/group's shapes (I)">◎</button>
         </div>
       </div>
@@ -497,7 +496,13 @@ let liveMode = false;      // auto-run on every change
 let liveTimer = null;      // debounce handle
 let runAbort = null;       // AbortController for the in-flight run
 let loadingGraph = false;  // suppress live triggers while rebuilding the graph
-let fastDrag = false;      // local JS transform while dragging Move/Rotate/Scale
+// Drag anticipation: replay a drag locally in Three.js instead of waiting for a
+// round trip. It is not a mode of its own — it is how Live behaves while you are
+// still dragging, so it rides on liveMode. The setting is the escape hatch for a
+// machine where the local replay costs more than it saves (default: on).
+const FAST_FLAG = 'noodle:settings:fastDrag';
+let fastEnabled = localStorage.getItem(FAST_FLAG) !== '0';
+const fastDrag = () => liveMode && fastEnabled;
 let previewMeshes = {};    // graph node-id -> THREE.Mesh currently shown
 let previewAnims  = {};    // graph node-id -> Drop animation plan (view previews[].anim)
 // RefImage: editor-only textured quads drawn in the viewport as modelling refs
@@ -2269,8 +2274,8 @@ window.toggleCost = function(){
   if (lcanvas) lcanvas.setDirty(true, true);
 };
 window.toggleFastDrag = function(){
-  fastDrag = !fastDrag;
-  document.getElementById('btn-fast').classList.toggle('on', fastDrag);
+  fastEnabled = !fastEnabled;
+  localStorage.setItem(FAST_FLAG, fastEnabled ? '1' : '0');
 };
 
 // ── selection actions (shared by keyboard, context menu, floating toolbar) ──
@@ -2582,11 +2587,11 @@ function onParamChange(node){
   scheduleHistory();   // param edits become undo steps (debounced across a drag)
   if (node && node.cadType === 'RefImage'){ syncRefImages(); return; }   // editor-only: no re-exec
   if (node && node.cadGated) refreshSubtype(node);   // filter/transform: tag follows mode
-  if (fastDrag && applyLocalTransform(node)){
+  if (fastDrag() && applyLocalTransform(node)){
     scheduleLive();   // re-bake exactly once the drag settles
     return;
   }
-  if (fastDrag && applyDropTargets(node)){
+  if (fastDrag() && applyDropTargets(node)){
     scheduleLive();   // a slider wired into Drop t: same live replay, per target
     return;
   }
@@ -5078,11 +5083,20 @@ window.openSettings = function(){
       `<small style="color:var(--txt-dim)">Puts the last run's wall-clock on each node. `+
       `Blue means the memo cache served it without re-running; amber&rarr;green is a real `+
       `recompute, hue by cost; red means it threw.</small></span></label>`+
+    `<label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;margin-top:12px">`+
+      `<input type="checkbox" id="set-fast" ${fastEnabled?'checked':''} style="margin-top:3px">`+
+      `<span><b>Anticipate drags while Live is on</b><br>`+
+      `<small style="color:var(--txt-dim)">Dragging Move / Rotate / Scale — or a Drop timeline — `+
+      `replays in the viewport at 60fps instead of waiting for the engine; the exact re-bake `+
+      `lands when you let go. Turn it off if the local replay costs your machine more than `+
+      `it saves: Live still works, it just waits for each run.</small></span></label>`+
     `<div class="modal-actions"><button class="tb-btn primary" id="set-ok">Done</button></div>`);
   const cb=m.ov.querySelector('#set-fb');
   cb.addEventListener('change', ()=>{ localStorage.setItem(FEEDBACK_FLAG, cb.checked?'1':'0'); applyFeedbackSetting(); });
   const cc=m.ov.querySelector('#set-cost');
   cc.addEventListener('change', ()=>{ if (cc.checked !== showCost) toggleCost(); });
+  const cf=m.ov.querySelector('#set-fast');
+  cf.addEventListener('change', ()=>{ if (cf.checked !== fastEnabled) toggleFastDrag(); });
   m.ov.querySelector('#set-ok').onclick=()=>m.close();
 };
 

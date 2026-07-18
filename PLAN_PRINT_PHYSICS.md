@@ -75,7 +75,7 @@ cascade, just quasi-static instead of a full rigid-body integrator.
 And because the plan is *data* — segments and steps, not code — the engine ships it with
 the preview (`_noodle_anim` on the result → `previews[id].anim` in view.json) and the
 editor replays any t in the browser as pure matrix math (`dropMatrixAt`, nodes.html):
-with ✥ fastDrag on, dragging the t slider (or a Number Slider wired into `t`, or the
+with Live on, dragging the t slider (or a Number Slider wired into `t`, or the
 timeline gizmo) animates the fall at 60fps with zero engine round trips; the exact
 re-bake lands when the drag settles. One physics, computed once, played anywhere.
 

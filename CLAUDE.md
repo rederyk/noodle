@@ -350,7 +350,8 @@ thirds of the material within one — so orientation decides **where the part br
   journey as data to its result (`_noodle_anim`: bounce segs + topple steps, world
   coords, baked t); `_preview_of` lifts it into previews[id].anim, and nodes.html
   (`dropMatrixAt`/`applyDropAnim`) replays any t as pure matrix math at 60fps while the
-  slider or a wired Number Slider drags (✥ fastDrag), mesh pose = M(t)·M(t_baked)⁻¹ —
+  slider or a wired Number Slider drags (drag anticipation — see §6b), mesh pose =
+  M(t)·M(t_baked)⁻¹ —
   the engine re-bakes exactly when the drag settles. COLLISIONS: the `collide` toggle —
   off by default, it costs real compute — un-fans multiple shapes wired into one Drop
   into ONE scene (`_drop_collide` → `_dyn_sim`) and runs REAL rigid-body dynamics
@@ -491,6 +492,34 @@ frontend picks them up from `/api/wiretypes`.
 
 **Group nodes** (BuildPart/BuildSketch) use `is_group=True` + a `builder`
 template and emit nested `with` blocks — see existing examples.
+
+### 6b. Drag anticipation (the old ✥ fastDrag)
+
+It is **not a mode of its own**: `fastDrag()` in nodes.html is `liveMode &&
+fastEnabled`, so turning Live on turns it on. `fastEnabled` is the escape hatch
+for a slow machine (Settings ⚙ checkbox, persisted in localStorage
+`noodle:settings:fastDrag`, default on) — with it off, Live still works, it just
+waits for each run. There is no toolbar button any more.
+
+The contract: while a param drags, replay it locally in Three.js; when the drag
+settles, `scheduleLive()` re-bakes it exactly. The local replay must therefore be
+an *anticipation of the engine's answer*, never a different one.
+
+**When you add a node, ask whether it can be anticipated.** Compatibility is
+decided at DRAG TIME, not at node creation — it depends on the wiring and on
+whether a preview mesh exists, so it cannot be a static flag on the NodeDef:
+
+- `applyLocalTransform(node)` — the node's own preview moved as a delta from the
+  baked params. Today: Move/Rotate/Scale (a `Location`) and Drop (its shipped
+  `_noodle_anim`). Add a node here only if the transform is expressible as a
+  matrix on the already-meshed preview.
+- `applyDropTargets(node)` — a value node (Number Slider…) wired into a `Drop.t`,
+  which replays each target instead of itself.
+
+Both return **false** when they cannot help, and the caller falls through to the
+plain debounced re-run. That fallback is what makes an unanticipated node correct
+but merely slower — so when in doubt, return false. A node that anticipates
+WRONGLY is far worse than one that does not anticipate at all.
 
 **Apply / reload rules:**
 - Backend Python change → `docker restart noodle` (process caches imports;
