@@ -2677,6 +2677,9 @@ function applyDropAnim(node, tNew){
   }
   const anim = previewAnims['n'+node.id];
   if (!anim) return false;
+  // One part falling into a `container` is still a simulated scene — it just has
+  // a single body, so it arrives as a plain preview carrying a keyframe plan.
+  if (anim.kind === 'keys'){ sceneBodyPose(anim, tNew, m); return true; }
   const rel = dropMatrixAt(anim, tNew).multiply(dropMatrixAt(anim, anim.t).invert());
   rel.decompose(m.position, m.quaternion, m.scale);
   return true;

@@ -1855,6 +1855,8 @@ register(NodeDef("PlaceOnBed", "print", "Place on Bed",
 
 register(NodeDef("Drop", "print", "Drop on Plane",
     inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_SURFACE, WIRE_MESH]),
+            Socket("container", WIRE_SOLID, accepts=[WIRE_SURFACE, WIRE_MESH],
+                   required=False),
             Socket("plane", WIRE_PLANE, required=False)] + _pin("t"),
     params=[_f("t", 1.0, 0.0, 1.0, step=0.01, label="timeline"),
             Param("material", "select", "material", "plastic", widget="select",
@@ -1864,7 +1866,8 @@ register(NodeDef("Drop", "print", "Drop on Plane",
     outputs=_geo(),
     output_follows="shape",
     gizmo={"kind": "timeline", "binds": ["t"], "anchor": "preview", "lock": ["t"]},
-    code_template={"algebra": "_drop({shape}, {plane}, {t}, {material}, {settle}, {collide})"},
+    code_template={"algebra": "_drop({shape}, {plane}, {t}, {material}, {settle}, "
+                              "{collide}, {container})"},
     description="Place on Bed, but as a FALL you can scrub: drag `timeline` from 0 "
                 "(where the part is now) to 1 (at rest on the plane). The part drops "
                 "under gravity, BOUNCES — each impact keeps a fixed fraction of the "
@@ -1885,9 +1888,16 @@ register(NodeDef("Drop", "print", "Drop on Plane",
                 "in mid-air, pushing each other over, tumbling and stacking — simulated "
                 "once and recorded as keyframes the slider scrubs (and the browser "
                 "replays live). It costs real compute, hence the toggle. Each body is "
-                "its convex HULL (a bowl will not cradle a ball), and the pile is "
+                "its convex HULL, and the pile is "
                 "deterministic for a given scene but chaotic like real falling — nudge "
-                "a part and it lands differently. Both lanes — a solid stays a solid."))
+                "a part and it lands differently. Both lanes — a solid stays a solid. "
+                "Wire a shape into `container` and it becomes an IMMOVABLE collider that "
+                "the falling parts land in: a bowl, a tray, a crate. Unlike the falling "
+                "parts it is NOT hulled — it keeps its true concave surface, so a bowl "
+                "really does cradle what you pour into it, and its inner wall stops the "
+                "pile spreading. It never moves and is not an output (preview the bowl "
+                "node itself); wiring one turns scene mode on by itself, so a single part "
+                "still falls into it."))
 
 register(NodeDef("PrintCheck", "print", "Print Check",
     inputs=[Socket("mesh", WIRE_MESH)],

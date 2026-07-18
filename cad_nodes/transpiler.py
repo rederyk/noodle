@@ -1482,7 +1482,7 @@ def _drop_apply(_shape, _B, _o, _ops):
 
 
 def _drop(_shape, _plane=None, _t=1.0, _material="plastic", _settle=True,
-          _collide=False):
+          _collide=False, _container=None):
     \"\"\"A real fall onto the plane, scrubbed by _t: 0 = where the part is now,
     1 = at rest. The part falls, BOUNCES (each impact keeps _DROP_E of its
     speed), and — with `settle` — TOPPLES: once the bounces die, the quasi-
@@ -1490,11 +1490,16 @@ def _drop(_shape, _plane=None, _t=1.0, _material="plastic", _settle=True,
     centre of mass sits over the contact polygon. With `collide` and several
     shapes wired into the SAME node they fall as ONE SCENE instead of a fan
     (_drop_collide): sequentially, each onto the bed or onto the parts already
-    down. Works on both lanes: it measures on the mesh and transforms the
-    ORIGINAL, so a solid stays a solid. A part starting under the plane
-    surfaces linearly — it cannot fall.\"\"\"
-    if _collide and isinstance(_shape, (list, tuple)):
-        return _drop_collide(list(_shape), _plane, _t, _material, _settle)
+    down. A `container` is an immovable collider they land IN — a bowl, a tray —
+    kept concave rather than hulled, and it turns scene mode on by itself (there
+    is no other way to honour it, and one part falling into a bowl is the point).
+    Works on both lanes: it measures on the mesh and transforms the ORIGINAL, so
+    a solid stays a solid. A part starting under the plane surfaces linearly —
+    it cannot fall.\"\"\"
+    if _container is not None or (_collide and isinstance(_shape, (list, tuple))):
+        shapes = list(_shape) if isinstance(_shape, (list, tuple)) else [_shape]
+        out = _drop_collide(shapes, _plane, _t, _material, _settle, _container)
+        return out if isinstance(_shape, (list, tuple)) else (out[0] if out else None)
     if _shape is None:
         return None
     m = _as_mesh(_shape)
@@ -1596,12 +1601,19 @@ def _quat_slerp(_qa, _qb, _f):
     return (math.sin((1 - _f) * th) * qa + math.sin(_f * th) * qb) / math.sin(th)
 
 
-def _dyn_sim(_hulls, _coms, _e, _t_max=8.0):
+def _dyn_sim(_hulls, _coms, _e, _t_max=8.0, _statics=()):
     \"\"\"The rigid-body simulation behind collide: pybullet, DIRECT mode, fixed
     timestep (deterministic for a given scene on a given build), every part a
     CONVEX HULL of its mesh. All parts fall TOGETHER — they hit each other in
     the air, push each other over, tumble, stack — and the run is recorded as
     60Hz keyframes per body until everything sleeps.
+
+    _statics are the immovable colliders (the `container` socket): mass 0, and
+    — the whole point — NOT hulled. A static body may be a concave triangle
+    soup (GEOM_FORCE_CONCAVE_TRIMESH), so a bowl keeps its cavity and actually
+    cradles what falls in instead of being a dome that sheds it. Bullet only
+    allows that for static bodies, which is exactly the trade this socket makes:
+    the thing that holds is exact, the things that fall are hulls.
 
     Units are millimetres DIRECTLY (no down-scaling): pybullet's collision
     margin is a fixed absolute value, so working in mm makes it a sub-micron
@@ -1631,6 +1643,18 @@ def _dyn_sim(_hulls, _coms, _e, _t_max=8.0):
         pbody = _pb.createMultiBody(0.0, plane, physicsClientId=cl)
         _pb.changeDynamics(pbody, -1, restitution=1.0, lateralFriction=0.8,
                            physicsClientId=cl)
+        for (sv, sf) in _statics:
+            scs = _pb.createCollisionShape(
+                _pb.GEOM_MESH, vertices=_np.asarray(sv, dtype=float).tolist(),
+                indices=[int(i) for i in _np.asarray(sf).reshape(-1)],
+                flags=_pb.GEOM_FORCE_CONCAVE_TRIMESH, physicsClientId=cl)
+            sid = _pb.createMultiBody(0.0, scs, basePosition=[0.0, 0.0, 0.0],
+                                      physicsClientId=cl)
+            # A little grippier and deader than the bed: a part that lands in a
+            # bowl should stop there, not skate around the cavity for 8 seconds.
+            _pb.changeDynamics(sid, -1, restitution=0.2, lateralFriction=0.9,
+                               rollingFriction=0.05, spinningFriction=0.05,
+                               physicsClientId=cl)
         ids = []
         for hv, c0 in zip(_hulls, _coms):
             local = _np.asarray(hv, dtype=float) - c0
@@ -1694,7 +1718,28 @@ def _keys_pose(_times, _pos, _quat, _tau):
     return p, _quat_slerp(_quat[i - 1], _quat[i], f)
 
 
-def _drop_collide(_shapes, _plane=None, _t=1.0, _material="plastic", _settle=True):
+def _static_colliders(_container, _o, _B):
+    \"\"\"The `container` input as pybullet-ready triangle soups in bed coordinates:
+    (vertices, faces) per body, NOT hulled — that is the whole point of the
+    socket. Accepts one shape or several wired into it.\"\"\"
+    import numpy as _np
+    out = []
+    if _container is None:
+        return out
+    items = list(_container) if isinstance(_container, (list, tuple)) else [_container]
+    for c in items:
+        if c is None:
+            continue
+        m = _as_mesh(c)
+        if m is None or len(m.tm.faces) == 0:
+            continue
+        V = (_np.asarray(m.tm.vertices, dtype=float) - _o) @ _B
+        out.append((V, _np.asarray(m.tm.faces, dtype=int)))
+    return out
+
+
+def _drop_collide(_shapes, _plane=None, _t=1.0, _material="plastic", _settle=True,
+                  _container=None):
     \"\"\"The multi-body drop, done with real dynamics: every shape wired into the
     node becomes a rigid body (its convex hull) in ONE pybullet scene, and they
     all fall TOGETHER — colliding in the air, pushing each other, tumbling,
@@ -1729,7 +1774,8 @@ def _drop_collide(_shapes, _plane=None, _t=1.0, _material="plastic", _settle=Tru
     if not live:
         return results
     times, poss, quats = _dyn_sim([b["hull"] for b in live],
-                                  [b["c0"] for b in live], e)
+                                  [b["c0"] for b in live], e,
+                                  _statics=_static_colliders(_container, o, B))
     if not times:
         return results
     T = times[-1]
@@ -3932,10 +3978,16 @@ class Transpiler:
         # Drop with `collide`: the shapes wired into the node are ONE scene, not
         # a fan — hand the whole list to the runtime (which stacks them against
         # each other) and mark the output a list so downstream still fans.
-        if (node.type == "Drop" and subs.get("collide") == "True"
-                and "shape" in fan):
-            subs["shape"] = fan.pop("shape")
-            self._produces_list.add(node.id)
+        # A wired `container` (the immovable bowl/tray) means the same thing: the
+        # parts fall INTO one thing, so they are one scene whatever the toggle says.
+        if node.type == "Drop":
+            if "container" in fan:                  # several statics = one rig
+                subs["container"] = fan.pop("container")
+            scene = (subs.get("collide") == "True"
+                     or subs.get("container") not in (None, "None"))
+            if scene and "shape" in fan:
+                subs["shape"] = fan.pop("shape")
+                self._produces_list.add(node.id)
 
         # `about="group"` while the shape input fans out: every item must pivot
         # about the ONE collective centre, or each piece spins about itself —

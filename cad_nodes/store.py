@@ -40,6 +40,9 @@ _EXAMPLE_DESCRIPTIONS = {
     "drop-stack": "Drop with collide: three boxes fall into ONE scene — one "
                   "lands, one stacks, and the half-off cube tips over the edge, "
                   "rolls down the wall and lands flat on the bed beside.",
+    "drop-in-bowl": "Drop with a container: three balls poured into a bowl that "
+                    "never moves. The bowl is the one body kept CONCAVE, so it "
+                    "cradles them instead of shedding them.",
     "parametric-gear": "Custom node from scratch — a spur gear written in one "
                        "CodeBlock, driven by #@param knobs.",
     "gear-row-fanout": "Grasshopper-style fan-out — a Range feeds the gear "

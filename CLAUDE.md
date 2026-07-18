@@ -363,8 +363,17 @@ thirds of the material within one — so orientation decides **where the part br
   shape carries its own keyframe plan (`_noodle_anim` kind "keys"); mesh_extractor emits
   a `{kind:"Scene", bodies:[...]}` preview, viewer.js builds a Group of independently-
   posable meshes, and nodes.html (`keyInterp`/`sceneBodyPose`) replays the whole pile
-  LIVE (lerp+slerp) while the slider drags. Limits: hulls not true meshes, chaotic like
-  real falling), `PrintCheck` (report → Panel), `OverhangFaces`
+  LIVE (lerp+slerp) while the slider drags. Limits: falling parts are hulls, chaotic like
+  real falling. THE CONTAINER: the `container` socket is an IMMOVABLE collider the parts
+  fall into — a bowl, a tray, a crate. It is the one body that is NOT hulled: bullet allows
+  a concave triangle soup for STATIC bodies only (`GEOM_FORCE_CONCAVE_TRIMESH`, mass 0,
+  `_static_colliders` feeds it in bed coordinates), so a bowl keeps its cavity and really
+  cradles what you pour in — verified against the analytic seat, balls resting on a
+  spherical inner wall to <0.03mm. Wiring one implies scene mode whatever the `collide`
+  toggle says (the emitter un-fans on `collide or container`), so a SINGLE part falls in
+  too — and then a plain preview carries an anim of kind "keys", which `applyDropAnim`
+  routes to `sceneBodyPose` instead of `dropMatrixAt`. It never moves and is not an output;
+  preview the bowl node itself), `PrintCheck` (report → Panel), `OverhangFaces`
   (the faces needing support, as a mesh of its own → its own colour in the viewer),
   `SupportVolume` (the support as a BODY), `OrientForPrint` (every stable pose scored; two
   outputs — the oriented mesh and the table saying why — from ONE search, via
