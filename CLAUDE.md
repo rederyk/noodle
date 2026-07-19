@@ -274,6 +274,21 @@ the editor are a custom `cadslider` widget — the drag window defaults to ±10
 to the step; the typed ✎ field clamps only on the catalog's hard min/max. The
 engine resolves params by catalog name, so it never sees `_ui`.
 
+**PLAY** — a ▶ hotspot left of the ⚙ sweeps the param across its drag window on a
+clock; speed (sweeps/second) and mode (`once` / `loop` / `pingpong`) live in the
+same namespace, `_ui[param].play`. It drives the value through `w.callback`, i.e.
+through the exact path a hand on the slider uses, so undo, the ✎ field and the
+gizmo snapshots all behave as if it were being dragged — and that is also why it
+composes with Live at no cost: `scheduleLive()`'s 120ms debounce is reset every
+frame and never fires, so an anticipatable node (§6b) replays locally at 60fps
+and exactly ONE exact re-bake lands when play stops (measured: 0 runs during a
+sweep, 1 after). A node no fast path can anticipate would then show nothing until
+stop, so play instead **pumps** the engine — one run at a time, the next starting
+only when the last has landed, because `runGraph()` aborts whatever is in flight
+and overlapping calls would starve every run but the last (measured: ~1.1 runs/s,
+0 overlapping). The playing state is deliberately transient: never saved, and
+loading a graph or deleting a node stops it.
+
 Execution writes `output.stl` + `view.json` (meshes) alongside it.
 
 ## 5. Wire types

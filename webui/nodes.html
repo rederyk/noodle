@@ -1011,6 +1011,7 @@ function evalNum(raw){
 // keep their values untouched.
 // ════════════════════════════════════════════════════════════════════
 const SLIDER_GEAR_W = 18;   // right hotspot; ends before litegraph's x < width-12 dead zone
+const SLIDER_PLAY_W = 16;   // ▶ sits just left of the ⚙, on the same row
 
 function niceCap(v){        // smallest 1 / 2.5 / 5 × 10^k ≥ v (min 10)
   if (!(v > 10)) return 10;
@@ -1028,18 +1029,26 @@ function trimNum(n){ return String(+Number(n).toFixed(4)); }
 // loaded or edited after widget creation just applies. A user ⚙ config wins;
 // otherwise: ±10 clipped to hard bounds, grown to contain the current value,
 // growth capped at soft_max when set (the anti-blowup guard, e.g. fan-out counts).
+const PLAY_DEFAULT = {speed: 0.5, mode: 'loop'};   // sweeps/sec, once|loop|pingpong
+function playCfg(ui){
+  const p = (ui && ui.play) || null;
+  if (!p) return Object.assign({}, PLAY_DEFAULT);
+  return {speed: (+p.speed > 0 ? +p.speed : PLAY_DEFAULT.speed),
+          mode: (p.mode === 'once' || p.mode === 'pingpong') ? p.mode : 'loop'};
+}
 function sliderCfg(node, w){
   const h = w.hard;
   const ui = node.properties && node.properties._ui && node.properties._ui[w.uiKey];
-  if (ui){
+  if (ui && ui.min != null && ui.max != null){
     const step = Math.max((+ui.step > 0 ? +ui.step : w.defStep), w.isInt ? 1 : 1e-4);
-    return {lo: Math.max(h.min, +ui.min), hi: Math.min(h.max, +ui.max), step, custom: true};
+    return {lo: Math.max(h.min, +ui.min), hi: Math.min(h.max, +ui.max), step,
+            custom: true, play: playCfg(ui)};
   }
   const v = Number(w.value) || 0;
   const cap = (w.softMax != null) ? Math.min(w.softMax, h.max) : h.max;
   const hi = Math.max(Math.min(cap, Math.max(10, niceCap(v))), h.min);
   const lo = Math.min(Math.max(h.min, v < 0 ? -niceCap(-v) : -10), hi);
-  return {lo, hi, step: w.defStep, custom: false};
+  return {lo, hi, step: w.defStep, custom: false, play: playCfg(ui)};
 }
 
 function addCadSlider(node, name, init, apply, opts){
@@ -1057,7 +1066,8 @@ function addCadSlider(node, name, init, apply, opts){
 }
 
 function drawCadSlider(ctx, node, w, width, y, H){
-  const margin = 15, gx = width - margin - SLIDER_GEAR_W, tw = gx - margin;
+  const margin = 15, gx = width - margin - SLIDER_GEAR_W;
+  const px = gx - SLIDER_PLAY_W, tw = px - margin;
   const cfg = sliderCfg(node, w);
   ctx.fillStyle = LiteGraph.WIDGET_BGCOLOR || '#222';
   ctx.fillRect(margin, y, width - margin * 2, H);
@@ -1069,6 +1079,9 @@ function drawCadSlider(ctx, node, w, width, y, H){
   if (!w.disabled) ctx.strokeRect(margin, y, width - margin * 2, H);
   if (lcanvas.ds.scale > 0.5){
     ctx.textAlign = 'center';
+    const on = isPlaying(w);
+    ctx.fillStyle = on ? '#e0a33a' : '#667';                // ▶ lit while sweeping
+    ctx.fillText(on ? '❚❚' : '▶', px + SLIDER_PLAY_W / 2, y + H * (on ? 0.70 : 0.72));
     ctx.fillStyle = cfg.custom ? '#9ab' : '#667';           // ⚙ lit when customised
     ctx.fillText('⚙', gx + SLIDER_GEAR_W / 2, y + H * 0.72);
     const dec  = w.isInt ? 0 : stepDecimals(cfg.step);
@@ -1084,11 +1097,13 @@ function cadSliderMouse(ev, pos, node, w){
   const pm = LiteGraph.pointerevents_method || 'mouse';
   const down = ev.type === pm + 'down', move = ev.type === pm + 'move', up = ev.type === pm + 'up';
   const width = node.size[0], margin = 15, gx = width - margin - SLIDER_GEAR_W;
+  const px = gx - SLIDER_PLAY_W;
   if (down && pos[0] >= gx){ w._drag = false; openSliderCfg(node, w, ev); return true; }
-  if (down) w._drag = true;
+  if (down && pos[0] >= px){ w._drag = false; toggleSliderPlay(node, w); return true; }
+  if (down){ w._drag = true; stopSliderPlay(w); }   // a hand on the slider wins
   if ((down || move) && w._drag){
     const cfg = sliderCfg(node, w);
-    let f = (pos[0] - margin) / ((gx - margin) || 1);
+    let f = (pos[0] - margin) / ((px - margin) || 1);
     f = f < 0 ? 0 : f > 1 ? 1 : f;
     let v = cfg.lo + (cfg.hi - cfg.lo) * f;
     v = Math.round(v / cfg.step) * cfg.step;
@@ -1098,6 +1113,85 @@ function cadSliderMouse(ev, pos, node, w){
   }
   if (up) w._drag = false;
   return true;
+}
+
+// ── slider PLAY: sweep a param over its drag window, on a clock ─────────────
+// The value is driven exactly as a drag drives it (`w.callback`), so everything
+// downstream — undo, the ✎ field, the gizmo snapshots — behaves as if a hand
+// were on the slider. Which is also why it composes with Live for free: while
+// the value keeps changing, scheduleLive()'s 120ms debounce is reset every
+// frame and never fires, so an anticipatable node (Move/Rotate/Scale, a slider
+// wired into Drop.t — see §6b) replays locally at 60fps and the exact re-bake
+// lands once, when play stops. That is the drag contract, unchanged.
+// A node that CANNOT be anticipated would otherwise show nothing at all until
+// you hit stop, because that same debounce never fires — so play pumps the
+// engine instead: one run at a time, the next starting only when the last has
+// landed. Slower than 60fps by a lot, but it moves, and it never queues.
+// Editor-only: `_ui[key].play` rides in the same namespace as the drag window
+// (the engine resolves params by catalog name and ignores `_ui`). The PLAYING
+// state itself is deliberately transient — it is not saved, and loading a graph
+// stops everything. Nobody wants to open a file and find it already running.
+const playing = new Map();      // w -> {node, u, dir}
+let playRaf = null, playLast = 0;
+
+function isPlaying(w){ return playing.has(w); }
+function playActive(){ return playing.size > 0; }
+
+function toggleSliderPlay(node, w){
+  if (playing.has(w)){ stopSliderPlay(w); return; }
+  const cfg = sliderCfg(node, w);
+  // start from where the slider already is, so ▶ continues rather than jumps
+  let u = (Number(w.value) - cfg.lo) / ((cfg.hi - cfg.lo) || 1);
+  u = u < 0 ? 0 : u > 1 ? 1 : u;
+  if (cfg.play.mode === 'once' && u >= 1) u = 0;    // rewind a finished sweep
+  playing.set(w, {node, u, dir: 1});
+  if (!playRaf){ playLast = performance.now(); playRaf = requestAnimationFrame(playTick); }
+  lcanvas && lcanvas.setDirty(true, true);
+}
+function stopSliderPlay(w){
+  if (!playing.delete(w)) return;
+  if (!playing.size && playRaf){ cancelAnimationFrame(playRaf); playRaf = null; }
+  scheduleLive();                 // the exact re-bake, as when a drag settles
+  lcanvas && lcanvas.setDirty(true, true);
+}
+function stopAllPlay(){ for (const w of Array.from(playing.keys())) stopSliderPlay(w); }
+function stopPlayForNode(node){   // a deleted node must not keep driving callbacks
+  for (const [w, st] of Array.from(playing)) if (st.node === node) stopSliderPlay(w);
+}
+
+function playTick(now){
+  playRaf = null;
+  const dt = Math.min((now - playLast) / 1000, 0.1);   // clamp: a backgrounded tab
+  playLast = now;                                      // must not jump the sweep
+  for (const [w, st] of Array.from(playing)){
+    const cfg = sliderCfg(st.node, w);
+    let u = st.u + st.dir * cfg.play.speed * dt;
+    if (cfg.play.mode === 'pingpong'){
+      while (u > 1 || u < 0){ u = u > 1 ? 2 - u : -u; st.dir = -st.dir; }
+    } else if (cfg.play.mode === 'loop'){
+      u = ((u % 1) + 1) % 1;
+    } else if (u >= 1){ u = 1; }
+    st.u = u;
+    let v = cfg.lo + (cfg.hi - cfg.lo) * u;
+    v = Math.round(v / cfg.step) * cfg.step;
+    v = Math.min(w.hard.max, Math.max(w.hard.min, v));
+    v = w.isInt ? Math.round(v) : +v.toFixed(4);
+    if (v !== Number(w.value)) w.callback(v);
+    if (cfg.play.mode === 'once' && u >= 1) stopSliderPlay(w);
+  }
+  lcanvas && lcanvas.setDirty(true, true);
+  if (playing.size) playRaf = requestAnimationFrame(playTick);
+}
+
+// The engine pump for params no fast path can anticipate. One run at a time —
+// runGraph() aborts whatever is in flight, so overlapping calls would starve
+// every run but the last and nothing would ever appear on screen.
+let playPumpBusy = false;
+async function playPump(){
+  if (!liveMode || playPumpBusy || loadingGraph) return;
+  playPumpBusy = true;
+  try { await window.runGraph(); }
+  finally { playPumpBusy = false; }
 }
 
 // ⚙ popup: edit one slider's drag window + step. Writes node.properties._ui
@@ -1127,6 +1221,25 @@ function openSliderCfg(node, w, ev){
   title.style.cssText = 'color:var(--text);font-weight:600;margin-bottom:2px';
   el.appendChild(title);
   const iMin = row('min', cfg.lo), iMax = row('max', cfg.hi), iStep = row('step', cfg.step);
+  const sep = document.createElement('div');
+  sep.textContent = '▶ play';
+  sep.style.cssText = 'color:var(--text);font-weight:600;margin-top:6px';
+  el.appendChild(sep);
+  const iSpeed = row('speed (sweeps/s)', cfg.play.speed);
+  const iMode = (() => {
+    const r = document.createElement('label');
+    r.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px';
+    const s = document.createElement('select');
+    s.style.cssText = 'width:92px;background:var(--bg-1);color:var(--text);border:1px solid var(--border);'+
+      'border-radius:5px;padding:3px 6px;font:inherit';
+    for (const [v, lbl] of [['once','once'],['loop','loop'],['pingpong','ping-pong']]){
+      const o = document.createElement('option'); o.value = v; o.textContent = lbl;
+      if (cfg.play.mode === v) o.selected = true;
+      s.appendChild(o);
+    }
+    r.append('mode', s); el.appendChild(r);
+    return s;
+  })();
   const hint = document.createElement('div');
   hint.textContent = `typed values allow ${trimNum(w.hard.min)}…${trimNum(w.hard.max)}`;
   hint.style.cssText = 'font-size:10.5px;opacity:.7';
@@ -1154,8 +1267,11 @@ function openSliderCfg(node, w, ev){
     lo = Math.max(w.hard.min, Math.min(lo, hi));
     hi = Math.min(w.hard.max, Math.max(hi, lo));
     if (w.isInt) step = Math.max(1, Math.round(step));
+    let speed = evalNum(iSpeed.value);
+    if (!(speed > 0)) speed = PLAY_DEFAULT.speed;
     node.properties._ui = node.properties._ui || {};
-    node.properties._ui[w.uiKey] = {min: lo, max: hi, step};
+    node.properties._ui[w.uiKey] = {min: lo, max: hi, step,
+                                    play: {speed, mode: iMode.value}};
     done();
   };
   bOk.onclick = commit;
@@ -2250,6 +2366,9 @@ function fromGraphJSON(data){
   if (sketchNode) exitCurveDrawMode();
   closeInlineNoteEditor(false);   // drop any open note editor before the canvas is rebuilt
   loadingGraph = true;
+  stopAllPlay();                  // the widgets are about to be destroyed. AFTER
+                                  // loadingGraph, so its parting scheduleLive() is
+                                  // swallowed instead of running the incoming graph.
   lastCost = null;                // costs belong to the graph that produced them
   lgraph.clear();
   const map = {};
@@ -2745,6 +2864,9 @@ function onParamChange(node){
     scheduleLive();   // a slider wired into Drop t: same live replay, per target
     return;
   }
+  // Playing and nothing could anticipate it: scheduleLive()'s debounce is reset
+  // every frame and would never fire, so the sweep would be invisible until stop.
+  if (playActive()){ playPump(); return; }
   if (liveMode) scheduleLive();
 }
 
@@ -4819,7 +4941,7 @@ function initGraph(){
   lcanvas.background_image = null;
   // live triggers on structural changes (guarded while loading a graph)
   lgraph.onNodeAdded = ()=>{ scheduleHistory(); scheduleLive(); };
-  lgraph.onNodeRemoved = ()=>{ scheduleHistory(); syncRefImages(); scheduleLive(); };   // drop a removed ref quad now
+  lgraph.onNodeRemoved = (n)=>{ stopPlayForNode(n); scheduleHistory(); syncRefImages(); scheduleLive(); };   // drop a removed ref quad now
   lgraph.onConnectionChange = ()=>{ scheduleHistory(); scheduleLive(); };
   lcanvas.onNodeMoved = ()=>scheduleHistory();     // a node drag settled -> undo step
   // group moves/resizes, wire drags: any canvas gesture that ends here is a candidate
