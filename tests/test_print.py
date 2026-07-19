@@ -293,3 +293,58 @@ def test_without_collide_several_shapes_still_fan_out():
     code = transpile(g)
     call = next(l for l in code.splitlines() if "_drop(" in l and "__out_" in l)
     assert "_fanout" in call
+
+
+def test_container_unfans_the_shapes_even_without_the_toggle():
+    # Parts falling INTO one bowl are one scene by definition — the container
+    # implies collide, or there would be nothing for the parts to land in.
+    g = _g(
+        [{"id": "a", "type": "Box", "params": {}},
+         {"id": "b", "type": "Box", "params": {}},
+         {"id": "bowl", "type": "Sphere", "params": {}},
+         {"id": "d", "type": "Drop", "params": {}}],
+        [{"id": "c1", "from_node": "a", "from_socket": "result",
+          "to_node": "d", "to_socket": "shape"},
+         {"id": "c2", "from_node": "b", "from_socket": "result",
+          "to_node": "d", "to_socket": "shape"},
+         {"id": "c3", "from_node": "bowl", "from_socket": "result",
+          "to_node": "d", "to_socket": "container"}],
+    )
+    g.validate()
+    code = transpile(g)
+    call = next(l for l in code.splitlines() if "= _drop(" in l)
+    assert "_fanout" not in call and "[__out_" in call
+
+
+def test_container_is_optional_and_absent_by_default():
+    # Nothing wired: the argument must still be passed, as None — the runtime
+    # signature takes it positionally.
+    g = _g(
+        [{"id": "a", "type": "Box", "params": {}},
+         {"id": "d", "type": "Drop", "params": {}}],
+        [{"id": "c1", "from_node": "a", "from_socket": "result",
+          "to_node": "d", "to_socket": "shape"}],
+    )
+    g.validate()
+    sock = catalog.get("Drop").input("container")
+    assert sock is not None and sock.required is False
+    call = next(l for l in transpile(g).splitlines() if "= _drop(" in l)
+    args = call.split("_drop(", 1)[1].rsplit(")", 1)[0]
+    assert args.split(", ")[-2] == "None"       # the container slot, ahead of grip
+
+
+def test_grip_reaches_the_runtime_as_an_argument():
+    # The scene's friction is a knob, not a constant: at grip 1 a sloped static
+    # face grabs a falling part and flings it sideways, which is what turned the
+    # Galton board's bell into two lumps against the walls. It must be emitted.
+    p = {p.name: p for p in catalog.get("Drop").params}
+    assert "grip" in p and p["grip"].default == 1.0
+    g = _g(
+        [{"id": "a", "type": "Box", "params": {}},
+         {"id": "d", "type": "Drop", "params": {"grip": 0.15}}],
+        [{"id": "c1", "from_node": "a", "from_socket": "result",
+          "to_node": "d", "to_socket": "shape"}],
+    )
+    g.validate()
+    call = next(l for l in transpile(g).splitlines() if "= _drop(" in l)
+    assert "0.15" in call

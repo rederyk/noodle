@@ -350,7 +350,8 @@ thirds of the material within one — so orientation decides **where the part br
   journey as data to its result (`_noodle_anim`: bounce segs + topple steps, world
   coords, baked t); `_preview_of` lifts it into previews[id].anim, and nodes.html
   (`dropMatrixAt`/`applyDropAnim`) replays any t as pure matrix math at 60fps while the
-  slider or a wired Number Slider drags (✥ fastDrag), mesh pose = M(t)·M(t_baked)⁻¹ —
+  slider or a wired Number Slider drags (drag anticipation — see §6b), mesh pose =
+  M(t)·M(t_baked)⁻¹ —
   the engine re-bakes exactly when the drag settles. COLLISIONS: the `collide` toggle —
   off by default, it costs real compute — un-fans multiple shapes wired into one Drop
   into ONE scene (`_drop_collide` → `_dyn_sim`) and runs REAL rigid-body dynamics
@@ -363,8 +364,27 @@ thirds of the material within one — so orientation decides **where the part br
   shape carries its own keyframe plan (`_noodle_anim` kind "keys"); mesh_extractor emits
   a `{kind:"Scene", bodies:[...]}` preview, viewer.js builds a Group of independently-
   posable meshes, and nodes.html (`keyInterp`/`sceneBodyPose`) replays the whole pile
-  LIVE (lerp+slerp) while the slider drags. Limits: hulls not true meshes, chaotic like
-  real falling), `PrintCheck` (report → Panel), `OverhangFaces`
+  LIVE (lerp+slerp) while the slider drags. Limits: falling parts are hulls, chaotic like
+  real falling. THE CONTAINER: the `container` socket is an IMMOVABLE collider the parts
+  fall into — a bowl, a tray, a crate. It is the one body that is NOT hulled: bullet allows
+  a concave triangle soup for STATIC bodies only (`GEOM_FORCE_CONCAVE_TRIMESH`, mass 0,
+  `_static_colliders` feeds it in bed coordinates), so a bowl keeps its cavity and really
+  cradles what you pour in — verified against the analytic seat, balls resting on a
+  spherical inner wall to <0.03mm. Wiring one implies scene mode whatever the `collide`
+  toggle says (the emitter un-fans on `collide or container`), so a SINGLE part falls in
+  too — and then a plain preview carries an anim of kind "keys", which `applyDropAnim`
+  routes to `sceneBodyPose` instead of `dropMatrixAt`. It never moves and is not an output;
+  preview the bowl node itself). GRIP: `grip` scales the friction of the whole
+  scene (statics, parts, bed). It is not a detail — on a SLOPED static face high
+  friction grabs a part and flings it sideways instead of letting it slide off, so
+  `examples/galton-board.json` at grip 1 throws its balls to the walls (bimodal,
+  hollow centre, gaussian fit −0.13) and at 0.15 gives a real bell (fit +0.81).
+  MESH-LANE TRAP, paid for: `Mesh.__slots__` must list `_noodle_anim`. A build123d
+  Shape takes any attribute, so the B-Rep lane carried the Drop timeline for free
+  and nobody noticed that on the mesh lane the assignment hit the slots wall and was
+  swallowed by `_drop`'s try/except — a dropped mesh simply never replayed, and a
+  collide scene of meshes came back as one merged blob instead of N posable bodies),
+  `PrintCheck` (report → Panel), `OverhangFaces`
   (the faces needing support, as a mesh of its own → its own colour in the viewer),
   `SupportVolume` (the support as a BODY), `OrientForPrint` (every stable pose scored; two
   outputs — the oriented mesh and the table saying why — from ONE search, via
@@ -482,6 +502,34 @@ frontend picks them up from `/api/wiretypes`.
 
 **Group nodes** (BuildPart/BuildSketch) use `is_group=True` + a `builder`
 template and emit nested `with` blocks — see existing examples.
+
+### 6b. Drag anticipation (the old ✥ fastDrag)
+
+It is **not a mode of its own**: `fastDrag()` in nodes.html is `liveMode &&
+fastEnabled`, so turning Live on turns it on. `fastEnabled` is the escape hatch
+for a slow machine (Settings ⚙ checkbox, persisted in localStorage
+`noodle:settings:fastDrag`, default on) — with it off, Live still works, it just
+waits for each run. There is no toolbar button any more.
+
+The contract: while a param drags, replay it locally in Three.js; when the drag
+settles, `scheduleLive()` re-bakes it exactly. The local replay must therefore be
+an *anticipation of the engine's answer*, never a different one.
+
+**When you add a node, ask whether it can be anticipated.** Compatibility is
+decided at DRAG TIME, not at node creation — it depends on the wiring and on
+whether a preview mesh exists, so it cannot be a static flag on the NodeDef:
+
+- `applyLocalTransform(node)` — the node's own preview moved as a delta from the
+  baked params. Today: Move/Rotate/Scale (a `Location`) and Drop (its shipped
+  `_noodle_anim`). Add a node here only if the transform is expressible as a
+  matrix on the already-meshed preview.
+- `applyDropTargets(node)` — a value node (Number Slider…) wired into a `Drop.t`,
+  which replays each target instead of itself.
+
+Both return **false** when they cannot help, and the caller falls through to the
+plain debounced re-run. That fallback is what makes an unanticipated node correct
+but merely slower — so when in doubt, return false. A node that anticipates
+WRONGLY is far worse than one that does not anticipate at all.
 
 **Apply / reload rules:**
 - Backend Python change → `docker restart noodle` (process caches imports;

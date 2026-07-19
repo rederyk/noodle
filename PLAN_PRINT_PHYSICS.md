@@ -75,7 +75,7 @@ cascade, just quasi-static instead of a full rigid-body integrator.
 And because the plan is *data* — segments and steps, not code — the engine ships it with
 the preview (`_noodle_anim` on the result → `previews[id].anim` in view.json) and the
 editor replays any t in the browser as pure matrix math (`dropMatrixAt`, nodes.html):
-with ✥ fastDrag on, dragging the t slider (or a Number Slider wired into `t`, or the
+with Live on, dragging the t slider (or a Number Slider wired into `t`, or the
 timeline gizmo) animates the fall at 60fps with zero engine round trips; the exact
 re-bake lands when the drag settles. One physics, computed once, played anywhere.
 
@@ -107,10 +107,43 @@ preview, `viewer.js` builds a Group of independently-posable meshes, and `nodes.
 drags — the same live-replay story as the single drop, now for a whole pile. The demo
 (`drop-stack`): three boxes fall as one scene — one lands, one stacks, and the half-off
 cube tumbles over the edge, rolls off and ends flat on the bed beside. Declared limits:
-convex HULLS, not the true meshes (a bowl will not cradle a ball); rest poses carry the
+the falling parts are convex HULLS, not their true meshes; rest poses carry the
 solver's contact margin (sub-micron in mm units), not CAD exactness; deterministic per
 scene but chaotic in the physical sense — nudge a part a hair and the pile lands
 differently. That is not a bug; that is what falling is.
+
+### 2b. The container — the one body that keeps its concavity
+
+Hulls are fine for the things that fall and fatal for the thing they fall *into*: the hull
+of a bowl is a dome, and a dome sheds. So `Drop` grew a second input, **`container`** — an
+immovable collider that never moves and is never an output.
+
+Bullet will accept a **concave triangle soup** for a body, but only a static one
+(`GEOM_FORCE_CONCAVE_TRIMESH`, mass 0). That restriction lines up exactly with what a
+container is, so the trade writes itself: **the thing that holds is exact, the things that
+fall are hulls.** `_static_colliders` turns the wired shape (or shapes — several may be
+wired) into (vertices, faces) in bed coordinates and `_dyn_sim` registers each as a static
+body, a little grippier and deader than the bed (restitution 0.2, lateral friction 0.9,
+plus rolling/spinning friction) so a part that lands in a bowl *stops* there instead of
+skating round the cavity for the full 8 s.
+
+Verified against the analytic seat: a hemispherical bowl of inner radius 18 (floor at
+z = 2), three balls of r = 4 poured in. They come to rest at radial offset 1.63 / 6.19 /
+8.94 and heights 6.17 / 7.56 / 9.24 mm — where a ball resting on that inner wall at radius
+ρ must sit at 20 − √(14² − ρ²) = 6.00 / 7.44 / 9.22. The first sits on the floor, the other
+two nestle against it and ride up the wall, each within 0.03 mm of where the geometry says
+it must be.
+
+A wired container **implies scene mode**, whatever the `collide` toggle says: the emitter
+un-fans the shapes on `collide or container`, because parts falling into one bowl are one
+scene by definition, and a single part dropped into a bowl is the whole point of the
+socket. One consequence reaches the browser: a single body now arrives as a plain preview
+carrying a keyframe plan rather than a `Scene`, so `applyDropAnim` routes an anim of kind
+`"keys"` to `sceneBodyPose` instead of the analytic `dropMatrixAt`.
+
+Open: the container is static and rigid, so you cannot shake the bowl; and a very heavy
+container mesh is fed to bullet whole (it builds a BVH — fine so far, but a 200k-triangle
+bowl has not been measured).
 
 ## 3. How each number is got
 
