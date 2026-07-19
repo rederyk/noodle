@@ -3358,13 +3358,68 @@ def _align(_shape, _ref=None, _target=None):
     return Pos(_v.X, _v.Y, _v.Z) * _shape
 
 
-def _split(_shape, _plane=None, _keep=None):
-    \"\"\"Split a shape by a plane, keeping the requested side(s). Defaults to the
-    XY plane / Keep.TOP.\"\"\"
+def _split_tool(_t):
+    \"\"\"Coerce whatever is wired into Split's `plane` socket into a cutting tool
+    build123d's split() accepts: a Plane, a Face, or a Shell. A SOLID cuts by its
+    skin (the shell of its faces) — so a sphere trims a box along the sphere.\"\"\"
+    if _t is None:
+        return Plane.XY
+    if isinstance(_t, Plane):
+        return _t
+    if isinstance(_t, Location):
+        return Plane(_t)
+    if isinstance(_t, Shell):
+        return _t
+    _fs = list(_t.faces()) if hasattr(_t, "faces") else []
+    if not _fs:
+        return Plane.XY
+    if len(_fs) == 1 and not (hasattr(_t, "solids") and _t.solids()):
+        return _fs[0]
+    return Shell(_fs)
+
+
+def _on_tool(_p, _tool, _tol=1e-6):
+    \"\"\"True when point _p lies ON the cutting tool — i.e. the face it came from
+    is one the cut CREATED, not a face of the original shape.\"\"\"
+    try:
+        if isinstance(_tool, Plane):
+            return abs(_tool.to_local_coords(Vector(_p)).Z) <= _tol
+        return Vertex(_p.X, _p.Y, _p.Z).distance_to(_tool) <= _tol
+    except Exception:
+        return False
+
+
+def _open_cut(_r, _tool):
+    \"\"\"Drop the faces the cut created, leaving the shape OPEN where it was cut.
+    Everything else survives, sewn back into a Shell (one per piece).\"\"\"
+    if _r is None:
+        return None
+    _pieces = list(_r.solids()) or [_r]
+    _out = []
+    for _p in _pieces:
+        _keep = [_f for _f in _p.faces() if not _on_tool(_f.center(), _tool)]
+        if not _keep:
+            continue
+        try:
+            _out.append(Shell(_keep))
+        except Exception:
+            _out.append(Compound(_keep))
+    if not _out:
+        return None
+    return _out[0] if len(_out) == 1 else Compound(_out)
+
+
+def _split(_shape, _plane=None, _keep=None, _solid=True):
+    \"\"\"Split a shape by a plane, a surface or another solid, keeping the
+    requested side(s). Defaults to the XY plane / Keep.TOP. With _solid False the
+    cut is left OPEN — the faces the tool created are dropped and what comes back
+    is a shell, not a capped solid.\"\"\"
     if _shape is None:
         return None
-    _pl = _plane if isinstance(_plane, Plane) else Plane.XY
-    return split(_shape, bisect_by=_pl, keep=_keep if _keep is not None else Keep.TOP)
+    _tool = _split_tool(_plane)
+    _r = split(_shape, bisect_by=_tool,
+               keep=_keep if _keep is not None else Keep.TOP)
+    return _r if _solid else _open_cut(_r, _tool)
 
 
 def _plane_normal(_origin=None, _normal=None):

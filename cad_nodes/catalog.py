@@ -938,18 +938,27 @@ register(NodeDef("Section", "modifiers", "Section",
                 "global origin when nothing is wired."))
 
 register(NodeDef("Split", "modifiers", "Split",
+    # raw=True: the tool must arrive AS WIRED. Without it the surface->plane cast
+    # (_as_plane) would flatten a curved cutting surface into the plane it roughly
+    # lies in, and the whole point of accepting a surface would be lost.
     inputs=[Socket("shape", WIRE_SOLID),
-            Socket("plane", WIRE_PLANE, required=False)],
+            Socket("plane", WIRE_PLANE, required=False, raw=True)],
     params=[Param("keep", "select", "keep", "top", widget="select",
                   options=["top", "bottom", "both"],
                   code_map={"top": "Keep.TOP", "bottom": "Keep.BOTTOM",
-                            "both": "Keep.BOTH"})],
+                            "both": "Keep.BOTH"}),
+            Param("solid", "bool", "solid", True, widget="checkbox")],
     outputs=_geo(),
-    code_template={"algebra": "_split({shape}, {plane}, {keep})"},
-    description="Cut a shape in two with a plane and keep the side above it "
-                "(`top`), below it (`bottom`) or `both` halves. Wire a Bounding "
-                "Plane / Plane node to place the cut; defaults to XY through the "
-                "origin. Unlike Section (a 2D slice), Split keeps solid geometry."))
+    aliases=["Cut", "Trim"],
+    code_template={"algebra": "_split({shape}, {plane}, {keep}, {solid})"},
+    description="Cut a shape in two and keep the side above the tool (`top`), "
+                "below it (`bottom`) or `both` halves. The tool is whatever is "
+                "wired into `plane`: a Plane (Bounding Plane / Plane node), a "
+                "SURFACE — the cut follows it curve and all — or another SOLID, "
+                "which cuts along its skin. Defaults to XY through the origin. "
+                "`solid` off leaves the cut OPEN: the faces the tool created are "
+                "dropped and you get a shell, not a capped solid. Unlike Section "
+                "(a 2D slice), Split keeps the geometry it cut."))
 
 # ===========================================================================
 # 6. Transforms
