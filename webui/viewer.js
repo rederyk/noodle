@@ -18,6 +18,7 @@ import * as THREE from 'three';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 // distinct, legible-on-dark palette; terminals cycle through it by default
 export const PALETTE = ['#2dd4a0', '#3b82f6', '#f59e0b', '#e94560', '#a855f7',
@@ -51,15 +52,40 @@ function geomFromData(m) {
 // A hue per index, walked by the golden angle so neighbours never collide. It is
 // deterministic, not random: "random colours" that reshuffle on every re-render
 // would make a part you are looking at change identity while you turn it.
+// Finish decides what a preview is MADE of. `glass` is real transmission, not
+// opacity: light refracts through it and the pieces behind stay in the right
+// order, which flat alpha blending cannot do at any price. It costs a render
+// target per frame — Settings can turn it off (HQ = false) and everything falls
+// back to cheap alpha, but in a CAD viewport being able to trust what you see
+// through a wall is worth more than the frames.
+let HQ = true;
+export function setQuality(on) { HQ = !!on; }
+export function makeMaterial(color, finish) {
+  const base = { color, side: THREE.DoubleSide };
+  if (finish === 'glass') {
+    return HQ
+      ? new THREE.MeshPhysicalMaterial({ ...base, roughness: .08, metalness: 0,
+          transmission: 1, thickness: 6, ior: 1.45, transparent: true })
+      : new THREE.MeshStandardMaterial({ ...base, roughness: .2, metalness: 0,
+          transparent: true, opacity: .35, depthWrite: false });
+  }
+  if (finish === 'emissive') {
+    return new THREE.MeshStandardMaterial({ ...base, emissive: color,
+      emissiveIntensity: 1.4, roughness: .5, metalness: 0 });
+  }
+  if (finish === 'metal')
+    return new THREE.MeshStandardMaterial({ ...base, roughness: .22, metalness: 1 });
+  return new THREE.MeshStandardMaterial({ ...base, roughness: .4, metalness: .12 });
+}
+
 export function rainbowHue(i) {
   const c = new THREE.Color();
   c.setHSL(((i * 137.508) % 360) / 360, 0.62, 0.56);
   return c;
 }
-export function meshFromData(m, color, parts) {
+export function meshFromData(m, color, parts, finish) {
   const geo = geomFromData(m);
-  const std = c => new THREE.MeshStandardMaterial(
-    { color: c, roughness: .4, metalness: .12, side: THREE.DoubleSide });
+  const std = c => makeMaterial(c, finish);
   // Rainbow over a fanned list: one geometry group per piece (`parts` counts
   // triangles, so the offsets are 3x that) and a material per group. Without it
   // the whole buffer keeps ONE material and one draw call, exactly as before.
@@ -124,7 +150,7 @@ function objFromPreview(p, color, opts, scale) {
     return grp;
   }
   if (p.mesh) {
-    const obj = meshFromData(p.mesh, color, p.parts);
+    const obj = meshFromData(p.mesh, color, p.parts, opts && opts.finish);
     if (opts && opts.wireframe) {
       for (const mt of (Array.isArray(obj.material) ? obj.material : [obj.material])) {
         mt.wireframe = true; mt.metalness = 0;
@@ -158,7 +184,7 @@ export class CadViewer {
       new THREE.MeshBasicMaterial({ color: 0xe94560 })));
     const previewGroup = new THREE.Group(); scene.add(previewGroup);
     const ax = new THREE.AxesHelper(20); ax.material.transparent = true; ax.material.opacity = .6; scene.add(ax);
-    scene.add(new THREE.AmbientLight(0x404060, 2.5));
+    scene.add(new THREE.AmbientLight(0x404060, 1.1));
     const key = new THREE.DirectionalLight(0xffffff, 2); key.position.set(40, 60, 80); scene.add(key);
     const fill = new THREE.DirectionalLight(0x8888cc, .8); fill.position.set(-40, -20, 40); scene.add(fill);
 
@@ -168,6 +194,16 @@ export class CadViewer {
     camera.position.set(60, -60, 45);
 
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  // Filmic tone mapping + an image-based environment. This is the whole
+  // difference between "shaded triangles" and "a render": specular highlights
+  // that wrap, and a sky/floor gradient reflected in every curved face.
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();                       // the cubemap is kept, the generator is not
+  }
     renderer.setSize(c.clientWidth, c.clientHeight);
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.autoClear = false;             // ViewHelper overlays after the main render
@@ -438,7 +474,7 @@ export class CadViewer {
   //   colorOf(id, order) -> hex   (default: palette by order index)
   //   wireOf(id) -> bool          (default: false)
   //   onEmpty()                   (called when nothing is drawable; e.g. STL fallback)
-  renderPreviews(previews, { colorOf, wireOf, onEmpty } = {}) {
+  renderPreviews(previews, { colorOf, wireOf, finishOf, onEmpty } = {}) {
     previews = previews || {};
     this._clearPreviewGroup();
     const drawable = e => e && (e.mesh || e.polylines || e.points || e.bodies);
@@ -450,7 +486,9 @@ export class CadViewer {
     const colors = {}, meshes = {};
     for (const id of order) {
       const color = colorOf ? colorOf(id, order) : PALETTE[order.indexOf(id) % PALETTE.length];
-      const obj = objFromPreview(previews[id], color, { wireframe: wireOf ? wireOf(id) : false }, scale);
+      const obj = objFromPreview(previews[id], color,
+      { wireframe: wireOf ? wireOf(id) : false,
+        finish: finishOf ? finishOf(id) : null }, scale);
       if (!obj) continue;
       obj.userData.nodeId = id;
       this.previewGroup.add(obj);

@@ -469,7 +469,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';        // sub-shape picker modal
 import { TransformControls } from 'three/addons/controls/TransformControls.js'; // on-canvas gizmo
-import { CadViewer, PALETTE, nodeNum, meshFromData } from '/static/viewer.js';   // shared main viewport
+import { CadViewer, PALETTE, nodeNum, meshFromData, setQuality } from '/static/viewer.js';   // shared main viewport
 
 const API = '';
 const LiteGraph = window.LiteGraph;
@@ -501,6 +501,8 @@ let loadingGraph = false;  // suppress live triggers while rebuilding the graph
 // still dragging, so it rides on liveMode. The setting is the escape hatch for a
 // machine where the local replay costs more than it saves (default: on).
 const FAST_FLAG = 'noodle:settings:fastDrag';
+const HQ_FLAG = 'noodle:settings:hqRender';
+setQuality(localStorage.getItem(HQ_FLAG) !== '0');
 let fastEnabled = localStorage.getItem(FAST_FLAG) !== '0';
 const fastDrag = () => liveMode && fastEnabled;
 let previewMeshes = {};    // graph node-id -> THREE.Mesh currently shown
@@ -806,6 +808,17 @@ function registerNodes(defs){
         if (self.widgets && self.widgets.some(w=>w.isEye)){   // a node that renders geometry
           opts.push({content: (self.wireframe?'✓ ':'')+'Wireframe',
             callback: ()=>{ self.wireframe = !self.wireframe; refreshDisplay(); }});
+          opts.push({content: '✨ Finish', has_submenu: true,
+            callback: (v,o,e,menu)=>{
+              const set = f => ()=>{ self.previewFinish = f; refreshDisplay(); };
+              new LiteGraph.ContextMenu([
+                {content:'Solid (default)', callback:set(null)},
+                {content:'🔎 Glass — real transmission, see through it', callback:set('glass')},
+                {content:'💡 Emissive — it glows', callback:set('emissive')},
+                {content:'🪙 Metal', callback:set('metal')},
+              ], {event:e, parentMenu:menu, title:'Finish'});
+              return false;
+            }});
           opts.push({content: '🎨 Preview colour', has_submenu: true,
             callback: (v,o,e,menu)=>{
               const sw = c=>`<span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:${c};margin-right:6px;vertical-align:middle"></span>`;
@@ -1987,6 +2000,7 @@ function toGraphJSON(name){
     else if (n.previewMode === 'off') nd.preview = false;   // 'auto' -> omitted
     if (n.bypassed) nd.bypassed = true;
     if (n.previewColor) nd.color = n.previewColor;
+    if (n.previewFinish) nd.finish = n.previewFinish;
     if (n.wireframe) nd.wireframe = true;
     if (n.multiInputs && n.multiInputs.size) nd.multi = [...n.multiInputs];
     nodes.push(nd);
@@ -2023,6 +2037,7 @@ function createNodeFromData(nd){
   node.previewMode = nd.preview === true ? 'on' : nd.preview === false ? 'off' : 'auto';
   if (nd.bypassed){ node.bypassed = true; node.mode = LiteGraph.NEVER; }
   if (nd.color) node.previewColor = nd.color;
+  if (nd.finish) node.previewFinish = nd.finish;
   if (nd.wireframe) node.wireframe = true;
   if (nd.multi) for (const nm of nd.multi) node.multiInputs.add(nm);
   if (nd.params && nd.params.selection){ node.selectionData = nd.params.selection; updateSelectBtn(node); }
@@ -3684,6 +3699,7 @@ function renderPreviews(view){
   const r = viewer.renderPreviews((view && view.previews) || {}, {
     colorOf: (id, order)=> resolveColor(id, order),
     wireOf:  (id)=> !!(nodeIndex[id] && nodeIndex[id].wireframe),
+    finishOf:(id)=> (nodeIndex[id] && nodeIndex[id].previewFinish) || null,
     onEmpty: ()=>{ previewMeshes = {}; renderLegend([]); if(lcanvas) lcanvas.setDirty(true, true);
       viewer.loadSTL(`${API}/api/projects/${currentName}/download?t=`+Date.now(),
         { onSize:(s)=>{ if(s) setStats(`${s.x.toFixed(1)} × ${s.y.toFixed(1)} × ${s.z.toFixed(1)} mm`); } }); },
@@ -5096,11 +5112,20 @@ window.openSettings = function(){
       `replays in the viewport at 60fps instead of waiting for the engine; the exact re-bake `+
       `lands when you let go. Turn it off if the local replay costs your machine more than `+
       `it saves: Live still works, it just waits for each run.</small></span></label>`+
+    `<label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;margin-top:12px">`+
+      `<input type="checkbox" id="set-hq" ${localStorage.getItem(HQ_FLAG)!=='0'?'checked':''} style="margin-top:3px">`+
+      `<span><b>High-quality rendering</b><br>`+
+      `<small style="color:var(--txt-dim)">Glass finishes refract properly instead of being faked with `+
+      `alpha, so overlapping parts stay in the right order — the thing flat transparency cannot do at `+
+      `any price. It costs a render target per frame. Off, glass falls back to cheap alpha blending.</small></span></label>`+
     `<div class="modal-actions"><button class="tb-btn primary" id="set-ok">Done</button></div>`);
   const cb=m.ov.querySelector('#set-fb');
   cb.addEventListener('change', ()=>{ localStorage.setItem(FEEDBACK_FLAG, cb.checked?'1':'0'); applyFeedbackSetting(); });
   const cc=m.ov.querySelector('#set-cost');
   cc.addEventListener('change', ()=>{ if (cc.checked !== showCost) toggleCost(); });
+  const ch=m.ov.querySelector('#set-hq');
+  ch.addEventListener('change', ()=>{ localStorage.setItem(HQ_FLAG, ch.checked?'1':'0');
+    setQuality(ch.checked); refreshDisplay(); });
   const cf=m.ov.querySelector('#set-fast');
   cf.addEventListener('change', ()=>{ if (cf.checked !== fastEnabled) toggleFastDrag(); });
   m.ov.querySelector('#set-ok').onclick=()=>m.close();
