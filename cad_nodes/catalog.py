@@ -1875,6 +1875,7 @@ register(NodeDef("Drop", "print", "Drop",
     inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_SURFACE, WIRE_MESH]),
             Socket("container", WIRE_SOLID, accepts=[WIRE_SURFACE, WIRE_MESH],
                    required=False),
+            Socket("motion", WIRE_DATA, required=False),
             Socket("plane", WIRE_PLANE, required=False)] + _pin("t"),
     params=[_f("t", 1.0, 0.0, 1.0, step=0.01, label="timeline"),
             Param("material", "select", "material", "plastic", widget="select",
@@ -1886,7 +1887,7 @@ register(NodeDef("Drop", "print", "Drop",
     output_follows="shape",
     gizmo={"kind": "timeline", "binds": ["t"], "anchor": "preview", "lock": ["t"]},
     code_template={"algebra": "_drop({shape}, {plane}, {t}, {material}, {settle}, "
-                              "{collide}, {container}, {grip})"},
+                              "{collide}, {container}, {grip}, {motion})"},
     description="Place on Bed, but as a FALL you can scrub: drag `timeline` from 0 "
                 "(where the part is now) to 1 (at rest on the plane). The part drops "
                 "under gravity, BOUNCES — each impact keeps a fixed fraction of the "
@@ -1923,6 +1924,47 @@ register(NodeDef("Drop", "print", "Drop",
                 "off, so a Galton board built at grip 1 throws its balls to the walls and "
                 "the bell collapses into two lumps; at 0.3 it comes out normal. Measured, "
                 "not guessed."))
+
+register(NodeDef("ContainerMotion", "print", "Container Motion",
+    aliases=["Shake", "Tilt", "Pour", "Stir", "Agitate", "Spin", "Vibrate",
+             "Tumble", "Shaker"],
+    inputs=[Socket("offset", WIRE_VECTOR, required=False),
+            Socket("pivot", WIRE_VECTOR, required=False)],
+    params=[_f("x", 0, -500, 500, label="move x"),
+            _f("y", 0, -500, 500, label="move y"),
+            _f("z", 0, -500, 500, label="move z"),
+            _f("rx", 0, -720, 720, step=1, label="rotate x"),
+            _f("ry", 0, -720, 720, step=1, label="rotate y"),
+            _f("rz", 0, -720, 720, step=1, label="rotate z"),
+            _f("cycles", 0, 0, 30, step=0.5, label="cycles (0=one way)"),
+            _f("duration", 1.0, 0.05, 20, step=0.05, label="duration (s)"),
+            _f("delay", 0.0, 0.0, 20, step=0.05, label="delay (s)"),
+            Param("easing", "select", "easing", "smooth", widget="select",
+                  options=["smooth", "linear"])],
+    outputs=_data("motion"),
+    code_template={"algebra": "_container_motion({offset}, {x}, {y}, {z}, "
+                              "{rx}, {ry}, {rz}, {pivot}, {cycles}, {duration}, "
+                              "{delay}, {easing})"},
+    description="MOVE the thing that was holding still: wire this into a Drop's "
+                "`motion` and its `container` — the bowl, the tray, the crate — "
+                "tilts, shakes or spins on the same timeline instead of just "
+                "sitting there. This is not gravity and not a fall. You dictate "
+                "the motion; the parts inside answer to it through contact and "
+                "friction alone, which is why they lag, slide, climb the wall and "
+                "spill rather than following it rigidly. `cycles` picks the shape "
+                "of the motion and everything else falls out of it: 0 is a RAMP — "
+                "go there once and stay, which is a tilt, a pour, a crate tipped "
+                "over; above 0 it OSCILLATES about the starting pose that many "
+                "times, which is a shake, a stir, a vibration, a tap. So: pour = "
+                "rotate x/y ~110 (past the wall, or nothing comes out) with cycles "
+                "0; shake = move 10 with cycles 8; settle a powder = move z 3, "
+                "cycles 20; centrifuge = rotate z 720. `delay` waits before it "
+                "starts — fill the bowl first, THEN tilt it. Rotation is about the "
+                "container's own centre unless you wire a `pivot` (the hinge of a "
+                "hopper, the lip a crate tips over). Motion needs a container: on "
+                "its own it does nothing. Costs almost nothing to drive (~5ms per "
+                "simulated second), but it keeps the scene awake for its whole "
+                "duration — a shaker never settles, so it runs the full length."))
 
 register(NodeDef("PrintCheck", "print", "Print Check",
     inputs=[Socket("mesh", WIRE_MESH)],

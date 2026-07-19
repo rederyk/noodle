@@ -743,7 +743,9 @@ class Mesh:
     # free and nobody noticed that on the mesh lane the assignment was hitting the
     # __slots__ wall and being swallowed by _drop's try/except — a mesh dropped or
     # collided simply never replayed in the browser, silently.
-    __slots__ = ("tm", "_noodle_anim")
+    # `_noodle_extra` rides the same way: the moving `container` bodies, which are
+    # NOT outputs of the node but must still be drawn (and animated) in its preview.
+    __slots__ = ("tm", "_noodle_anim", "_noodle_extra")
 
     def __init__(self, tm):
         self.tm = tm
@@ -1487,7 +1489,7 @@ def _drop_apply(_shape, _B, _o, _ops):
 
 
 def _drop(_shape, _plane=None, _t=1.0, _material="plastic", _settle=True,
-          _collide=False, _container=None, _grip=1.0):
+          _collide=False, _container=None, _grip=1.0, _motion=None):
     \"\"\"A real fall onto the plane, scrubbed by _t: 0 = where the part is now,
     1 = at rest. The part falls, BOUNCES (each impact keeps _DROP_E of its
     speed), and — with `settle` — TOPPLES: once the bounces die, the quasi-
@@ -1498,12 +1500,16 @@ def _drop(_shape, _plane=None, _t=1.0, _material="plastic", _settle=True,
     down. A `container` is an immovable collider they land IN — a bowl, a tray —
     kept concave rather than hulled, and it turns scene mode on by itself (there
     is no other way to honour it, and one part falling into a bowl is the point).
+    With a `motion` plan wired in, that container stops being furniture: it tilts,
+    shakes or spins on the same timeline, and the parts answer to it through
+    contact alone (_container_motion / _motion_driver).
     Works on both lanes: it measures on the mesh and transforms the ORIGINAL, so
     a solid stays a solid. A part starting under the plane surfaces linearly —
     it cannot fall.\"\"\"
     if _container is not None or (_collide and isinstance(_shape, (list, tuple))):
         shapes = list(_shape) if isinstance(_shape, (list, tuple)) else [_shape]
-        out = _drop_collide(shapes, _plane, _t, _material, _settle, _container, _grip)
+        out = _drop_collide(shapes, _plane, _t, _material, _settle, _container,
+                            _grip, _motion)
         return out if isinstance(_shape, (list, tuple)) else (out[0] if out else None)
     if _shape is None:
         return None
@@ -1606,7 +1612,107 @@ def _quat_slerp(_qa, _qb, _f):
     return (math.sin((1 - _f) * th) * qa + math.sin(_f * th) * qb) / math.sin(th)
 
 
-def _dyn_sim(_hulls, _coms, _e, _t_max=8.0, _statics=(), _grip=1.0):
+def _mat_quat(_R):
+    \"\"\"3x3 rotation -> pybullet quaternion (x, y, z, w). Shepperd's branch: pick
+    the largest diagonal term so the divisor is never near zero.\"\"\"
+    import numpy as _np
+    R = _np.asarray(_R, dtype=float)
+    tr = R[0, 0] + R[1, 1] + R[2, 2]
+    if tr > 0.0:
+        s = math.sqrt(tr + 1.0) * 2.0
+        return [(R[2, 1] - R[1, 2]) / s, (R[0, 2] - R[2, 0]) / s,
+                (R[1, 0] - R[0, 1]) / s, 0.25 * s]
+    i = int(_np.argmax([R[0, 0], R[1, 1], R[2, 2]]))
+    j, k = (i + 1) % 3, (i + 2) % 3
+    s = math.sqrt(max(1.0 + R[i, i] - R[j, j] - R[k, k], 1e-30)) * 2.0
+    q = [0.0, 0.0, 0.0, (R[k, j] - R[j, k]) / s]
+    q[i], q[j], q[k] = 0.25 * s, (R[j, i] + R[i, j]) / s, (R[k, i] + R[i, k]) / s
+    return q
+
+
+def _container_motion(_offset=None, _x=0.0, _y=0.0, _z=0.0,
+                      _rx=0.0, _ry=0.0, _rz=0.0, _pivot=None,
+                      _cycles=0.0, _duration=1.0, _delay=0.0, _easing="smooth"):
+    \"\"\"A prescribed motion for a Drop `container`: the bowl/tray/crate stops being
+    furniture and becomes the thing that DOES something — tilt it and it pours,
+    shake it and the pile packs, spin it and the contents lag behind.
+
+    It is deliberately generic rather than a menu of presets: one translation, one
+    rotation, and `cycles`, which chooses between the two shapes of motion anyone
+    actually wants. cycles = 0 is a RAMP — go there once and stay (tilt, pour,
+    tip a crate over). cycles > 0 is an OSCILLATION about the start pose (shake,
+    stir, vibrate, tap). Every preset falls out of that: pour = rotate 110 deg,
+    cycles 0; shake = move 10mm, cycles 8; centrifuge = rotate z 720.
+
+    This is NOT gravity and NOT a fall — it is a motion you dictate, and the parts
+    inside respond to it through contact and friction alone. Returns a plain plan
+    dict; `_motion_driver` turns it into the pose(t) the solver drives.\"\"\"
+    def _v3(v, fb):
+        if v is None:
+            return [float(fb[0]), float(fb[1]), float(fb[2])]
+        if hasattr(v, "X"):
+            return [float(v.X), float(v.Y), float(v.Z)]
+        try:
+            s = list(v)[:3]
+            return [float(s[0]), float(s[1]), float(s[2])]
+        except Exception:
+            return [float(fb[0]), float(fb[1]), float(fb[2])]
+    return {"move": _v3(_offset, (_x, _y, _z)),
+            "rot": [float(_rx), float(_ry), float(_rz)],
+            "pivot": None if _pivot is None else _v3(_pivot, (0.0, 0.0, 0.0)),
+            "cycles": max(0.0, float(_cycles)),
+            "duration": max(1e-3, float(_duration)),
+            "delay": max(0.0, float(_delay)),
+            "easing": str(_easing)}
+
+
+def _motion_driver(_plan, _B, _o, _pivot_bed):
+    \"\"\"Turn a motion plan into `pose(tau) -> (position, quaternion)` for the static
+    rig, in BED coordinates (where the colliders live).
+
+    The user dictates the motion in WORLD xyz — that is how they think about a
+    tray — so both the displacement and the rotation axes are carried into the bed
+    frame here: R_bed = B^T R_world B, and a rotation about pivot p becomes the
+    base position p - R p (bullet poses a body as x -> R x + pos, so that is the
+    only way to make it turn about anything other than the bed origin).\"\"\"
+    import numpy as _np
+    if _plan is None:
+        return None, 0.0
+    mv = _np.asarray(_plan["move"], dtype=float)
+    rot = _np.asarray(_plan["rot"], dtype=float)
+    dur, dly = float(_plan["duration"]), float(_plan["delay"])
+    cyc, ease = float(_plan["cycles"]), str(_plan.get("easing", "smooth"))
+    p_b = (_np.asarray(_plan["pivot"], dtype=float) - _o) @ _B \
+        if _plan.get("pivot") is not None else _np.asarray(_pivot_bed, dtype=float)
+    d_b = mv @ _B                                      # world displacement -> bed
+    end = dly + dur
+
+    def _phase(tau):
+        u = (float(tau) - dly) / dur
+        if u <= 0.0:
+            return 0.0
+        if cyc > 0.0:
+            # An oscillation ABOUT the start pose, and it must return to it: past
+            # the end the rig is parked where it began, not frozen mid-swing.
+            return math.sin(2.0 * math.pi * cyc * min(u, 1.0)) if u <= 1.0 else 0.0
+        u = min(u, 1.0)
+        return u * u * (3.0 - 2.0 * u) if ease == "smooth" else u
+
+    def pose(tau):
+        s = _phase(tau)
+        a = _np.radians(rot * s)
+        ca, sa = _np.cos(a), _np.sin(a)
+        Rx = _np.array([[1, 0, 0], [0, ca[0], -sa[0]], [0, sa[0], ca[0]]])
+        Ry = _np.array([[ca[1], 0, sa[1]], [0, 1, 0], [-sa[1], 0, ca[1]]])
+        Rz = _np.array([[ca[2], -sa[2], 0], [sa[2], ca[2], 0], [0, 0, 1]])
+        R_b = _B.T @ (Rz @ Ry @ Rx) @ _B               # world euler -> bed frame
+        return p_b - R_b @ p_b + s * d_b, _mat_quat(R_b)
+
+    return pose, end
+
+
+def _dyn_sim(_hulls, _coms, _e, _t_max=8.0, _statics=(), _grip=1.0,
+             _pose=None, _drive_until=0.0):
     \"\"\"The rigid-body simulation behind collide: pybullet, DIRECT mode, fixed
     timestep (deterministic for a given scene on a given build), every part a
     CONVEX HULL of its mesh. All parts fall TOGETHER — they hit each other in
@@ -1619,6 +1725,19 @@ def _dyn_sim(_hulls, _coms, _e, _t_max=8.0, _statics=(), _grip=1.0):
     cradles what falls in instead of being a dome that sheds it. Bullet only
     allows that for static bodies, which is exactly the trade this socket makes:
     the thing that holds is exact, the things that fall are hulls.
+
+    `_pose(tau) -> (position, quaternion)` MOVES that rig (the ContainerMotion
+    node): tilt, shake, spin. Two things are load-bearing and both were measured.
+    resetBasePositionAndOrientation alone does NOT carry the contents — it
+    teleports the body, so the contact exists with zero relative velocity, the
+    friction solver has nothing to transmit and the tray slides out from under
+    the part (a box on a tray translated 50mm rode along 1.2% of the way, i.e.
+    not at all). Pairing it with resetBaseVelocity every step is what makes the
+    contact real: 99.3% carried. And the obvious alternative — a real mass with a
+    JOINT_FIXED constraint driven by changeConstraint — carries just as well
+    (99.9%) and is still WRONG here, because mass > 0 forbids
+    GEOM_FORCE_CONCAVE_TRIMESH: it would hull the bowl and throw away the cavity,
+    which is the only reason the container socket exists.
 
     Units are millimetres DIRECTLY (no down-scaling): pybullet's collision
     margin is a fixed absolute value, so working in mm makes it a sub-micron
@@ -1648,7 +1767,8 @@ def _dyn_sim(_hulls, _coms, _e, _t_max=8.0, _statics=(), _grip=1.0):
         pbody = _pb.createMultiBody(0.0, plane, physicsClientId=cl)
         _pb.changeDynamics(pbody, -1, restitution=1.0, lateralFriction=0.8 * _grip,
                            physicsClientId=cl)
-        for (sv, sf) in _statics:
+        sids = []
+        for (sv, sf, _src) in _statics:
             scs = _pb.createCollisionShape(
                 _pb.GEOM_MESH, vertices=_np.asarray(sv, dtype=float).tolist(),
                 indices=[int(i) for i in _np.asarray(sf).reshape(-1)],
@@ -1664,6 +1784,13 @@ def _dyn_sim(_hulls, _coms, _e, _t_max=8.0, _statics=(), _grip=1.0):
             _pb.changeDynamics(sid, -1, restitution=0.2, lateralFriction=0.9 * _grip,
                                rollingFriction=0.05 * _grip, spinningFriction=0.05 * _grip,
                                physicsClientId=cl)
+            sids.append(sid)
+        if _pose is not None and sids:
+            p0, q0 = _pose(0.0)
+            for sid in sids:
+                _pb.resetBasePositionAndOrientation(
+                    sid, [float(x) for x in p0], [float(x) for x in q0],
+                    physicsClientId=cl)
         ids = []
         for hv, c0 in zip(_hulls, _coms):
             local = _np.asarray(hv, dtype=float) - c0
@@ -1685,14 +1812,38 @@ def _dyn_sim(_hulls, _coms, _e, _t_max=8.0, _statics=(), _grip=1.0):
                                physicsClientId=cl)
             ids.append(bid)
         times, poss, quats = [], [[] for _ in ids], [[] for _ in ids]
+        spos, squat = [], []
         still = 0
+        dt = 1.0 / 240.0
         steps = int(240 * _t_max)
         for k in range(steps):
+            tau = k * dt
+            if _pose is not None and sids:
+                p_a, q_a = _pose(tau)
+                p_b2, q_b2 = _pose(tau + dt)           # forward difference = the
+                lin = [(float(b) - float(a)) / dt      # velocity the solver needs
+                       for a, b in zip(p_a, p_b2)]
+                ang = _ang_vel(q_a, q_b2, dt)
+                for sid in sids:
+                    _pb.resetBasePositionAndOrientation(
+                        sid, [float(x) for x in p_a], [float(x) for x in q_a],
+                        physicsClientId=cl)
+                    _pb.resetBaseVelocity(sid, linearVelocity=lin,
+                                          angularVelocity=ang, physicsClientId=cl)
             _pb.stepSimulation(physicsClientId=cl)
             if k % 4:
                 continue                               # record at 60Hz (scrub lerps)
             times.append((k + 1) / 240.0)
+            if _pose is not None:
+                p_r, q_r = _pose(tau + dt)
+                spos.append([float(x) for x in p_r])
+                squat.append([float(x) for x in q_r])
             calm = True
+            # A driven rig must never let the scene "settle": a tray that tilts
+            # slowly would otherwise put everything to sleep BEFORE the tilt even
+            # begins, and the pile would ride along frozen.
+            if _pose is not None and tau <= _drive_until:
+                calm = False
             for j, bid in enumerate(ids):
                 pos, q = _pb.getBasePositionAndOrientation(bid, physicsClientId=cl)
                 poss[j].append([float(p) for p in pos])
@@ -1703,9 +1854,31 @@ def _dyn_sim(_hulls, _coms, _e, _t_max=8.0, _statics=(), _grip=1.0):
             still = still + 1 if calm else 0
             if still >= 30:
                 break                                  # half a second of stillness (60Hz)
-        return times, poss, quats
+        return times, poss, quats, spos, squat
     finally:
         _pb.disconnect(physicsClientId=cl)
+
+
+def _ang_vel(_qa, _qb, _dt):
+    \"\"\"Angular velocity carrying quaternion _qa to _qb in _dt: the axis-angle of
+    the relative rotation dq = qb * qa^-1 (shortest arc), divided by dt. Taken
+    EXACTLY rather than as the usual 2*dq.xyz/dt small-angle reading — that one
+    drifts 1% by 30 degrees a step, and a spin node is entitled to ask for a
+    whole turn in a fraction of a second.\"\"\"
+    ax, ay, az, aw = [float(v) for v in _qa]
+    bx, by, bz, bw = [float(v) for v in _qb]
+    # qb * conj(qa)
+    dx = bw * -ax + bx * aw + by * -az - bz * -ay
+    dy = bw * -ay - bx * -az + by * aw + bz * -ax
+    dz = bw * -az + bx * -ay - by * -ax + bz * aw
+    dw = bw * aw - bx * -ax - by * -ay - bz * -az
+    if dw < 0.0:                                       # shortest arc
+        dx, dy, dz, dw = -dx, -dy, -dz, -dw
+    s = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if s < 1e-12:
+        return [0.0, 0.0, 0.0]
+    k = 2.0 * math.atan2(s, dw) / (s * _dt)            # angle / dt, along the axis
+    return [dx * k, dy * k, dz * k]
 
 
 def _keys_pose(_times, _pos, _quat, _tau):
@@ -1729,8 +1902,10 @@ def _keys_pose(_times, _pos, _quat, _tau):
 
 def _static_colliders(_container, _o, _B):
     \"\"\"The `container` input as pybullet-ready triangle soups in bed coordinates:
-    (vertices, faces) per body, NOT hulled — that is the whole point of the
-    socket. Accepts one shape or several wired into it.\"\"\"
+    (vertices, faces, source shape) per body, NOT hulled — that is the whole point
+    of the socket. Accepts one shape or several wired into it. The source shape
+    rides along because a MOVING container has to be drawn as well as simulated,
+    and the preview wants the original (either lane), not the soup.\"\"\"
     import numpy as _np
     out = []
     if _container is None:
@@ -1754,12 +1929,12 @@ def _static_colliders(_container, _o, _B):
         if m is None or len(m.tm.faces) == 0:
             continue
         V = (_np.asarray(m.tm.vertices, dtype=float) - _o) @ _B
-        out.append((V, _np.asarray(m.tm.faces, dtype=int)))
+        out.append((V, _np.asarray(m.tm.faces, dtype=int), c))
     return out
 
 
 def _drop_collide(_shapes, _plane=None, _t=1.0, _material="plastic", _settle=True,
-                  _container=None, _grip=1.0):
+                  _container=None, _grip=1.0, _motion=None):
     \"\"\"The multi-body drop, done with real dynamics: every shape wired into the
     node becomes a rigid body (its convex hull) in ONE pybullet scene, and they
     all fall TOGETHER — colliding in the air, pushing each other, tumbling,
@@ -1793,10 +1968,16 @@ def _drop_collide(_shapes, _plane=None, _t=1.0, _material="plastic", _settle=Tru
     results = [bb["shape"] for bb in bodies]           # non-meshables pass through
     if not live:
         return results
-    times, poss, quats = _dyn_sim([b["hull"] for b in live],
-                                  [b["c0"] for b in live], e,
-                                  _statics=_static_colliders(_container, o, B),
-                                  _grip=float(_grip))
+    statics = _static_colliders(_container, o, B)
+    pose, drive_until = None, 0.0
+    if _motion is not None and statics:
+        allV = _np.vstack([sv for (sv, _sf, _s) in statics])
+        pose, drive_until = _motion_driver(
+            _motion, B, o, 0.5 * (allV.min(axis=0) + allV.max(axis=0)))
+    times, poss, quats, spos, squat = _dyn_sim(
+        [b["hull"] for b in live], [b["c0"] for b in live], e,
+        _t_max=max(8.0, drive_until + 2.0), _statics=statics,
+        _grip=float(_grip), _pose=pose, _drive_until=drive_until)
     if not times:
         return results
     T = times[-1]
@@ -1824,6 +2005,37 @@ def _drop_collide(_shapes, _plane=None, _t=1.0, _material="plastic", _settle=Tru
         except Exception:
             pass
         results[b["i"]] = res
+    if pose is not None and statics and live:
+        # A moving container has to be SEEN moving, or the pile looks haunted. It
+        # is not an output of this node and must not become one, so it rides the
+        # result as `_noodle_extra`: mesh_extractor turns those into extra bodies
+        # of the same Scene preview, each with its own keyframe track, and the
+        # browser replays them with the machinery the parts already use.
+        p_s, q_s = pose(tau)
+        ax_s, ang_s = _axis_angle(q_s)
+        ops_s = []
+        if ang_s > 1e-9:
+            ops_s.append(("r", (0.0, 0.0, 0.0), tuple(ax_s), math.degrees(ang_s)))
+        ops_s.append(("t3", tuple(p_s)))
+        plan_s = {"kind": "keys", "t": float(t), "T": float(T),
+                  "c0": [float(x) for x in o],
+                  "times": [float(x) for x in times],
+                  "pos": [[float(x) for x in (B @ _np.asarray(pp) + o)]
+                          for pp in spos],
+                  "quat": [[float(x) for x in qq] for qq in squat]}
+        extras = []
+        for (_sv, _sf, src) in statics:
+            try:
+                g = _drop_apply(src, B, o, ops_s)
+                g._noodle_anim = plan_s
+                extras.append(g)
+            except Exception:
+                pass
+        if extras:
+            try:
+                results[live[0]["i"]]._noodle_extra = extras
+            except Exception:
+                pass
     return results
 
 

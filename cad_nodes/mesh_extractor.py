@@ -309,10 +309,20 @@ def _preview_of(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict 
     # keyframe plan — render them as a SCENE of independently-animated bodies
     # (one sub-mesh + anim each) so the browser can replay the whole pile, not
     # a single merged blob frozen at one t.
-    if isinstance(value, (list, tuple)) and any(
-            getattr(v, "_noodle_anim", None) is not None for v in value):
+    # `_noodle_extra` are bodies that belong in the PICTURE but not in the output:
+    # today a Drop container that MOVES (tilts, shakes, spins). They join the same
+    # Scene, each carrying its own keyframe track, so the browser replays them
+    # exactly like the falling parts — and a single part plus a moving container
+    # is promoted to a Scene too, because otherwise the bowl would be invisible.
+    items = list(value) if isinstance(value, (list, tuple)) else [value]
+    extras = []
+    for v in items:
+        for x in (getattr(v, "_noodle_extra", None) or []):
+            extras.append(x)
+    if extras or (isinstance(value, (list, tuple)) and any(
+            getattr(v, "_noodle_anim", None) is not None for v in value)):
         bodies, lo, hi = [], [1e30, 1e30, 1e30], [-1e30, -1e30, -1e30]
-        for v in value:
+        for v in items + extras:
             g = _preview_geom(v, linear_frac, angular)
             if g is None:
                 continue

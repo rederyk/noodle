@@ -414,13 +414,16 @@ thirds of the material within one — so orientation decides **where the part br
   spherical inner wall to <0.03mm. Wiring one implies scene mode whatever the `collide`
   toggle says (the emitter un-fans on `collide or container`), so a SINGLE part falls in
   too — and then a plain preview carries an anim of kind "keys", which `applyDropAnim`
-  routes to `sceneBodyPose` instead of `dropMatrixAt`. It never moves and is not an output;
-  preview the bowl node itself). GRIP: `grip` scales the friction of the whole
+  routes to `sceneBodyPose` instead of `dropMatrixAt`. It is not an output; with no
+  motion wired it never moves, so preview the bowl node itself. A MOVING CONTAINER
+  (`ContainerMotion` → the `motion` socket) is the exception, and §5d-bis below.
+  GRIP: `grip` scales the friction of the whole
   scene (statics, parts, bed). It is not a detail — on a SLOPED static face high
   friction grabs a part and flings it sideways instead of letting it slide off, so
   `examples/galton-board.json` at grip 1 throws its balls to the walls (bimodal,
   hollow centre, gaussian fit −0.13) and at 0.15 gives a real bell (fit +0.81).
-  MESH-LANE TRAP, paid for: `Mesh.__slots__` must list `_noodle_anim`. A build123d
+  MESH-LANE TRAP, paid for: `Mesh.__slots__` must list `_noodle_anim` (and now
+  `_noodle_extra`). A build123d
   Shape takes any attribute, so the B-Rep lane carried the Drop timeline for free
   and nobody noticed that on the mesh lane the assignment hit the slots wall and was
   swallowed by `_drop`'s try/except — a dropped mesh simply never replayed, and a
@@ -452,6 +455,41 @@ thirds of the material within one — so orientation decides **where the part br
 - **Strength needs a load.** With a `load` vector the score is how much of it crosses the
   layers; with none declared the optimiser optimises for printability and will hand you the
   weakest possible part. That is the whole of `examples/print-orientation.json`.
+- **§5d-bis. The container that MOVES** (`ContainerMotion` → `Drop.motion`): the bowl
+  stops being furniture. It is a PRESCRIBED motion, not a simulated one — you dictate
+  it and the parts inside answer only through contact and friction, which is why they
+  lag, slide, climb the wall and spill instead of following rigidly. One node covers
+  the lot because `cycles` picks the shape of the motion: 0 = a RAMP (tilt, pour, tip a
+  crate) that goes there once and STAYS; >0 = an OSCILLATION about the start pose
+  (shake, stir, vibrate) that always returns to it. `delay` waits (fill the bowl, THEN
+  tilt); rotation is about the container's own centre unless a `pivot` is wired.
+  - **`resetBaseVelocity` is load-bearing, and this was measured.**
+    `resetBasePositionAndOrientation` ALONE does not carry the contents: it teleports
+    the body, so the contact has zero relative velocity, friction has nothing to
+    transmit and the tray slides out from under the part (a box on a tray translated
+    50mm rode along **1.2%** — i.e. not at all). Pairing it with `resetBaseVelocity`
+    every step gives **99.3%**. The obvious alternative — a real mass on a `JOINT_FIXED`
+    constraint driven by `changeConstraint` — carries just as well (99.9%) and is still
+    WRONG here: mass > 0 forbids `GEOM_FORCE_CONCAVE_TRIMESH`, so it would hull the bowl
+    and throw away the cavity, which is the only reason `container` exists.
+  - The motion is dictated in WORLD xyz and the colliders live in bed coordinates, so
+    `_motion_driver` carries it over: `R_bed = Bᵀ R_world B`, and since bullet poses a
+    body as `x → R x + pos`, turning about a pivot is ENTIRELY the `pos = p − R p` term
+    (get it wrong and the bowl swings through the scene on an invisible arm).
+  - **A driven rig must never let the scene fall asleep**: `_dyn_sim`'s 0.5s-of-calm
+    exit would otherwise trigger BEFORE a slow tilt even begins and the pile would ride
+    along frozen — hence the `tau <= _drive_until` guard, and `_t_max` grown to cover
+    the motion. A shaker never settles, so it runs its full declared length.
+  - **Drawing it needed no frontend change at all.** The container is not an output and
+    must not become one, so the posed container rides the result as `_noodle_extra`;
+    `mesh_extractor._preview_of` turns those into extra bodies of the same `Scene`
+    preview, each with its own `kind:"keys"` track — which `viewer.js` already renders
+    as independently-posable children and `sceneBodyPose` already replays at 60fps.
+    A single part + a moving container is PROMOTED to a Scene for this reason (else the
+    bowl would be invisible). Verified in the browser: scrubbing `t` moves all 4 bodies,
+    bowl included. Preview the Drop, not the bowl, or you get a static ghost of it too.
+  - Example: `examples/container-tilt.json` (balls land, then the bowl tips over its own
+    rim and pours them out). Costs ~5ms per simulated second to drive.
 - Tests: `tests/test_print.py`.
 
 ## 5e. Voronoi 3D + universal Populate

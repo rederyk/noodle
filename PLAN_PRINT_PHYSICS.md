@@ -33,6 +33,7 @@ certify the clever one.
 |---|---|
 | `PlaceOnBed` | lowest point → z=0, optionally centred in XY. Serves **both lanes** (measures on the mesh, moves the original), so a solid stays a solid |
 | `Drop` | PlaceOnBed as a **fall you can scrub**: a `timeline` slider from 0 (where the part is) to 1 (at rest), analytic bounce under gravity, restitution fixed per `material` (plastic 0.55, rubber 0.85, steel 0.65, wood 0.45, lead 0.08, clay 0). Optional `plane` input sets what it falls onto (default the bed). Both lanes, translation only |
+| `ContainerMotion` | a **prescribed** motion for a Drop's `container` — one translation + one rotation, `cycles` choosing ramp (tilt, pour) or oscillation (shake, stir). Not gravity: you dictate it, and the contents answer through contact alone (§2c) |
 | `PrintCheck` | text report → a Panel: height and layers, bed contact, overhang area past the critical angle, and the **weak plane** (area + height) |
 | `OverhangFaces` | the faces that need support, as a mesh of its own — so the viewer gives them their own colour and you *see* them on the part |
 | `SupportVolume` | the support material itself, **as a body**: preview it, inspect it, export it. The honest cost, not a gesture at it |
@@ -141,9 +142,76 @@ socket. One consequence reaches the browser: a single body now arrives as a plai
 carrying a keyframe plan rather than a `Scene`, so `applyDropAnim` routes an anim of kind
 `"keys"` to `sceneBodyPose` instead of the analytic `dropMatrixAt`.
 
-Open: the container is static and rigid, so you cannot shake the bowl; and a very heavy
-container mesh is fed to bullet whole (it builds a BVH — fine so far, but a 200k-triangle
-bowl has not been measured).
+Open: a very heavy container mesh is fed to bullet whole (it builds a BVH — fine so far,
+but a 200k-triangle bowl has not been measured). "You cannot shake the bowl" was the other
+one, and §2c closes it.
+
+### 2c. Moving the thing that was holding still (`ContainerMotion`)
+
+A container that only ever holds is half a container. `ContainerMotion` → the `motion`
+socket makes it tilt, shake, spin or tip — and the point is that this is **dictated, not
+simulated**. Gravity is not doing it; you are. The parts inside answer only through
+contact and friction, which is exactly why they lag behind a spin, slide, climb the wall
+and spill rather than following the container rigidly.
+
+One generic node instead of a menu of presets, because **`cycles` is the real axis**:
+
+| | `cycles` | what it is |
+|---|---|---|
+| tilt / pour / tip a crate | 0 | a **ramp** — go there once and stay |
+| shake / stir / vibrate / tap | > 0 | an **oscillation** about the start pose, returning to it |
+
+Everything else falls out: pour = rotate ~110–135° (past the wall, or nothing comes out),
+cycles 0; shake = move 10, cycles 8; settle a powder = move z 3, cycles 20; centrifuge =
+rotate z 720. `delay` waits before it starts — fill the bowl, *then* tilt it. Rotation is
+about the container's own centre unless a `pivot` is wired (the hinge of a hopper, the lip
+a crate goes over).
+
+**How to drive a static body — measured, because the obvious way silently does nothing.**
+A tray translated 50 mm in 1 s under a resting box:
+
+| driver | box carried |
+|---|---|
+| `resetBasePositionAndOrientation` alone | **−1.2 %** (nothing) |
+| `reset…` + `resetBaseVelocity` every step | **99.3 %** |
+| mass > 0 + `JOINT_FIXED` + `changeConstraint` | 99.9 % |
+
+The first *teleports* the body: the contact exists but with zero relative velocity, so the
+friction solver has nothing to transmit and the tray slides out from under the part. The
+third works and is still wrong here — **mass > 0 forbids `GEOM_FORCE_CONCAVE_TRIMESH`**, so
+it would hull the bowl and throw away the cavity, which is the only reason §2b exists. So:
+mass 0, concave, reset pose *and* velocity every step. The velocity is a forward difference
+of the prescribed pose, and its angular part is taken exactly (axis-angle) rather than by
+the usual `2·dq.xyz/dt` small-angle reading, which drifts ~1 % by 30° a step — a spin node
+is entitled to ask for a whole turn in a fraction of a second.
+
+**Frames.** The user dictates the motion in world xyz; the colliders live in bed
+coordinates. `_motion_driver` carries both over — `R_bed = Bᵀ R_world B` — and since bullet
+poses a body as `x → R x + pos`, rotating about a pivot is *entirely* the `pos = p − R p`
+term. Get that wrong and the container swings through the scene on an invisible arm
+instead of turning in place; there is a test pinning the pivot fixed.
+
+**A driven rig must not be allowed to fall asleep.** `_dyn_sim` exits after half a second
+of calm, which for a tilt that begins at t = 1 s would fire *before the motion starts* and
+freeze the whole pile mid-ride. Hence the `tau <= _drive_until` guard and `_t_max` grown to
+cover the motion. A shaker never settles by construction, so it runs its full length.
+
+**Drawing it took no frontend change.** A moving container has to be seen moving or the
+pile looks haunted — but it is not an output and must not become one. So the posed
+container rides the result as `_noodle_extra`, `mesh_extractor._preview_of` turns those
+into extra bodies of the same `Scene` preview with their own `kind:"keys"` tracks, and
+`viewer.js` + `sceneBodyPose` already know how to render and replay exactly that. A single
+part plus a moving container is *promoted* to a Scene for this reason. Verified headlessly:
+scrubbing `t` moves all four bodies of `examples/container-tilt.json`, bowl included, the
+bowl reading 135° of tip at t = 0 and 0° once the ramp completes at t ≈ 0.73.
+
+Costs ~5 ms per simulated second to drive. Preview the **Drop**, not the bowl — the bowl's
+own preview is a static ghost of it.
+
+Open: the motion is one rigid track for the whole container rig (several shapes wired into
+`container` move together — no per-body motion); there is no way to key an arbitrary path
+beyond one translation + one rotation; and nothing couples the motion back to the parts'
+sleep detection, so a long shake simulates every frame of itself.
 
 ## 3. How each number is got
 
