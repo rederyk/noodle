@@ -63,6 +63,18 @@ function geomFromData(m) {
 // through a wall is worth more than the frames.
 let HQ = true;
 export function setQuality(on) { HQ = !!on; }
+// The layer the glow pass renders alone. An emitter is on 0 AND here, so it
+// still draws normally in the main pass; everything else stays on 0 only.
+export const GLOW_LAYER = 1;
+export function markGlow(obj) {
+  obj.traverse(o => {
+    const m = o.material;
+    if (!m) return;
+    const emits = (Array.isArray(m) ? m : [m]).some(
+      x => x && x.emissive && x.emissiveIntensity > 0 && x.emissive.getHex() !== 0);
+    if (emits) o.layers.enable(GLOW_LAYER);
+  });
+}
 export function makeMaterial(color, finish) {
   const base = { color, side: THREE.DoubleSide };
   if (finish === 'glass') {
@@ -73,8 +85,11 @@ export function makeMaterial(color, finish) {
           transparent: true, opacity: .35, depthWrite: false });
   }
   if (finish === 'emissive') {
+    // Below 1 on purpose. Pushed past it, ACES desaturates the highlight and the
+    // body goes flat WHITE — you lose the colour of the thing that is glowing.
+    // The halo is what says "source"; the core only has to stay saturated.
     return new THREE.MeshStandardMaterial({ ...base, emissive: color,
-      emissiveIntensity: 1.4, roughness: .5, metalness: 0 });
+      emissiveIntensity: .9, roughness: .5, metalness: 0 });
   }
   if (finish === 'metal')
     return new THREE.MeshStandardMaterial({ ...base, roughness: .22, metalness: 1 });
@@ -210,19 +225,50 @@ export class CadViewer {
     renderer.setSize(c.clientWidth, c.clientHeight);
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.autoClear = false;             // ViewHelper overlays after the main render
-    this._composer = new EffectComposer(renderer);
-    this._composer.renderToScreen = true;
-    this._renderPass = new RenderPass(scene, this.camera);
-    this._composer.addPass(this._renderPass);
+    // ── SELECTIVE bloom ───────────────────────────────────────────────────
+    // Blooming the finished image cannot work here, and the reason is worth
+    // writing down: `transmission` is not alpha blending — three renders the
+    // scene into a separate target and samples it refracted through the glass,
+    // so an emitter seen THROUGH a wall arrives already attenuated, lands under
+    // the luminance threshold, and the bloom pass never sees it. The glow
+    // stopped at the glass.
+    // So the emitters get their own layer, are rendered ALONE on black, blurred,
+    // and composited ADDITIVELY over the finished frame. Nothing thresholds them
+    // (the buffer is black except for them, so threshold 0 and a wide radius give
+    // the soft spread the old pass could not), and being additive on top they
+    // spill across the glass — which is exactly what the eye reads as light
+    // coming through. It is a 2D lie: no refraction of the glow, no caustics.
+    // Those need rays. At screen size, in a CAD viewport, you cannot tell.
+    this._glowScene = null;                 // built lazily, below
+    this._glowComposer = new EffectComposer(renderer);
+    this._glowComposer.renderToScreen = false;
+    this._glowPass = new RenderPass(scene, this.camera);
+    this._glowComposer.addPass(this._glowPass);
     // HALF resolution on purpose: bloom is a blur, and a blur does not need the
-    // pixels. Full-res cost the bowl scene ~1fps against ~29 without it — the
-    // mip chain is built per frame and a transmission material already re-renders
-    // the scene once. Half res is visually identical here and ~4x cheaper.
+    // pixels. Full-res cost the bowl scene ~1fps against ~29 — the mip chain is
+    // rebuilt per frame and a transmission material already re-renders the scene
+    // once. Half res is visually identical here and ~4x cheaper.
     this._bloom = new UnrealBloomPass(
       new THREE.Vector2((c.clientWidth || 2) / 2, (c.clientHeight || 2) / 2),
-      0.65, 0.6, 0.85);
-    this._composer.addPass(this._bloom);
+      1.6, 0.8, 0.0);                       // strength, radius, threshold
+    this._glowComposer.addPass(this._bloom);
+    this._glowComposer.setSize((c.clientWidth || 2) / 2, (c.clientHeight || 2) / 2);
     this._bloomOn = false;
+
+    // the full-screen quad that adds the blurred emitters back over the frame.
+    // toneMapped:false — the frame underneath is already tone mapped; mapping the
+    // glow a second time would grey it down to nothing.
+    this._glowQuadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    this._glowQuadScene = new THREE.Scene();
+    // Scaled down (`color`) because the target holds LINEAR, un-tone-mapped values —
+    // three only tone maps when it renders to the canvas — and because the pass
+    // hands back emitters+blur, so the core would otherwise be added twice.
+    this._glowQuadMat = new THREE.MeshBasicMaterial({
+      color: 0x595959,
+      map: this._glowComposer.renderTarget2.texture,
+      blending: THREE.AdditiveBlending, transparent: true,
+      depthTest: false, depthWrite: false, toneMapped: false });
+    this._glowQuadScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this._glowQuadMat));
 
     const controls = new OrbitControls(camera, canvas);
     controls.enableDamping = true; controls.dampingFactor = .08;
@@ -262,16 +308,25 @@ export class CadViewer {
       }
       this._wasAnimating = anim;
       this.controls.update();
-      this.renderer.clear();
       // Bloom is what makes an emissive surface look like a SOURCE rather than a
-      // brightly painted one — the glow has to spill onto its surroundings. It is
-      // a second full-screen pass, so it runs only while something in the scene
-      // actually declares itself emissive, and never when HQ is off.
-      if (this._bloomOn && HQ && this._composer) {
-        this._renderPass.camera = this.camera;   // the viewport swaps persp/ortho
-        this._composer.render();
+      // brightly painted one — the glow has to spill onto its surroundings. The
+      // extra passes run only while something in the scene actually declares
+      // itself emissive, and never when HQ is off.
+      const glow = this._bloomOn && HQ && this._glowComposer;
+      if (glow) {
+        // pass 1 — the emitters ALONE, on black, blurred into the glow target.
+        const mask = this.camera.layers.mask, bg = this.scene.background;
+        this.camera.layers.set(GLOW_LAYER);
+        this.scene.background = null;            // or the clear colour blooms too
+        this._glowPass.camera = this.camera;     // the viewport swaps persp/ortho
+        this._glowComposer.render();
+        this.camera.layers.mask = mask;
+        this.scene.background = bg;
       }
-      else this.renderer.render(this.scene, this.camera);
+      this.renderer.clear();
+      this.renderer.render(this.scene, this.camera);
+      // pass 2 — add the blur back over the finished frame, glass included.
+      if (glow) this.renderer.render(this._glowQuadScene, this._glowQuadCam);
       this.viewHelper.render(this.renderer);
     };
     tick();
@@ -288,7 +343,11 @@ export class CadViewer {
       this._ortho.updateProjectionMatrix();
     }
     this.renderer.setSize(c.clientWidth, c.clientHeight);
-    if (this._composer) this._composer.setSize(c.clientWidth, c.clientHeight);
+    if (this._glowComposer) {
+      this._glowComposer.setSize(c.clientWidth / 2, c.clientHeight / 2);
+      // setSize rebuilds the targets, so the quad must be re-pointed at the new one
+      this._glowQuadMat.map = this._glowComposer.renderTarget2.texture;
+    }
     if (this._bloom) this._bloom.resolution.set(c.clientWidth / 2, c.clientHeight / 2);
   }
 
@@ -519,6 +578,7 @@ export class CadViewer {
                   finishOf ? finishOf(id) : null) }, scale);
       if (!obj) continue;
       obj.userData.nodeId = id;
+      markGlow(obj);                      // put its emitters on the glow layer
       this.previewGroup.add(obj);
       colors[id] = color; meshes[id] = obj;
     }

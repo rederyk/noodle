@@ -91,6 +91,29 @@ webui/
                        in the pages and hooks onto the exposed scene/camera/
                        previewGroup (nodes.html: the gizmo + click-to-select via
                        viewer.pick()). Both pages now render identically.
+                       RENDERING (`makeMaterial`, HQ toggle in Settings): filmic
+                       tone mapping + a RoomEnvironment IBL, and a per-node
+                       `finish` — solid / glass (real `transmission`, not alpha) /
+                       emissive / metal — plus `rainbow` (a hue per piece via the
+                       golden angle, as geometry groups sharing one buffer).
+                       SELECTIVE BLOOM, and it has to be selective: `transmission`
+                       is not blending — three renders the scene to its own target
+                       and samples it refracted, so an emitter seen THROUGH glass
+                       arrives attenuated, falls under any luminance threshold, and
+                       a bloom on the finished image stops dead at the glass. So
+                       emitters get `GLOW_LAYER` (markGlow), render ALONE on black
+                       (background nulled, or the clear colour blooms too), blur at
+                       half res with threshold 0, and are composited ADDITIVELY on
+                       top — which is what makes the glow cross the glass and
+                       spread. Two things that bit: the glow target holds LINEAR
+                       un-tone-mapped values (three tone maps only to the canvas)
+                       and UnrealBloomPass returns emitters+blur, so the quad is
+                       scaled down or the core blows white twice over; and
+                       `emissiveIntensity` must stay BELOW 1 — past it ACES
+                       desaturates the highlight and the glowing body goes flat
+                       white. No refraction of the glow and no caustics: those need
+                       rays. Costs ~0-1fps (glass dominates); off unless HQ and
+                       something declares itself emissive.
   index.html         the `/ui` code view — generated build123d source (read-only
                        text) + STL preview. Parameter literals are highlighted
                        and click-to-edit via a terminal-style inline editor that
