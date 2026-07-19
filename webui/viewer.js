@@ -19,6 +19,9 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
 // distinct, legible-on-dark palette; terminals cycle through it by default
 export const PALETTE = ['#2dd4a0', '#3b82f6', '#f59e0b', '#e94560', '#a855f7',
@@ -207,6 +210,19 @@ export class CadViewer {
     renderer.setSize(c.clientWidth, c.clientHeight);
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.autoClear = false;             // ViewHelper overlays after the main render
+    this._composer = new EffectComposer(renderer);
+    this._composer.renderToScreen = true;
+    this._renderPass = new RenderPass(scene, this.camera);
+    this._composer.addPass(this._renderPass);
+    // HALF resolution on purpose: bloom is a blur, and a blur does not need the
+    // pixels. Full-res cost the bowl scene ~1fps against ~29 without it — the
+    // mip chain is built per frame and a transmission material already re-renders
+    // the scene once. Half res is visually identical here and ~4x cheaper.
+    this._bloom = new UnrealBloomPass(
+      new THREE.Vector2((c.clientWidth || 2) / 2, (c.clientHeight || 2) / 2),
+      0.65, 0.6, 0.85);
+    this._composer.addPass(this._bloom);
+    this._bloomOn = false;
 
     const controls = new OrbitControls(camera, canvas);
     controls.enableDamping = true; controls.dampingFactor = .08;
@@ -247,7 +263,15 @@ export class CadViewer {
       this._wasAnimating = anim;
       this.controls.update();
       this.renderer.clear();
-      this.renderer.render(this.scene, this.camera);
+      // Bloom is what makes an emissive surface look like a SOURCE rather than a
+      // brightly painted one — the glow has to spill onto its surroundings. It is
+      // a second full-screen pass, so it runs only while something in the scene
+      // actually declares itself emissive, and never when HQ is off.
+      if (this._bloomOn && HQ && this._composer) {
+        this._renderPass.camera = this.camera;   // the viewport swaps persp/ortho
+        this._composer.render();
+      }
+      else this.renderer.render(this.scene, this.camera);
       this.viewHelper.render(this.renderer);
     };
     tick();
@@ -264,6 +288,8 @@ export class CadViewer {
       this._ortho.updateProjectionMatrix();
     }
     this.renderer.setSize(c.clientWidth, c.clientHeight);
+    if (this._composer) this._composer.setSize(c.clientWidth, c.clientHeight);
+    if (this._bloom) this._bloom.resolution.set(c.clientWidth / 2, c.clientHeight / 2);
   }
 
   setGrid(on) { this.grid.visible = on; }
@@ -475,6 +501,7 @@ export class CadViewer {
   //   wireOf(id) -> bool          (default: false)
   //   onEmpty()                   (called when nothing is drawable; e.g. STL fallback)
   renderPreviews(previews, { colorOf, wireOf, finishOf, onEmpty } = {}) {
+    let glowing = false;   // does anything in this view declare itself a source?
     previews = previews || {};
     this._clearPreviewGroup();
     const drawable = e => e && (e.mesh || e.polylines || e.points || e.bodies);
@@ -488,12 +515,14 @@ export class CadViewer {
       const color = colorOf ? colorOf(id, order) : PALETTE[order.indexOf(id) % PALETTE.length];
       const obj = objFromPreview(previews[id], color,
       { wireframe: wireOf ? wireOf(id) : false,
-        finish: finishOf ? finishOf(id) : null }, scale);
+        finish: (fin => (fin === 'emissive' && (glowing = true), fin))(
+                  finishOf ? finishOf(id) : null) }, scale);
       if (!obj) continue;
       obj.userData.nodeId = id;
       this.previewGroup.add(obj);
       colors[id] = color; meshes[id] = obj;
     }
+    this._bloomOn = glowing;          // pay for the second pass only when it shows
     const box = new THREE.Box3().setFromObject(this.previewGroup);
     const size = new THREE.Vector3(); box.getSize(size);
     if (!this._framed) { this.frame(); this._framed = true; }
