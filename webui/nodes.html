@@ -809,7 +809,8 @@ function registerNodes(defs){
           opts.push({content: '🎨 Preview colour', has_submenu: true,
             callback: (v,o,e,menu)=>{
               const sw = c=>`<span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:${c};margin-right:6px;vertical-align:middle"></span>`;
-              const entries = [{content:'Auto (palette)', callback:()=>{ self.previewColor=null; refreshDisplay(); }}];
+              const entries = [{content:'Auto (palette)', callback:()=>{ self.previewColor=null; refreshDisplay(); }},
+                {content:'🌈 Rainbow (one hue per piece)', callback:()=>{ self.previewColor='rainbow'; refreshDisplay(); }}];
               for(const c of PALETTE) entries.push({content: sw(c)+c, callback:()=>{ self.previewColor=c; refreshDisplay(); }});
               entries.push({content:'Custom…', callback:()=>{ const x=prompt('Hex colour (e.g. #44cc88):', self.previewColor||'#44cc88'); if(x){ self.previewColor=x.trim(); refreshDisplay(); } }});
               new LiteGraph.ContextMenu(entries, {event:e, parentMenu:menu, title:'Preview colour'});
@@ -3697,7 +3698,9 @@ function renderPreviews(view){
   const legend = [];
   for(const id of r.order){
     const n = nodeIndex[id], color = r.colors[id];
-    if(n){ n._baked = {...n.properties}; n.boxcolor = color; }   // snapshot + title dot
+    // the title dot cannot show a sentinel: rainbow gets one stand-in swatch
+    if(n){ n._baked = {...n.properties};
+           n.boxcolor = (color === 'rainbow') ? '#9b6dd6' : color; }   // snapshot + title dot
     legend.push({id, color, label:(n && (n.title||n.cadType)) || id, wire: !!(n && n.wireframe)});
   }
   renderLegend(legend);
@@ -3784,7 +3787,10 @@ function renderLegend(items){
   el.innerHTML = '';
   for(const it of items){
     const row = document.createElement('div'); row.className='leg-row'; row.title='select '+it.label;
-    row.innerHTML = `<span class="leg-sw" style="background:${it.color}"></span>`+
+    const sw = it.color === 'rainbow'
+      ? 'background:linear-gradient(90deg,#e0564f,#dbb63c,#5ec26a,#4aa3d8,#9b6dd6)'
+      : `background:${it.color}`;
+    row.innerHTML = `<span class="leg-sw" style="${sw}"></span>`+
                     `<span class="leg-name">${it.label}${it.wire?' ▦':''}</span>`;
     row.addEventListener('click', ()=> selectNodeById(it.id));
     el.appendChild(row);

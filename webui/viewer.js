@@ -48,11 +48,34 @@ function geomFromData(m) {
   g.computeVertexNormals();
   return g;
 }
-export function meshFromData(m, color) {
-  return new THREE.Mesh(geomFromData(m),
-    new THREE.MeshStandardMaterial({ color, roughness: .4, metalness: .12, side: THREE.DoubleSide }));
+// A hue per index, walked by the golden angle so neighbours never collide. It is
+// deterministic, not random: "random colours" that reshuffle on every re-render
+// would make a part you are looking at change identity while you turn it.
+export function rainbowHue(i) {
+  const c = new THREE.Color();
+  c.setHSL(((i * 137.508) % 360) / 360, 0.62, 0.56);
+  return c;
+}
+export function meshFromData(m, color, parts) {
+  const geo = geomFromData(m);
+  const std = c => new THREE.MeshStandardMaterial(
+    { color: c, roughness: .4, metalness: .12, side: THREE.DoubleSide });
+  // Rainbow over a fanned list: one geometry group per piece (`parts` counts
+  // triangles, so the offsets are 3x that) and a material per group. Without it
+  // the whole buffer keeps ONE material and one draw call, exactly as before.
+  if (color === 'rainbow' && parts && parts.length > 1) {
+    const mats = []; let start = 0;
+    parts.forEach((n, i) => {
+      geo.addGroup(start * 3, n * 3, i);
+      mats.push(std(rainbowHue(i)));
+      start += n;
+    });
+    return new THREE.Mesh(geo, mats);
+  }
+  return new THREE.Mesh(geo, std(color === 'rainbow' ? rainbowHue(0) : color));
 }
 function lineFromPolylines(polys, color) {
+  if (color === 'rainbow') color = rainbowHue(0);
   const segs = [];
   for (const poly of polys)
     for (let i = 0; i + 1 < poly.length; i++) { segs.push(poly[i], poly[i + 1]); }
@@ -63,6 +86,7 @@ function lineFromPolylines(polys, color) {
   return new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color, linewidth: 2 }));
 }
 function spheresFromData(pts, color, r) {
+  if (color === 'rainbow') color = rainbowHue(0);
   const geo = new THREE.SphereGeometry(r, 12, 12);
   const mat = new THREE.MeshStandardMaterial({ color, roughness: .45, metalness: .1 });
   const im = new THREE.InstancedMesh(geo, mat, pts.length);
@@ -87,7 +111,10 @@ function objFromPreview(p, color, opts, scale) {
   if (p.bodies) {                              // a collide Scene: one child per body,
     const grp = new THREE.Group();             // each independently posable at scrub time
     p.bodies.forEach((b, i) => {
-      const child = objFromPreview(b, color, opts, scale);
+      // Every body of a collide scene is already its own mesh with its own
+      // material, so a colour per body is free — no extra draw calls at all.
+      const child = objFromPreview(b, color === 'rainbow' ? rainbowHue(i) : color,
+                                   opts, scale);
       if (!child) return;
       child.userData.bodyIndex = i;
       child.userData.anim = b.anim || null;
@@ -97,8 +124,12 @@ function objFromPreview(p, color, opts, scale) {
     return grp;
   }
   if (p.mesh) {
-    const obj = meshFromData(p.mesh, color);
-    if (opts && opts.wireframe) { obj.material.wireframe = true; obj.material.metalness = 0; }
+    const obj = meshFromData(p.mesh, color, p.parts);
+    if (opts && opts.wireframe) {
+      for (const mt of (Array.isArray(obj.material) ? obj.material : [obj.material])) {
+        mt.wireframe = true; mt.metalness = 0;
+      }
+    }
     return obj;
   }
   if (p.polylines) return lineFromPolylines(p.polylines, color);

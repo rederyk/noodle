@@ -335,6 +335,31 @@ def _preview_of(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict 
     return entry
 
 
+def _merged_pieces(value, linear_frac: float, angular: float) -> dict | None:
+    """One buffer, but with the seams remembered: every item of a fanned list is
+    tessellated on its own and concatenated, and `parts` records how many
+    triangles each contributed. Returns None if the pieces are not all meshable
+    triangles (points and curves keep the old whole-value path)."""
+    verts: list = []
+    tris: list = []
+    parts: list = []
+    for item in value:
+        g = _preview_geom(item, linear_frac, angular)
+        if g is None or "mesh" not in g:
+            return None                       # not a uniform bag of triangles
+        off = len(verts)
+        verts.extend(g["mesh"]["vertices"])
+        tris.extend([[t[0] + off, t[1] + off, t[2] + off]
+                     for t in g["mesh"]["triangles"]])
+        parts.append(len(g["mesh"]["triangles"]))
+    if not tris:
+        return None
+    entry: dict = {"kind": "Compound", "mesh": {"vertices": verts, "triangles": tris},
+                   "parts": parts}
+    entry["bbox"] = _bbox_of_coords(verts)
+    return entry
+
+
 def _preview_geom(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict | None:
     """Compact per-node preview. Three render paths, tried in order:
       - points    : a Vector or list of Vectors -> dots
@@ -345,6 +370,18 @@ def _preview_geom(value, linear_frac: float = 0.02, angular: float = 0.4) -> dic
     pts = _points_of(value)
     if pts is not None:
         return {"kind": "Points", "points": pts, "bbox": _bbox_of_coords(pts)}
+
+    # 1a) a LIST of drawable pieces: tessellate each one and remember where it
+    # starts. `parts` (one triangle count per piece) is what lets the viewer give
+    # every piece its own colour WITHOUT re-executing — colour is a display
+    # setting and re-rendering reads the cached view.json, so the split has to be
+    # in the data whether or not anyone is looking at it. It costs one int per
+    # piece against megabytes of vertices; merging still happens, so an unrainbowed
+    # array is still one buffer and one draw call.
+    if isinstance(value, (list, tuple)) and len(value) > 1:
+        merged = _merged_pieces(value, linear_frac, angular)
+        if merged is not None:
+            return merged
 
     shape = _as_shape(value)
     if shape is None:
