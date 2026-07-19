@@ -102,6 +102,14 @@ class NodeDef:
     # Hidden from the editor's add-node search/menu (frontend sets litegraph's
     # skip_list), but still registered so older graphs referencing it load & run.
     hidden: bool = False
+    # Extra names the add-node search should find this node under — the words a
+    # user coming from another CAD would type ("cut"/"trim" for Split). Matched by
+    # nodes.html's own search (nodeSearchRows; litegraph's searchbox_extras can't
+    # do it — see CLAUDE.md §6). Search entries ONLY, never node types, so nothing
+    # else in the app (graph.json, the transpiler, MCP) ever sees them: `type`
+    # stays the id. The user's own additions live in projects/_aliases.json and
+    # get promoted HERE by hand once they've earned it.
+    aliases: list[str] = field(default_factory=list)
     is_group: bool = False
     # For group nodes: how to read the result out of the context manager var.
     group_kind: Optional[str] = None  # "part" | "sketch" | "line"

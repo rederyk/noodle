@@ -67,6 +67,9 @@ server.py            FastAPI HTTP API (port 8090). Routes under /api/* :
                        single-param edit; `_cb.<name>` targets a CodeBlock
                        override), /api/graph/{name}/codeblock/{id}/scan,
                        /api/nodes (catalog), /api/copilot/chat|status,
+                       /api/aliases (GET the personal add-node search aliases)
+                       + PUT /api/aliases/{node_type} (replace one node's, []
+                       clears) — stored in projects/_aliases.json, see §6,
                        /api/agent/help (self-contained remote-agent guide =
                        cad_nodes/AGENT_HELP.md, also MCP cad_help/cad://help —
                        keep it in sync when the API surface changes),
@@ -522,6 +525,26 @@ needs runtime logic that doesn't fit one expression, add a helper to the
 transpiler **PREAMBLE** and call it from the template (e.g. `_bbox_plane`,
 `_rotate`). Wire compatibility changes go in `cad_nodes/casts.py` (§5) — the
 frontend picks them up from `/api/wiretypes`.
+
+**Search aliases.** `aliases=[…]` adds the words a user from another CAD would type into
+the add-node search (`Split` answers to "cut" and "trim"): litegraph 0.7.18
+matches ONLY the registered type path and its `searchbox_extras` are gated by the
+same test, so nodes.html overrides the canvas INSTANCE's `onSearchBox`
+(`nodeSearchRows` — the constructor sets `this.onSearchBox = null`, which would
+shadow the prototype) and matches type + label + aliases itself.
+
+**Personal aliases** are the same idea, user-side and hot: a node's right-click
+menu → "🔎 Search aliases…" opens a chip modal (`editAliases`) where the built-in
+ones sit LOCKED next to yours, which carry a red ✕. Every add/remove PUTs the
+whole personal list to `/api/aliases/{type}` and re-draws from the response (so
+the chips show what is really stored, server-side normalisation included; a
+failed save rolls them back). That writes `projects/_aliases.json` (`{node_type: [word, …]}` — a file, so the
+project/library listings that filter on `is_dir()` never see it; `_`-prefixed, so
+`validate_graph_id` can never let a project collide with it). The editor loads
+them at boot into `USER_ALIASES` and `aliasesOf()` merges the two lists, ranked
+alike. The file is deliberately plain and greppable: **a word that earns its keep
+gets promoted BY HAND into `NodeDef.aliases`** in catalog.py, and dropped from the
+JSON. Catalog aliases are shown in the modal but never editable there — code owns them.
 
 **Group nodes** (BuildPart/BuildSketch) use `is_group=True` + a `builder`
 template and emit nested `with` blocks — see existing examples.

@@ -187,6 +187,18 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 .modal .col b{color:var(--text);display:block;margin-bottom:4px;}
 .modal .col span{color:var(--text-dim);display:block;line-height:1.6;}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;}
+/* alias chips (Search aliases modal): built-in = locked, personal = removable */
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 2px;min-height:26px;}
+.chip{display:inline-flex;align-items:center;gap:6px;background:var(--bg-3);border:1px solid var(--border);
+  border-radius:13px;padding:3px 10px;font-size:12px;color:var(--text);}
+.chip.locked{background:var(--bg-1);color:var(--text-dim);}
+.chip.locked .lk{font-size:10px;opacity:.8;}
+.chip .x{cursor:pointer;font-size:13px;line-height:1;color:var(--accent);opacity:.75;
+  background:none;border:none;padding:0 0 1px;}
+.chip .x:hover{opacity:1;color:var(--accent-hover);}
+.chip-empty{font-size:12px;color:var(--text-dim);font-style:italic;padding:3px 0;}
+.chip-add{display:flex;gap:8px;margin-top:10px;}
+.chip-add input{flex:1;margin:0;}
 .kbd-grid{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:12px;}
 .kbd-grid kbd{background:var(--bg-3);border:1px solid var(--border);border-radius:4px;padding:1px 6px;
   font-family:var(--mono);font-size:11px;color:var(--text);}
@@ -804,6 +816,7 @@ function registerNodes(defs){
           {content: self.bypassed ? '✓ Bypass' : '⊘ Bypass  (Ctrl+B)',
            callback: ()=> setBypass(self, !self.bypassed)},
           {content: '▣ Group selected  (Ctrl+G)', callback: ()=> groupSelected()},
+          {content: '🔎 Search aliases…', callback: ()=> editAliases(self.cadType)},
         ];
         if (self.widgets && self.widgets.some(w=>w.isEye)){   // a node that renders geometry
           opts.push({content: (self.wireframe?'✓ ':'')+'Wireframe',
@@ -842,6 +855,127 @@ function registerNodes(defs){
   for (const [t,c] of Object.entries(WIRE_COLORS)){
     LGraphCanvas.link_type_colors[t] = c;
   }
+}
+
+// ── add-node search: find a node by its LABEL and its ALIASES too ──
+// Litegraph 0.7.18 filters the search on the registered TYPE PATH alone
+// (cad/<category>/<Type>, substring, case-insensitive) — and `searchbox_extras`
+// is gated by that very same test (inner_test_filter), so an alias word that
+// isn't already in the path can never be found through it. Overriding
+// `onSearchBox` is the one real hook: it short-circuits litegraph's own
+// filtering and takes the rows we return. They ARE type paths, so litegraph's
+// select() still creates the node the normal way — nothing else changes, and a
+// row keeps reading `cad/modifiers/Split` so the alias teaches the real name.
+// Aliases are of two kinds and rank identically: the catalog's built-in ones
+// (NodeDef.aliases — "cut"/"trim" -> Split) and the user's PERSONAL ones, added
+// from a node's right-click menu and kept server-side in projects/_aliases.json
+// (see aliasesOf / editAliases). Personal ones are a proving ground: what earns
+// its keep gets promoted by hand into catalog.py.
+// Assigned to the CANVAS INSTANCE (see `new LGraphCanvas` below), not to the
+// prototype: LGraphCanvas's constructor sets `this.onSearchBox = null`, an own
+// property that would shadow anything put on the prototype.
+let USER_ALIASES = {};                       // {node_type: [word, ...]}, from /api/aliases
+const aliasesOf = t => (USER_ALIASES[t] || []).concat((catalog[t] || {}).aliases || []);
+
+function nodeSearchRows(helper, str){
+  const q = (str||'').trim().toLowerCase();
+  const hits = [];
+  for (const def of Object.values(catalog)){
+    if (def.hidden) continue;                      // deprecated: same as skip_list
+    const path = 'cad/'+def.category+'/'+def.type;
+    if (!q){ hits.push([path, 0]); continue; }     // empty query = show everything
+    const hay = [path, def.label || def.type].concat(aliasesOf(def.type));
+    let best = -1;
+    hay.forEach((h, i) => {
+      const at = h.toLowerCase().indexOf(q);
+      if (at < 0) return;
+      const rank = (at === 0 ? 0 : 10) + (i === 0 ? 0 : 1);   // prefix first, path over alias
+      if (best < 0 || rank < best) best = rank;
+    });
+    if (best >= 0) hits.push([path, best]);
+  }
+  hits.sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
+  return hits.map(h => h[0]);
+};
+
+// A node's search aliases, edited in a small modal off its right-click menu.
+// Two kinds, side by side as chips: the catalog's built-in ones are LOCKED (they
+// live in catalog.py, and are where a personal word graduates to once it has
+// earned its keep) and yours carry a red ✕. Every add/remove PUTs the whole
+// personal list (/api/aliases/<type> -> projects/_aliases.json) and re-draws from
+// what came BACK, so the chips show what is actually stored, server-side
+// normalisation included. A failed save rolls the chips back.
+async function editAliases(type){
+  const def = catalog[type];
+  if (!def) return;
+  const built = def.aliases || [];
+  let mine = (USER_ALIASES[type] || []).slice();
+  const esc = s => String(s).replace(/[&<>"]/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const m = buildModal(
+    `<h3>Search aliases — ${esc(def.label || type)}</h3>` +
+    `<p>The words that should find <b>${esc(type)}</b> in the add-node search ` +
+    `(double-click the canvas). Yours are saved for the whole app.</p>` +
+    `<div class="chips" id="__ac"></div>` +
+    `<div class="chip-add"><input class="menu-search" id="__ai" ` +
+    `placeholder="add an alias — comma-separate several"></div>` +
+    `<div class="modal-actions"><button class="tb-btn primary" id="__ax">Done</button></div>`);
+  const chips = m.ov.querySelector('#__ac'), inp = m.ov.querySelector('#__ai');
+
+  function draw(){
+    chips.innerHTML = '';
+    for (const w of built){
+      const c = document.createElement('span');
+      c.className = 'chip locked';
+      c.title = 'Built in — edit it in catalog.py';
+      c.innerHTML = `<span class="lk">🔒</span>${esc(w)}`;
+      chips.appendChild(c);
+    }
+    for (const w of mine){
+      const c = document.createElement('span');
+      c.className = 'chip';
+      c.innerHTML = `${esc(w)}<button class="x" title="Remove">✕</button>`;
+      c.querySelector('.x').onclick = () => save(mine.filter(x => x !== w));
+      chips.appendChild(c);
+    }
+    if (!chips.children.length)
+      chips.innerHTML = '<span class="chip-empty">No aliases yet — '
+                      + 'the node is still found by its name.</span>';
+  }
+  async function save(next){
+    const prev = mine;
+    mine = next; draw();                              // optimistic: the UI stays live
+    try{
+      const r = await fetch(`${API}/api/aliases/${encodeURIComponent(type)}`, {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({aliases: next})});
+      if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+      mine = (await r.json()).aliases || [];
+      if (mine.length) USER_ALIASES[type] = mine; else delete USER_ALIASES[type];
+      draw();
+    }catch(e){
+      mine = prev; draw();
+      log(`aliases · ${type}: save failed — ${e.message}`, 'err');
+    }
+  }
+  function add(){
+    const known = new Set(built.concat(mine).map(w => w.toLowerCase()));
+    const fresh = [];
+    for (const w of inp.value.split(',').map(x => x.trim()).filter(Boolean)){
+      if (known.has(w.toLowerCase())) continue;       // already there, in either list
+      known.add(w.toLowerCase());
+      fresh.push(w);
+    }
+    inp.value = '';
+    if (fresh.length) save(mine.concat(fresh));
+  }
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter'){ e.preventDefault(); add(); }
+    if (e.key === 'Escape') m.close();
+  });
+  m.ov.querySelector('#__ax').onclick = () => { add(); m.close(); };  // Done also takes what's typed
+  draw();
+  setTimeout(() => inp.focus(), 0);
 }
 
 function clampNum(v, p){
@@ -4681,6 +4815,7 @@ function initGraph(){
   lgraph = new LGraph();
   const canvas = document.getElementById('graph-canvas');
   lcanvas = new LGraphCanvas(canvas, lgraph);
+  lcanvas.onSearchBox = nodeSearchRows;   // find nodes by label/alias, not just type path
   lcanvas.background_image = null;
   // live triggers on structural changes (guarded while loading a graph)
   lgraph.onNodeAdded = ()=>{ scheduleHistory(); scheduleLive(); };
@@ -5338,6 +5473,12 @@ document.addEventListener('keydown', e=>{
       const wt = await (await fetch(`${API}/api/wiretypes`)).json();
       if (wt && wt.input_accepts) INPUT_ACCEPTS = wt.input_accepts;
     }catch(e){ log('wiretypes: using built-in fallback','err'); }
+    // personal search aliases (projects/_aliases.json) — merged with the
+    // catalog's built-in ones by nodeSearchRows. Absent file = {}, never fatal.
+    try{
+      const ua = await (await fetch(`${API}/api/aliases`)).json();
+      USER_ALIASES = (ua && ua.aliases) || {};
+    }catch(e){ log('aliases: none loaded','err'); }
     const defs = await (await fetch(`${API}/api/nodes`)).json();
     registerNodes(defs);
     log(`registered ${defs.length} node types`);
