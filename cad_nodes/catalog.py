@@ -1870,7 +1870,8 @@ register(NodeDef("PlaceOnBed", "print", "Place on Bed",
                 "by it hovers above the bed by up to 1% of its size — invisible on "
                 "screen, and a failed first layer."))
 
-register(NodeDef("Drop", "print", "Drop on Plane",
+register(NodeDef("Drop", "print", "Drop",
+    aliases=["Drop on Plane", "Fall", "Gravity", "Bounce", "Settle"],
     inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_SURFACE, WIRE_MESH]),
             Socket("container", WIRE_SOLID, accepts=[WIRE_SURFACE, WIRE_MESH],
                    required=False),

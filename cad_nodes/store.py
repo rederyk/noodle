@@ -34,7 +34,7 @@ _EXAMPLE_DESCRIPTIONS = {
     "bolt-flange": "Bolt-circle flange: one hole polar-arrayed and subtracted "
                    "wholesale — Grasshopper-style list fan-out.",
     "csg-boolean": "CSG basics: a box minus a sphere (Subtract boolean).",
-    "drop-bounce": "Drop on Plane: one timeline slider scrubs three materials "
+    "drop-bounce": "Drop: one timeline slider scrubs three materials "
                    "falling side by side — plastic clatters, lead thuds, rubber "
                    "keeps bouncing.",
     "drop-stack": "Drop with collide: three boxes fall into ONE scene — one "
