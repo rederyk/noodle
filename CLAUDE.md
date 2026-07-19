@@ -349,7 +349,13 @@ a dependency). Full findings + measurements: **`PLAN_MESH_LANE.md`**.
   helpers branch on `_is_mesh` and apply a 4×4 (`_mesh_matrix`) instead of a
   `Location`, and `output_follows="shape"` carries the mesh type back out. There is
   no `MeshMove` and there must not be. (Arrays/Align don't take meshes yet — their
-  templates still build `Pos(…) * shape` inline.) `Rotate` also takes an optional
+  templates still build `Pos(…) * shape` inline.) `_at` — the `origin` socket every
+  primitive gets, wrapped on by the EMITTER, not by the template — branches the same
+  way: a mesh can't be `.moved()` nor go in a `Compound`, so it takes a `_mesh_matrix`
+  and many origins concatenate instead. A helper behind an `origin` node must
+  therefore NOT place its own result, or the translation lands twice
+  (`tests/test_polyhedron.py::test_origin_is_applied_exactly_once`).
+  `Rotate` also takes an optional
   `pivot` point and an `about` select — world (global axis, the default) / part (own
   bbox centre) / group (collective centre; under fan-out the emitter hoists ONE
   `_pivot_of(…)` out of the lambda so the ensemble turns rigidly); centres are
@@ -530,6 +536,61 @@ seed lives *inside* the helper (`np.random.RandomState`), not on the emitted lin
   `MeshSubtract` the shrunk cells from the body: the walls *between* cells become
   the part. `examples/voronoi-3d-lattice.json`. Tests:
   `tests/test_populate_voronoi3d.py` (pure-Python: wire shape + emission).
+
+## 5f. Union fuses, Join sews — and they are different OCCT operations
+
+A boolean merges shapes that **overlap** (`+`, BRepAlgoAPI); sewing stitches shapes
+that merely **share a border** (BRepBuilderAPI_Sewing, reached through
+`Face.sew_faces`/`Shell`, and `Wire.combine` for edges). Union used to be asked for
+both and silently answered the second one wrong: two faces on different planes came
+back as `f0 + f1` — a loose `Sketch` of 2 faces, no shell, no error, and in the
+viewport it *looks* joined.
+
+- **`Join`** (`boolean` category, `_join` in the PREAMBLE): one collector, curves +
+  surfaces + solids. Faces win over edges when a shape has both (an input with faces
+  is a surface; its edges are that surface's border). Six box faces → a closed shell
+  → a real `Solid`; five → an open `Shell` (previewed fine, 4 triangles for an L).
+  The closed test is load-bearing: `Solid(open_shell)` builds happily and returns an
+  **invalid** solid (measured: volume 800 on a 1000 box) rather than raising.
+  Pieces that do not touch are an **error**, not a silent Compound — that is the
+  entire point of the node. `tolerance` reaches `Wire.combine` only; `sew_faces`
+  has no tolerance argument and uses OCCT's own.
+- **`Union` refuses what it cannot fuse**: when every atom is a face, `_coplanar_check`
+  requires them planar and on one plane, else it raises and names Join. Solids are
+  untouched (disjoint solids fusing into a multi-piece part stays legal and is used),
+  and coplanar region merges keep working — `lego-brick` fuses `Text` glyph fragments
+  that way, `axl cage` fuses `MakeFace`/`Fillet2D` output. Curves never could reach
+  Union: there is no `curve→solid` cast, so `validate()` rejects the wire.
+- Tests: `tests/test_join.py` (pure-Python contract); the sewing itself is exercised
+  in the worker.
+
+**What Join feeds — and three traps found downstream of it.** The obvious next node
+after joining faces is `Shell` (thicken the open surface) or `Shell By Faces`:
+
+- **A failed `Solid.thicken` POISONS its input.** BRepOffset registers its
+  modifications on the input faces' TShapes, so a thicken that fails corrupts those
+  faces for every node still holding them — measured: `Polyhedron → Join(all but one
+  face) → Shell` made the *sibling* `Shell By Faces`, hollowing the same polyhedron
+  through the left-out face, return volume **4728 on a part of 2536**, invalid,
+  instead of 432. `_thicken` thickens a `deepcopy`. Same family as the `_reanchor`
+  trap: OCCT hands out shared topology and a node must not scribble on what it did
+  not build.
+- **OCCT cannot thicken every open shell**, and says so badly: it returns a SHELL
+  when it could not close the wall, and build123d's blind `TopoDS.Solid(...)` cast
+  turns that into `Standard_TypeMismatch: TopoDS::Solid`. Sharp dihedral angles
+  between many facets are its weak spot — of the platonic solids minus a face, the
+  tetra/cube/dodeca thicken fine and the **octa/icosa never do**, at any tolerance,
+  join mode or thickness (all swept). `_thicken` now raises a readable error naming
+  the way that does work, and refuses to return a wall that fails `is_valid` (it
+  renders like a part without being one).
+- **`_shell_faces` used to swallow its own failure** (`except Exception: return
+  _part`) — no error, no hollow, a node that quietly handed back its input. That is
+  what an open surface wired into `Shell By Faces` did. It now rejects a non-solid
+  with a message and propagates a real offset failure.
+- **The route that works** for a hollow polyhedron with an opening: hollow the CLOSED
+  solid and pick the openings there — `Polyhedron → FacesByArea/FacesByNormal →
+  ShellByFaces`. Verified end-to-end (icosahedron, wall 0.5 → volume 432.1, valid,
+  watertight) and on every platonic solid. Do NOT remove the faces first.
 
 ## 5b. Lists & fan-out (Grasshopper-style)
 

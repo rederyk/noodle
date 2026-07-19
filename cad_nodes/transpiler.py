@@ -132,6 +132,7 @@ def _annot(node) -> str:
     return f"  # @node:{node.id} ({node.type})"
 
 PREAMBLE = """\
+import copy as _copy
 import json as _json
 import math
 import os
@@ -612,6 +613,13 @@ def _at(_shape, _origin):
     pts = _origin_points(_origin)
     if not pts:
         return _shape
+    if _is_mesh(_shape):
+        # A mesh has no .moved()/Location and cannot go in a Compound — it is a
+        # matrix on the vertex array, exactly as in _mesh_matrix. Same contract:
+        # one point moves it, many give a copy at each (concatenated into one).
+        copies = [_shape.transformed(_mesh_matrix("move", x=p.X, y=p.Y, z=p.Z))
+                  for p in pts]
+        return copies[0] if len(copies) == 1 else _mesh_concat(copies)
     if len(pts) == 1:
         return _shape.moved(Pos(pts[0].X, pts[0].Y, pts[0].Z))
     return Compound(children=[_shape.moved(Pos(p.X, p.Y, p.Z)) for p in pts])
@@ -642,21 +650,80 @@ def _shell(_part, _thickness):
         return offset(_part, amount=-_thickness, openings=top)
     # open surface: thicken it into a solid wall
     surf = _part if isinstance(_part, (Shell, Face)) else _face(_part)
-    return Solid.thicken(surf, _thickness)
+    return _thicken(surf, _thickness)
+
+
+def _thicken(_surf, _thickness):
+    \"\"\"`Solid.thicken` with the two ways it fails made legible.
+
+    build123d ends its thicken with a blind `TopoDS.Solid(...)` cast, but OCCT's
+    BRepOffset hands back a SHELL whenever it could not close the wall — so the
+    user sees `Standard_TypeMismatch: TopoDS::Solid`, which says nothing. And the
+    shell it returns is not salvageable in general: measured on an icosahedron
+    minus one face, sewing it back gives volume 483.49 that neither BRepCheck nor
+    a tessellation accepts (not watertight, faces missing from the triangulation).
+
+    Sharp dihedral angles between many facets are BRepOffset's weak spot — of the
+    platonic solids minus a face, the tetra/cube/dodeca thicken fine and the
+    octa/icosa do not, at any tolerance, join mode or thickness (all swept). The
+    broken wall is deliberately NOT returned: it renders like a part and is not
+    one. Say what happened and what to do instead.
+
+    TRAP, paid for: it thickens a COPY. BRepOffset registers its modifications on
+    the input faces' TShapes, so a FAILED thicken poisons them for whatever else
+    still holds them — measured: Polyhedron -> Join(all but one face) -> Shell,
+    and the sibling Shell By Faces that hollowed the same polyhedron through the
+    left-out face then returned volume 4728 on a part of 2536, invalid, instead
+    of 432. Same family as the `_reanchor` trap: OCCT hands out shared topology
+    and a node must not scribble on what it did not build.\"\"\"
+    try:
+        _out = Solid.thicken(_copy.deepcopy(_surf), _thickness)
+    except Exception as _exc:
+        raise ValueError(
+            "Shell could not thicken this open surface into a wall — OCCT's "
+            "offset choked on it (%s), as it does on sharp angles between many "
+            "facets (a polyhedron with a face removed is the classic case). "
+            "Hollow the CLOSED solid instead and choose the openings there: "
+            "part -> a face selector -> Shell By Faces. That is a hollowing "
+            "rather than an offset of a loose surface, and it is exact."
+            % type(_exc).__name__)
+    if not _out.is_valid:
+        raise ValueError(
+            "Shell thickened this open surface into an INVALID wall (%d faces, "
+            "volume %.2f) — it would render like a part without being one. Use "
+            "Shell By Faces on the closed solid instead."
+            % (len(_out.faces()), _out.volume))
+    return _out
 
 
 def _shell_faces(_part, _faces, _thickness):
     \"\"\"Hollow a solid to a wall of _thickness, leaving the SELECTED faces open.
     Like _shell but the openings come from a face selector instead of the +Z
     face — pair with FacesByNormal / FacesByType / CombineSelection. An empty
-    selection makes a fully closed hollow shell.\"\"\"
+    selection makes a fully closed hollow shell.
+
+    It hollows a CLOSED SOLID — that is the whole operation. Fed an open surface
+    (a Join of faces, a Section, a non-solid Loft) `offset()` refuses, and this
+    used to swallow the exception and hand BACK THE INPUT: no error, no hollow,
+    a node that quietly did nothing. Both cases now say so.\"\"\"
     if _part is None or not _thickness:
         return _part
+    _solid = bool(list(_part.solids())) if hasattr(_part, "solids") else False
+    if not _solid:
+        raise ValueError(
+            "Shell By Faces hollows a closed solid, and it got an open surface "
+            "(%s). Remove the faces AFTER hollowing, not before: hollow the "
+            "closed part here and pick the openings with the `faces` selector. "
+            "To give a loose surface a wall thickness instead, use Shell."
+            % type(_part).__name__)
     _op = list(_faces) if _faces else []
     try:
         return offset(_part, amount=-_thickness, openings=_op)
-    except Exception:
-        return _part
+    except Exception as _exc:
+        raise ValueError(
+            "Shell By Faces could not hollow this part to %g (OCCT: %s). A wall "
+            "thicker than the part's thinnest feature is the usual cause — try "
+            "a smaller thickness." % (_thickness, type(_exc).__name__))
 
 
 def _bbox_solid(_shape):
@@ -1036,6 +1103,144 @@ def _voronoi3d(_points, _body=None, _scale=0.9):
         if m is not None:
             out.append(m)
     return out
+
+
+_PLATONIC_FACES = (4, 6, 8, 12, 20)
+
+
+def _poly_snap(_kind, _n):
+    \"\"\"Round a requested face count to one this family can actually build, and
+    return (faces, k) — k being the base polygon's side count where there is one.
+
+    There is no polyhedron for every (family, face count) pair, so the slider
+    SNAPS rather than failing: a prism has k+2 faces, an antiprism 2k+2, a
+    bipyramid 2k, and a triangulated hull of V vertices has exactly 2V-4.\"\"\"
+    n = max(4, int(_n))
+    if _kind == "platonic":
+        return min(_PLATONIC_FACES, key=lambda f: (abs(f - n), f)), 0
+    if _kind == "prism":
+        k = max(3, n - 2)
+        return k + 2, k
+    if _kind == "antiprism":
+        k = max(3, (n - 2) // 2)
+        return 2 * k + 2, k
+    if _kind == "bipyramid":
+        k = max(3, n // 2)
+        return 2 * k, k
+    return max(4, n - n % 2), 0            # sphere: F = 2V - 4, so F is even
+
+
+def _poly_ring(_k, _z, _twist=0.0):
+    \"\"\"A regular _k-gon lying ON the unit sphere at height _z (hence radius
+    sqrt(1-z^2)), turned by _twist of one edge.\"\"\"
+    import numpy as np
+    r = max(0.0, 1.0 - _z * _z) ** 0.5
+    a = 2 * np.pi * (np.arange(_k) + _twist) / _k
+    return np.stack([r * np.cos(a), r * np.sin(a), np.full(_k, float(_z))], axis=1)
+
+
+def _poly_verts(_kind, _faces):
+    \"\"\"Vertices of the requested polyhedron, ALL ON THE UNIT SPHERE.
+
+    That constraint is what makes "the most volume for N faces" a well-posed
+    question here. Unconstrained it is unbounded, and the classical isoperimetric
+    version — most volume per unit SURFACE — is an OPEN problem past a handful of
+    face counts, whose answers are not the shapes anyone guesses: the best
+    5-faced solid is a triangular prism, not a square pyramid, and the best
+    8-faced one is not the regular octahedron. So this node answers the question
+    it can answer exactly: the largest member of the chosen family inscribed in a
+    sphere of radius `size`. Prism and antiprism have one free proportion, found
+    by scanning the hull volume; the platonics, the bipyramid and the hull of
+    Fibonacci points leave nothing to choose.\"\"\"
+    import numpy as np
+    from scipy.spatial import ConvexHull
+    n, k = _poly_snap(_kind, _faces)
+    if _kind == "platonic":
+        phi = (1 + 5 ** 0.5) / 2
+        if n == 4:
+            V = [(1, 1, 1), (1, -1, -1), (-1, 1, -1), (-1, -1, 1)]
+        elif n == 8:
+            V = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)]
+        elif n == 20:
+            V = []
+            for s in (-1, 1):
+                for t in (-1, 1):
+                    V += [(0, s, t * phi), (s, t * phi, 0), (t * phi, 0, s)]
+        else:                                  # cube, and the dodecahedron on it
+            V = [(x, y, z) for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)]
+            if n == 12:
+                for s in (-1, 1):
+                    for t in (-1, 1):
+                        V += [(0, s / phi, t * phi), (s / phi, t * phi, 0),
+                              (t * phi, 0, s / phi)]
+        P = np.array(V, dtype=float)
+        return P / np.linalg.norm(P, axis=1)[:, None]
+    if _kind == "bipyramid":       # every vertex on the sphere leaves no freedom
+        return np.vstack([_poly_ring(k, 0.0), [(0, 0, 1.0), (0, 0, -1.0)]])
+    if _kind in ("prism", "antiprism"):
+        tw = 0.5 if _kind == "antiprism" else 0.0
+
+        def vol_at(z):
+            P = np.vstack([_poly_ring(k, z), _poly_ring(k, -z, tw)])
+            return float(ConvexHull(P).volume), P
+
+        # Coarse sweep, then refine around the winner: the grid alone leaves ~0.02%
+        # on the table (it stops at z=0.57 where the hexagonal prism's optimum is
+        # 1/sqrt(3)=0.5774, and makes the triangular antiprism miss being exactly a
+        # regular octahedron). Two passes cost nothing and land on the real optimum.
+        lo, hi = 0.05, 0.95
+        best = None
+        for _ in range(3):
+            zs = np.linspace(lo, hi, 46)
+            vals = [vol_at(z) for z in zs]
+            i = max(range(len(zs)), key=lambda j: vals[j][0])
+            best = vals[i][1]
+            step = zs[1] - zs[0]
+            lo, hi = max(0.01, zs[i] - step), min(0.99, zs[i] + step)
+        return best
+    nv = (n + 4) // 2                          # triangulated hull: F = 2V - 4
+    i = np.arange(nv) + 0.5                    # Fibonacci sphere: near-uniform
+    z = 1 - 2 * i / nv
+    th = np.pi * (1 + 5 ** 0.5) * i
+    r = np.sqrt(np.maximum(0.0, 1 - z * z))
+    return np.stack([r * np.cos(th), r * np.sin(th), z], axis=1)
+
+
+def _poly_solid(_V):
+    \"\"\"Sew a convex point cloud into a real B-Rep solid: hull it, MERGE the
+    coplanar triangles scipy returns into one polygonal face each, order that
+    face's vertices around its own normal, then Shell -> Solid. The merge is what
+    makes a cube six faces instead of twelve triangles — and what makes the face
+    count the node advertises the face count you actually get.\"\"\"
+    import numpy as np
+    from scipy.spatial import ConvexHull
+    h = ConvexHull(_V)
+    facets = {}
+    for i, eq in enumerate(h.equations):
+        facets.setdefault(tuple(np.round(eq, 6)), []).append(i)
+    faces = []
+    for eq, tris in facets.items():
+        P = _V[sorted({int(v) for t in tris for v in h.simplices[t]})]
+        c = P.mean(axis=0)
+        u = P[0] - c
+        u = u / np.linalg.norm(u)
+        w = np.cross(np.array(eq[:3], dtype=float), u)
+        P = P[np.argsort(np.arctan2((P - c) @ w, (P - c) @ u))]
+        faces.append(Face(Wire.make_polygon([Vector(*p) for p in P], close=True)))
+    return Solid(Shell(faces))
+
+
+def _polyhedron(_kind="platonic", _faces=6, _size=10.0, _as_mesh=False):
+    \"\"\"The Polyhedron node. ONE vertex set feeds both lanes — a hull is a hull, so
+    the B-Rep lane sews it (the default, exact planar faces you can Fillet) and the
+    `mesh output` toggle hands the same points to manifold3d instead. Positioning
+    is NOT done here: the emitter wraps any node with an `origin` socket in _at()
+    on its own, and doing it twice would double the translation.\"\"\"
+    import numpy as np
+    V = _poly_verts(_kind, _faces) * float(_size)
+    if _as_mesh:
+        return _from_manifold(_mf().Manifold.hull_points(V.astype(np.float32)))
+    return _poly_solid(V)
 
 
 def _mesh_simplify(_mesh, _tolerance=0.05, _max_error=5.0):
@@ -2406,23 +2611,135 @@ def _union_atoms(_s):
     return [_s]
 
 
+def _coplanar_check(_faces):
+    \"\"\"(ok, why) — are these faces all planar and on the SAME plane?
+
+    A union of faces is a REGION MERGE and OCCT only does it in a common plane.
+    Hand it faces on different planes (or a curved one) and '+' returns them
+    side by side in a Compound: no error, no sewing, just a loose bag that looks
+    fused in the viewport. `_union` uses this to refuse instead — that is Join's
+    job, not Union's.\"\"\"
+    ref = None
+    for f in _faces:
+        try:
+            if f.geom_type != GeomType.PLANE:
+                return False, "one of them is curved (%s)" % (f.geom_type,)
+            n = Vector(f.normal_at()); c = Vector(f.center())
+        except Exception:
+            return True, ""                      # can't tell — don't block
+        if ref is None:
+            ref = (n, n.dot(c))
+            continue
+        rn, rd = ref
+        if abs(abs(n.dot(rn)) - 1.0) > 1e-6:
+            return False, "they face different directions"
+        if abs(rn.dot(c) - rd) > 1e-4:
+            return False, "they lie on parallel but distinct planes"
+    return True, ""
+
+
 def _union(*_items):
     \"\"\"Fuse any number of shapes into ONE, dimension-agnostic (build123d '+').
     Flattens nested lists, drops None; decomposes each shape into its atomic
     pieces (solids/faces) so overlapping fragments inside a single Compound fuse
     too — nothing -> None. Works for 2D faces/sketches (-> a merged region) and
     3D solids (-> one part). Union feeds its whole `shapes` collector in as one
-    arg (a list or single value); BooleanMulti spreads several — both flatten.\"\"\"
+    arg (a list or single value); BooleanMulti spreads several — both flatten.
+
+    Union is a BOOLEAN: it fuses overlapping material in a common space. It does
+    NOT sew — faces that merely touch along an edge are Join's business, and
+    asking Union for that used to return a loose Compound that never said so.\"\"\"
     parts = [p for p in _flatten(list(_items)) if p is not None]
     if not parts:
         return None
     atoms = [a for p in parts for a in _union_atoms(p)]
     if not atoms:
         return None
+    if len(atoms) > 1 and not any(isinstance(a, Solid) for a in atoms):
+        faces = [a for a in atoms if isinstance(a, Face)]
+        if len(faces) == len(atoms):
+            ok, why = _coplanar_check(faces)
+            if not ok:
+                raise ValueError(
+                    "Union fuses coplanar regions and closed solids — these %d "
+                    "faces cannot be fused (%s). Union is a boolean, not a sew: "
+                    "use the Join node to sew touching surfaces into a shell "
+                    "(and a closed shell into a solid)." % (len(faces), why))
     out = atoms[0]
     for p in atoms[1:]:
         out = out + p
     return out
+
+
+def _join(_items, _tol=1e-6, _solid=True):
+    \"\"\"Sew touching surfaces into ONE shell / chain touching curves into ONE wire.
+
+    The complement of `_union`: a boolean fuses OVERLAPPING material, this stitches
+    pieces that merely SHARE A BORDER — which OCCT does with a different operation
+    entirely (BRepBuilderAPI_Sewing, reached via Face.sew_faces/Shell, and
+    Wire.combine for edges). Six box faces become a closed shell and then a real
+    Solid; five stay a shell (an open surface — Solid() would happily build an
+    invalid one out of it, measured volume 800 on a 1000 box, so the closed check
+    is load-bearing).
+
+    Faces win over edges when both are present: an input that has faces is a
+    surface, and its edges are that surface's border, not a separate curve.
+    Pieces that do NOT touch are an ERROR, not a silent Compound — that is the
+    whole point of the node.\"\"\"
+    parts = [p for p in _flatten([_items]) if p is not None]
+    if not parts:
+        return None
+    if any(_is_mesh(p) for p in parts):
+        raise ValueError(
+            "Join works on B-Rep curves and surfaces; a mesh reached it. "
+            "Use Mesh Union (mesh lane) or Mesh To Solid first.")
+    faces, edges = [], []
+    for p in parts:
+        try:
+            fl = list(p.faces())
+        except Exception:
+            fl = []
+        if fl:
+            faces.extend(fl)
+            continue
+        try:
+            el = list(p.edges())
+        except Exception:
+            el = []
+        if not el:
+            raise ValueError(
+                "Join got something with no faces and no edges (%s)."
+                % type(p).__name__)
+        edges.extend(el)
+
+    if faces:
+        if len(faces) == 1:
+            return faces[0]
+        groups = Face.sew_faces(faces)
+        if len(groups) > 1:
+            raise ValueError(
+                "Join: these surfaces do not touch — they sew into %d separate "
+                "pieces (%s faces). Joined surfaces must SHARE their border "
+                "edges; check the pieces really meet (a Split/Section leaves "
+                "matching edges, two independent primitives usually do not)."
+                % (len(groups), "+".join(str(len(g)) for g in groups)))
+        shell = Shell(list(groups[0]))
+        if _solid and shell.wrapped is not None and shell.wrapped.Closed():
+            try:
+                solid = Solid(shell)
+                if solid.is_valid:
+                    return solid
+            except Exception:
+                pass
+        return shell
+
+    wires = Wire.combine(edges, tol=_tol)
+    if len(wires) > 1:
+        raise ValueError(
+            "Join: these curves do not touch — they chain into %d separate "
+            "wires. Raise `tolerance` if the endpoints are close but not "
+            "coincident." % (len(wires),))
+    return wires[0] if wires else None
 
 
 def _reanchor(_target, _items, _verify=True):

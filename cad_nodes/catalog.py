@@ -286,6 +286,36 @@ register(NodeDef("Wedge", "primitives_3d", "Wedge",
                 "[xmin..xmax] x [zmin..zmax] (ramps, tapered blocks). Keep "
                 "0 <= xmin < xmax <= xsize and likewise for z."))
 
+register(NodeDef("Polyhedron", "primitives_3d", "Polyhedron",
+    inputs=_origin_in() + _pin("faces", "size"),
+    params=[Param("kind", "select", "kind", "platonic", widget="select",
+                  options=["platonic", "prism", "antiprism", "bipyramid", "sphere"]),
+            _i("faces", 6, 4, 200, label="faces"),
+            _f("size", 10, 0.1, 500, label="size (circumradius)"),
+            Param("as_mesh", "bool", "mesh output", False, widget="checkbox")],
+    outputs=_geo(),
+    aliases=["poliedro", "platonic", "tetrahedron", "cube", "octahedron",
+             "dodecahedron", "icosahedron", "prism", "antiprism", "bipyramid",
+             "dice", "d20", "geodesic"],
+    code_template={"algebra": "_polyhedron({kind}, {faces}, {size}, {as_mesh})"},
+    description="A polyhedron with the face count you ask for: the BIGGEST one of "
+                "its family that fits in a sphere of radius `size` (every vertex "
+                "sits on that sphere). `kind` picks the family — platonic (4/6/8/"
+                "12/20: tetra, cube, octa, dodeca, icosa), prism (k+2 faces), "
+                "antiprism (2k+2), bipyramid (2k), or sphere (any even count: "
+                "near-uniform points hulled, F = 2V-4 — a geodesic-ish ball). "
+                "`faces` SNAPS to the nearest count the family can build, so the "
+                "slider always lands on a real solid. Beware the honest limit: "
+                "'most volume per unit SURFACE for N faces' is an open problem "
+                "past a few counts and its answers surprise (the best 5-faced "
+                "solid is a triangular prism, not a square pyramid; the best "
+                "8-faced one is not the regular octahedron), so this maximises "
+                "within a family inscribed in a sphere, which is exact. Output is "
+                "a real B-Rep solid with planar faces — Fillet/Chamfer/booleans "
+                "all work. `mesh output` returns the same hull on the mesh lane "
+                "instead (for Mesh Union & co.); leave it off unless you need it, "
+                "as a mesh will not go into a Fillet."))
+
 register(NodeDef("ConstructPoint", "vector", "Construct Point",
     inputs=[Socket("x", WIRE_DATA, required=False),
             Socket("y", WIRE_DATA, required=False),
@@ -662,9 +692,42 @@ register(NodeDef("Union", "boolean", "Union",
     # solids yields a solid — so the output mirrors what flows in.
     output_follows="shapes",
     code_template={"algebra": "_union({shapes})"},
+    aliases=["fuse", "boolean union", "unione", "add", "merge", "combine"],
     description="Boolean union — fuses everything wired in into one shape. Feed "
-                "a whole list or many wires into the single socket; 2D faces "
-                "fuse into a region, 3D solids into one part."))
+                "a whole list or many wires into the single socket; 3D solids "
+                "fuse into one part, and COPLANAR 2D faces into one region. It "
+                "is a boolean, not a sew: faces on different planes only touch, "
+                "they do not overlap, so Union refuses them and points you at "
+                "Join — which stitches them into a shell."))
+
+register(NodeDef("Join", "boolean", "Join",
+    # The complement of Union, and the reason Union no longer pretends: a boolean
+    # fuses OVERLAPPING material, Join sews pieces that merely SHARE A BORDER.
+    # One collector, same shift-drag / list idiom as Union. Declared `surface`
+    # (the common case) but widened to curves and solids — the helper dispatches
+    # on what really arrives. A `multiple` collector skips boundary casts
+    # (CLAUDE.md §5c), so a CLOSED curve reaches the node as a curve rather than
+    # being filled into a face on the way in — which is what lets Join chain it.
+    inputs=[Socket("shapes", WIRE_SURFACE, multiple=True,
+                   accepts=[WIRE_CURVE, WIRE_SOLID])],
+    params=[_f("tolerance", 0.001, 0.0, 10, step=0.001, widget="input"),
+            Param("make_solid", "bool", "close into a solid", True,
+                  widget="checkbox")],
+    outputs=_sk(),
+    output_follows="shapes",
+    aliases=["sew", "stitch", "weld", "unisci", "cuci", "shell", "wire",
+             "combine", "knit", "merge faces"],
+    # The collector SPREADS its wires (`a, b`), so bracket them: `_join` takes the
+    # pieces as one list and keeps its tolerance/close args positional after it.
+    code_template={"algebra": "_join([{shapes}], {tolerance}, {make_solid})"},
+    description="Sew touching SURFACES into one shell, or chain touching CURVES "
+                "into one wire. Six faces of a box come back as a closed shell "
+                "and — with `close into a solid` on — as a real solid you can "
+                "fillet and boolean; five come back as an open surface. Pieces "
+                "that do not share their border edges are an error, not a silent "
+                "bag of parts: raise `tolerance` (curves only — faces sew on "
+                "OCCT's own tolerance) or check they really meet. Use Union "
+                "instead when the shapes OVERLAP and you want them fused."))
 
 register(NodeDef("Subtract", "boolean", "Subtract",
     # `b` is list-access: a LIST of tools (e.g. a fanned set of cutters) is
