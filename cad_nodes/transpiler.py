@@ -1735,7 +1735,18 @@ def _static_colliders(_container, _o, _B):
     out = []
     if _container is None:
         return out
-    items = list(_container) if isinstance(_container, (list, tuple)) else [_container]
+    # Flatten as deep as it goes: wiring an ArrayLinear (or an array of arrays —
+    # a peg grid is exactly that) into `container` hands us nested lists, and the
+    # alternative is making the user thread ListFlatten through every branch.
+    def _flat(v, out):
+        if isinstance(v, (list, tuple)):
+            for it in v:
+                _flat(it, out)
+        elif v is not None:
+            out.append(v)
+        return out
+
+    items = _flat(_container, [])
     for c in items:
         if c is None:
             continue
