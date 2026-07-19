@@ -1,0 +1,209 @@
+{
+ "name": "galton-board",
+ "nodes": [
+  {
+   "id": "note",
+   "type": "Note",
+   "params": {
+    "text": "GALTON BOARD - the normal distribution, fallen out of gravity\\n\\nEvery ball meets the same question at every row: left or right. One ball is\\nnoise. Sixty of them add up to a bell - not because anything draws one, but\\nbecause there are more ways to come down the middle than down a side.\\n\\nThe pegs are DIAMONDS on purpose. On a round peg a ball can sit balanced on\\ntop forever (friction holds it there), and then only the balls thrown\\nsideways reach a bin - the \"bell\" comes out hollow. An apex forces a choice.\\n\\nKnobs worth turning:\\n  rows     - more rows, more coin flips, a wider and smoother bell\\n  peg      - fatter pegs deflect harder and jam the gaps; thin ones let\\n             balls fall through several rows untouched\\n  count    - one ball is chance; sixty is a law\\n  seed     - the same experiment, run again. The bell survives; the lumps\\n             move. That IS the point\\n  grip     - how slippery the world is, and the knob that decides whether\n             you get a bell at all: at 1 a sloped face GRABS a ball and\n             flings it at the wall (two lumps, hollow middle); at 0.15 it\n             slides off and the walk is fair. Measured, not guessed\n  material - the ball. clay lands dead, rubber turns the board into a\n             pinball machine and the distribution stops being normal\\n  blade X  - slide the blade and watch the whole distribution move with it\\n  timeline - scrub the fall. With Live on, it replays while you drag"
+   },
+   "position": [
+    -40,
+    -430
+   ],
+   "size": [
+    760,
+    330
+   ]
+  },
+  {
+   "id": "t",
+   "type": "NumberSlider",
+   "params": {
+    "value": 1.0,
+    "_ui": {
+     "value": {
+      "min": 0,
+      "max": 1,
+      "step": 0.01
+     }
+    }
+   },
+   "position": [
+    60,
+    640
+   ]
+  },
+  {
+   "id": "board",
+   "type": "CodeBlock",
+   "params": {
+    "code": "rows    = 11      #@param int min=4 max=14\nspacing = 13.0    #@param min=8 max=20 step=0.5\npeg     = 2.6     #@param min=0.8 max=6 step=0.1\ndepth   = 14.0    #@param min=6 max=30 step=1\nimport math, trimesh, numpy as np\n# The pegs are DIAMONDS, and that is the whole physics of this board: a ball\n# cannot rest on an apex. On a round peg it can \u2014 friction holds it balanced on\n# top and it never falls, so only the balls flung sideways ever reach a bin and\n# the \"bell\" comes out with a hole in the middle. An apex forces a choice.\nparts, top = [], 40.0 + rows * spacing\nfor r in range(rows):\n    n = r + 2\n    z = top - (r + 1) * spacing\n    for c in range(n):\n        x = (c - (n - 1) / 2.0) * spacing\n        a = peg * math.sqrt(2.0)                 # square turned 45 deg: peg = half-diagonal\n        p = trimesh.creation.box(extents=(a, depth, a))\n        p.apply_transform(trimesh.transformations.rotation_matrix(math.pi / 4, [0, 1, 0]))\n        p.apply_translation([x, 0, z])\n        parts.append(p)\nzb = max(top - (rows + 1) * spacing, 12.0)       # bin floor\nnb = rows + 2\nfor i in range(nb + 1):                          # the fins sit UNDER the gaps of the last row\n    x = (i - nb / 2.0) * spacing\n    fin = trimesh.creation.box(extents=(1.6, depth, zb - 2.0))\n    fin.apply_translation([x, 0, (zb - 2.0) / 2.0])\n    parts.append(fin)\n    # \u2026and the divider gets an apex too. A flat 1.6mm top is still a ledge, and a\n    # ball WILL balance on it: measured, ball 40 of the first working run came to\n    # rest at z=29 \u2014 perched on a fin, not in a bin. Every horizontal surface a\n    # ball can perch on is a hole punched in the histogram.\n    cap = trimesh.creation.box(extents=(2.2, depth, 2.2))\n    cap.apply_transform(trimesh.transformations.rotation_matrix(math.pi / 4, [0, 1, 0]))\n    cap.apply_translation([x, 0, zb - 2.0])\n    parts.append(cap)\nresult = Mesh(trimesh.util.concatenate(parts))\n"
+   },
+   "position": [
+    60,
+    -60
+   ],
+   "size": [
+    380,
+    300
+   ],
+   "preview": true,
+   "color": "#4a7a5a"
+  },
+  {
+   "id": "walls",
+   "type": "CodeBlock",
+   "params": {
+    "code": "rows    = 11      #@param int min=4 max=14\nspacing = 13.0    #@param min=8 max=20 step=0.5\ndepth   = 14.0    #@param min=6 max=30 step=1\nimport trimesh\n# The two panes that keep the board two-dimensional, and \u2014 the part that decides\n# whether you get a bell at all \u2014 the two SIDE walls. The peg triangle widens by\n# one peg per row, so its edge is a diagonal: a ball deflected outward by the\n# outermost peg of a row has nothing to send it back, falls down the OUTSIDE of\n# the field and lands in the last bin. Measured: without these walls the\n# histogram is two lumps in the end bins with a hole in the middle. With them it\n# is a bell. Every real quincunx has them.\ntop, ws = 40.0 + rows * spacing, []\nhalf = (rows + 2) / 2.0 * spacing\nfor s in (-1, 1):\n    w = trimesh.creation.box(extents=(spacing * (rows + 4), 1.5, top + 20))\n    w.apply_translation([0, s * (depth / 2 + 0.75), (top + 20) / 2.0])\n    ws.append(w)\n    side = trimesh.creation.box(extents=(1.5, depth, top + 20))\n    side.apply_translation([s * (half + 0.75), 0, (top + 20) / 2.0])\n    ws.append(side)\nresult = Mesh(trimesh.util.concatenate(ws))\n"
+   },
+   "position": [
+    60,
+    300
+   ],
+   "size": [
+    380,
+    230
+   ],
+   "preview": false
+  },
+  {
+   "id": "balls",
+   "type": "CodeBlock",
+   "params": {
+    "code": "count   = 60      #@param int min=5 max=140\nrows    = 11      #@param int min=4 max=14\nspacing = 13.0    #@param min=8 max=20 step=0.5\nball    = 2.2     #@param min=1 max=5 step=0.1\nspread  = 1.5     #@param min=0 max=12 step=0.5\ngap     = 4.5     #@param min=3 max=14 step=0.5\nseed    = 1       #@param int min=1 max=999\nimport trimesh, numpy as np\n# A column of balls above the top peg, released as one. `gap` is how far apart\n# they queue: tight is a stream that jostles, wide is a polite one-at-a-time.\n# The seed is the experiment number - every seed is a different run of the same\n# experiment, which is the honest way to show a distribution is a distribution.\ntop = 40.0 + rows * spacing\nrng = np.random.RandomState(int(seed))\nproto = trimesh.creation.icosphere(subdivisions=1, radius=ball)\nout = []\nfor i in range(int(count)):\n    m = proto.copy()\n    m.apply_translation([rng.uniform(-spread, spread),\n                         rng.uniform(-0.8, 0.8),\n                         top + 8 + i * gap])\n    out.append(Mesh(m))\nresult = out\n"
+   },
+   "position": [
+    60,
+    900
+   ],
+   "size": [
+    380,
+    300
+   ]
+  },
+  {
+   "id": "blade",
+   "type": "CodeBlock",
+   "params": {
+    "code": "width   = 34.0    #@param min=4 max=90 step=1\nthick   = 3.0     #@param min=1 max=10 step=0.5\ndepth   = 14.0    #@param min=6 max=30 step=1\ntilt    = 35.0    #@param min=-80 max=80 step=1\nimport math, trimesh\n# The movable piece: a blade you slide across the board with the X slider. Put\n# it high and the whole distribution shifts; put it low and it splits one bin\n# off the pile. It is a container like the pegs - immovable, but YOU move it.\nb = trimesh.creation.box(extents=(width, depth, thick))\nb.apply_transform(trimesh.transformations.rotation_matrix(math.radians(tilt), [0, 1, 0]))\nresult = Mesh(b)\n"
+   },
+   "position": [
+    520,
+    300
+   ],
+   "size": [
+    380,
+    240
+   ],
+   "preview": true,
+   "color": "#b8823a"
+  },
+  {
+   "id": "bladex",
+   "type": "Move",
+   "params": {
+    "x": -96.0,
+    "y": 0.0,
+    "z": 150.0
+   },
+   "position": [
+    940,
+    300
+   ]
+  },
+  {
+   "id": "drop",
+   "type": "Drop",
+   "params": {
+    "t": 1.0,
+    "material": "wood",
+    "settle": true,
+    "collide": true,
+    "grip": 0.15
+   },
+   "position": [
+    1320,
+    420
+   ],
+   "preview": true,
+   "color": "#5a7fb8"
+  }
+ ],
+ "connections": [
+  {
+   "id": "l1",
+   "from_node": "board",
+   "from_socket": "result",
+   "to_node": "drop",
+   "to_socket": "container"
+  },
+  {
+   "id": "l2",
+   "from_node": "walls",
+   "from_socket": "result",
+   "to_node": "drop",
+   "to_socket": "container"
+  },
+  {
+   "id": "l3",
+   "from_node": "blade",
+   "from_socket": "result",
+   "to_node": "bladex",
+   "to_socket": "shape"
+  },
+  {
+   "id": "l4",
+   "from_node": "bladex",
+   "from_socket": "result",
+   "to_node": "drop",
+   "to_socket": "container"
+  },
+  {
+   "id": "l5",
+   "from_node": "balls",
+   "from_socket": "result",
+   "to_node": "drop",
+   "to_socket": "shape"
+  },
+  {
+   "id": "l6",
+   "from_node": "t",
+   "from_socket": "result",
+   "to_node": "drop",
+   "to_socket": "t"
+  }
+ ],
+ "groups": [
+  {
+   "title": "THE BOARD - pegs, bins, and the two panes that keep it flat",
+   "bounding": [
+    20,
+    -120,
+    880,
+    660
+   ],
+   "color": "#3f589e"
+  },
+  {
+   "title": "THE MOVABLE PIECE",
+   "bounding": [
+    500,
+    240,
+    860,
+    340
+   ],
+   "color": "#8a5f3d"
+  },
+  {
+   "title": "THE BALLS",
+   "bounding": [
+    20,
+    840,
+    460,
+    380
+   ],
+   "color": "#3d7a63"
+  }
+ ]
+}

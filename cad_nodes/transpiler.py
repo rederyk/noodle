@@ -738,7 +738,12 @@ class Mesh:
     # this class (it is defined in the generated script's globals), so it sniffs
     # for this attribute rather than using isinstance.
     _noodle_mesh = True
-    __slots__ = ("tm",)
+    # `_noodle_anim` is the Drop timeline riding on a result. It has to be a slot:
+    # a build123d Shape takes any attribute, so the B-Rep lane carried the plan for
+    # free and nobody noticed that on the mesh lane the assignment was hitting the
+    # __slots__ wall and being swallowed by _drop's try/except — a mesh dropped or
+    # collided simply never replayed in the browser, silently.
+    __slots__ = ("tm", "_noodle_anim")
 
     def __init__(self, tm):
         self.tm = tm
@@ -1482,7 +1487,7 @@ def _drop_apply(_shape, _B, _o, _ops):
 
 
 def _drop(_shape, _plane=None, _t=1.0, _material="plastic", _settle=True,
-          _collide=False, _container=None):
+          _collide=False, _container=None, _grip=1.0):
     \"\"\"A real fall onto the plane, scrubbed by _t: 0 = where the part is now,
     1 = at rest. The part falls, BOUNCES (each impact keeps _DROP_E of its
     speed), and — with `settle` — TOPPLES: once the bounces die, the quasi-
@@ -1498,7 +1503,7 @@ def _drop(_shape, _plane=None, _t=1.0, _material="plastic", _settle=True,
     it cannot fall.\"\"\"
     if _container is not None or (_collide and isinstance(_shape, (list, tuple))):
         shapes = list(_shape) if isinstance(_shape, (list, tuple)) else [_shape]
-        out = _drop_collide(shapes, _plane, _t, _material, _settle, _container)
+        out = _drop_collide(shapes, _plane, _t, _material, _settle, _container, _grip)
         return out if isinstance(_shape, (list, tuple)) else (out[0] if out else None)
     if _shape is None:
         return None
@@ -1601,7 +1606,7 @@ def _quat_slerp(_qa, _qb, _f):
     return (math.sin((1 - _f) * th) * qa + math.sin(_f * th) * qb) / math.sin(th)
 
 
-def _dyn_sim(_hulls, _coms, _e, _t_max=8.0, _statics=()):
+def _dyn_sim(_hulls, _coms, _e, _t_max=8.0, _statics=(), _grip=1.0):
     \"\"\"The rigid-body simulation behind collide: pybullet, DIRECT mode, fixed
     timestep (deterministic for a given scene on a given build), every part a
     CONVEX HULL of its mesh. All parts fall TOGETHER — they hit each other in
@@ -1641,7 +1646,7 @@ def _dyn_sim(_hulls, _coms, _e, _t_max=8.0, _statics=()):
         _pb.setGravity(0.0, 0.0, -9810.0, physicsClientId=cl)
         plane = _pb.createCollisionShape(_pb.GEOM_PLANE, physicsClientId=cl)
         pbody = _pb.createMultiBody(0.0, plane, physicsClientId=cl)
-        _pb.changeDynamics(pbody, -1, restitution=1.0, lateralFriction=0.8,
+        _pb.changeDynamics(pbody, -1, restitution=1.0, lateralFriction=0.8 * _grip,
                            physicsClientId=cl)
         for (sv, sf) in _statics:
             scs = _pb.createCollisionShape(
@@ -1652,8 +1657,12 @@ def _dyn_sim(_hulls, _coms, _e, _t_max=8.0, _statics=()):
                                       physicsClientId=cl)
             # A little grippier and deader than the bed: a part that lands in a
             # bowl should stop there, not skate around the cavity for 8 seconds.
-            _pb.changeDynamics(sid, -1, restitution=0.2, lateralFriction=0.9,
-                               rollingFriction=0.05, spinningFriction=0.05,
+            # Scaled by grip, and that scaling is load-bearing: at 0.9 a sloped
+            # static face GRABS a ball and throws it sideways instead of letting
+            # it slide off. Measured on the Galton board — 0.9 gives two lumps
+            # against the walls, 0.3 gives the bell.
+            _pb.changeDynamics(sid, -1, restitution=0.2, lateralFriction=0.9 * _grip,
+                               rollingFriction=0.05 * _grip, spinningFriction=0.05 * _grip,
                                physicsClientId=cl)
         ids = []
         for hv, c0 in zip(_hulls, _coms):
@@ -1669,8 +1678,8 @@ def _dyn_sim(_hulls, _coms, _e, _t_max=8.0, _statics=()):
                                       baseCollisionShapeIndex=cs,
                                       basePosition=[float(x) for x in c0],
                                       physicsClientId=cl)
-            _pb.changeDynamics(bid, -1, restitution=float(_e), lateralFriction=0.6,
-                               rollingFriction=0.06, spinningFriction=0.06,
+            _pb.changeDynamics(bid, -1, restitution=float(_e), lateralFriction=0.6 * _grip,
+                               rollingFriction=0.06 * _grip, spinningFriction=0.06 * _grip,
                                linearDamping=0.02, angularDamping=0.25,
                                ccdSweptSphereRadius=max(r * 0.4, 0.1),
                                physicsClientId=cl)
@@ -1739,7 +1748,7 @@ def _static_colliders(_container, _o, _B):
 
 
 def _drop_collide(_shapes, _plane=None, _t=1.0, _material="plastic", _settle=True,
-                  _container=None):
+                  _container=None, _grip=1.0):
     \"\"\"The multi-body drop, done with real dynamics: every shape wired into the
     node becomes a rigid body (its convex hull) in ONE pybullet scene, and they
     all fall TOGETHER — colliding in the air, pushing each other, tumbling,
@@ -1775,7 +1784,8 @@ def _drop_collide(_shapes, _plane=None, _t=1.0, _material="plastic", _settle=Tru
         return results
     times, poss, quats = _dyn_sim([b["hull"] for b in live],
                                   [b["c0"] for b in live], e,
-                                  _statics=_static_colliders(_container, o, B))
+                                  _statics=_static_colliders(_container, o, B),
+                                  _grip=float(_grip))
     if not times:
         return results
     T = times[-1]

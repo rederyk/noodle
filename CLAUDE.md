@@ -374,7 +374,17 @@ thirds of the material within one — so orientation decides **where the part br
   toggle says (the emitter un-fans on `collide or container`), so a SINGLE part falls in
   too — and then a plain preview carries an anim of kind "keys", which `applyDropAnim`
   routes to `sceneBodyPose` instead of `dropMatrixAt`. It never moves and is not an output;
-  preview the bowl node itself), `PrintCheck` (report → Panel), `OverhangFaces`
+  preview the bowl node itself). GRIP: `grip` scales the friction of the whole
+  scene (statics, parts, bed). It is not a detail — on a SLOPED static face high
+  friction grabs a part and flings it sideways instead of letting it slide off, so
+  `examples/galton-board.json` at grip 1 throws its balls to the walls (bimodal,
+  hollow centre, gaussian fit −0.13) and at 0.15 gives a real bell (fit +0.81).
+  MESH-LANE TRAP, paid for: `Mesh.__slots__` must list `_noodle_anim`. A build123d
+  Shape takes any attribute, so the B-Rep lane carried the Drop timeline for free
+  and nobody noticed that on the mesh lane the assignment hit the slots wall and was
+  swallowed by `_drop`'s try/except — a dropped mesh simply never replayed, and a
+  collide scene of meshes came back as one merged blob instead of N posable bodies),
+  `PrintCheck` (report → Panel), `OverhangFaces`
   (the faces needing support, as a mesh of its own → its own colour in the viewer),
   `SupportVolume` (the support as a BODY), `OrientForPrint` (every stable pose scored; two
   outputs — the oriented mesh and the table saying why — from ONE search, via

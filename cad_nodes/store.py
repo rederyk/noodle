@@ -43,6 +43,9 @@ _EXAMPLE_DESCRIPTIONS = {
     "drop-in-bowl": "Drop with a container: three balls poured into a bowl that "
                     "never moves. The bowl is the one body kept CONCAVE, so it "
                     "cradles them instead of shedding them.",
+    "galton-board": "The normal distribution, fallen out of gravity: 60 balls "
+                    "down a grid of diamond pegs, with a blade you slide to bend "
+                    "the whole distribution. Turn `grip` up and watch the bell die.",
     "parametric-gear": "Custom node from scratch — a spur gear written in one "
                        "CodeBlock, driven by #@param knobs.",
     "gear-row-fanout": "Grasshopper-style fan-out — a Range feeds the gear "
