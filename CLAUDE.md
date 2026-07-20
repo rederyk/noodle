@@ -67,6 +67,9 @@ server.py            FastAPI HTTP API (port 8090). Routes under /api/* :
                        single-param edit; `_cb.<name>` targets a CodeBlock
                        override), /api/graph/{name}/codeblock/{id}/scan,
                        /api/nodes (catalog), /api/copilot/chat|status,
+                       /api/aliases (GET the personal add-node search aliases)
+                       + PUT /api/aliases/{node_type} (replace one node's, []
+                       clears) — stored in projects/_aliases.json, see §6,
                        /api/agent/help (self-contained remote-agent guide =
                        cad_nodes/AGENT_HELP.md, also MCP cad_help/cad://help —
                        keep it in sync when the API surface changes),
@@ -91,6 +94,29 @@ webui/
                        in the pages and hooks onto the exposed scene/camera/
                        previewGroup (nodes.html: the gizmo + click-to-select via
                        viewer.pick()). Both pages now render identically.
+                       RENDERING (`makeMaterial`, HQ toggle in Settings): filmic
+                       tone mapping + a RoomEnvironment IBL, and a per-node
+                       `finish` — solid / glass (real `transmission`, not alpha) /
+                       emissive / metal — plus `rainbow` (a hue per piece via the
+                       golden angle, as geometry groups sharing one buffer).
+                       SELECTIVE BLOOM, and it has to be selective: `transmission`
+                       is not blending — three renders the scene to its own target
+                       and samples it refracted, so an emitter seen THROUGH glass
+                       arrives attenuated, falls under any luminance threshold, and
+                       a bloom on the finished image stops dead at the glass. So
+                       emitters get `GLOW_LAYER` (markGlow), render ALONE on black
+                       (background nulled, or the clear colour blooms too), blur at
+                       half res with threshold 0, and are composited ADDITIVELY on
+                       top — which is what makes the glow cross the glass and
+                       spread. Two things that bit: the glow target holds LINEAR
+                       un-tone-mapped values (three tone maps only to the canvas)
+                       and UnrealBloomPass returns emitters+blur, so the quad is
+                       scaled down or the core blows white twice over; and
+                       `emissiveIntensity` must stay BELOW 1 — past it ACES
+                       desaturates the highlight and the glowing body goes flat
+                       white. No refraction of the glow and no caustics: those need
+                       rays. Costs ~0-1fps (glass dominates); off unless HQ and
+                       something declares itself emissive.
   index.html         the `/ui` code view — generated build123d source (read-only
                        text) + STL preview. Parameter literals are highlighted
                        and click-to-edit via a terminal-style inline editor that
@@ -134,8 +160,18 @@ cad_nodes/
                        topo order; group nodes (BuildPart/BuildSketch) emit
                        nested `with` blocks. PREAMBLE injects runtime helpers
                        (_at, _pushpull, _section, _bbox_plane, _rotate,
-                       _select_subshapes). Each node is wrapped in try/except so
-                       one failing node is recorded in __errors__, not fatal.
+                       _select_subshapes, _reanchor). Each node is wrapped in
+                       try/except so one failing node is recorded in __errors__,
+                       not fatal.
+                       TRAP, paid for: build123d's algebra-mode fillet()/chamfer()
+                       take NO target — they read `objects[0].topo_parent`, which
+                       after a boolean still names the PRE-boolean operand. Round a
+                       corner of a Union and you silently get that operand back,
+                       the rest of the part deleted and no error raised. So every
+                       rounding node passes its `part` EXPLICITLY and _reanchor()
+                       re-points the picks at it (in place — chamfer()'s 2D branch
+                       matches picks by TShape identity, so copies match nothing).
+                       Never call bare fillet()/chamfer() in a code_template.
                        run(emit_map=True) / transpile_with_map() also return a
                        param<->code source map (sentinel-wrapped literals measured
                        on the final text) for the editable code view. A CodeBlock
@@ -218,12 +254,40 @@ rect + colour). They're **editor-only metadata**: the engine never reads them, b
 save/reload and api/copilot round-trips. Serialized/restored in `nodes.html`
 (`toGraphJSON`/`fromGraphJSON`); created with Ctrl+G (`groupSelected`).
 
+`preview` is the per-node eye: `True`/`False` force it, absent = auto (draw only
+terminal geometry nodes). **Every emit path must call `Transpiler._previewed`** —
+it is the ONE gate, and an emit path that forgets it leaves the eye wired to
+nothing, silently, for every node of that type (that was feedback
+20260718-164854: selectors, CenterOfMass, TraceImage, OrientForPrint and
+bypassed nodes all had dead toggles). Selectors are the special case: their
+output wire is `selection`/`data`, which says how they may be WIRED, not what
+they hold — at run time it is drawable sub-shapes, so they honour an EXPLICIT
+eye but never auto-draw (a graph is full of wired selectors; drawing them all
+unasked buries the part). `mesh_extractor._preview_geom` then dispatches on the
+runtime VALUE, not the declared type: points → dots, solid/sketch → mesh, curve
+→ polylines.
+
 `params._ui` is another editor-only namespace (like CodeBlock's `_cb`): per-slider
 drag window + step set via the slider's ⚙ (`{param: {min,max,step}}`). Sliders in
 the editor are a custom `cadslider` widget — the drag window defaults to ±10
 (clipped to catalog hard bounds, auto-grown to contain the value) and drag snaps
 to the step; the typed ✎ field clamps only on the catalog's hard min/max. The
 engine resolves params by catalog name, so it never sees `_ui`.
+
+**PLAY** — a ▶ hotspot left of the ⚙ sweeps the param across its drag window on a
+clock; speed (sweeps/second) and mode (`once` / `loop` / `pingpong`) live in the
+same namespace, `_ui[param].play`. It drives the value through `w.callback`, i.e.
+through the exact path a hand on the slider uses, so undo, the ✎ field and the
+gizmo snapshots all behave as if it were being dragged — and that is also why it
+composes with Live at no cost: `scheduleLive()`'s 120ms debounce is reset every
+frame and never fires, so an anticipatable node (§6b) replays locally at 60fps
+and exactly ONE exact re-bake lands when play stops (measured: 0 runs during a
+sweep, 1 after). A node no fast path can anticipate would then show nothing until
+stop, so play instead **pumps** the engine — one run at a time, the next starting
+only when the last has landed, because `runGraph()` aborts whatever is in flight
+and overlapping calls would starve every run but the last (measured: ~1.1 runs/s,
+0 overlapping). The playing state is deliberately transient: never saved, and
+loading a graph or deleting a node stops it.
 
 Execution writes `output.stl` + `view.json` (meshes) alongside it.
 
@@ -285,7 +349,17 @@ a dependency). Full findings + measurements: **`PLAN_MESH_LANE.md`**.
   helpers branch on `_is_mesh` and apply a 4×4 (`_mesh_matrix`) instead of a
   `Location`, and `output_follows="shape"` carries the mesh type back out. There is
   no `MeshMove` and there must not be. (Arrays/Align don't take meshes yet — their
-  templates still build `Pos(…) * shape` inline.)
+  templates still build `Pos(…) * shape` inline.) `_at` — the `origin` socket every
+  primitive gets, wrapped on by the EMITTER, not by the template — branches the same
+  way: a mesh can't be `.moved()` nor go in a `Compound`, so it takes a `_mesh_matrix`
+  and many origins concatenate instead. A helper behind an `origin` node must
+  therefore NOT place its own result, or the translation lands twice
+  (`tests/test_polyhedron.py::test_origin_is_applied_exactly_once`).
+  `Rotate` also takes an optional
+  `pivot` point and an `about` select — world (global axis, the default) / part (own
+  bbox centre) / group (collective centre; under fan-out the emitter hoists ONE
+  `_pivot_of(…)` out of the lambda so the ensemble turns rigidly); centres are
+  measured on the tessellation, like `PlaceOnBed`.
 - **The cast is asymmetric on purpose.** `solid/surface → mesh` is automatic
   (tessellation: milliseconds, safely lossy) — drop a `Box` straight into a mesh
   input and it just works. `mesh → solid` is **not** a cast: rebuilding a B-Rep from
@@ -303,13 +377,64 @@ a dependency). Full findings + measurements: **`PLAN_MESH_LANE.md`**.
 
 ## 5d. Print physics (category `print`)
 
-Four nodes that answer what a slicer never asks: **which way up, and why**
+Five nodes that answer what a slicer never asks: **which way up, and why**
 (`catalog.py` §12c, runtime in the PREAMBLE, full notes in **`PLAN_PRINT_PHYSICS.md`**).
 A printed part is anisotropic — the bond between layers is worth roughly a third to two
 thirds of the material within one — so orientation decides **where the part breaks**.
 
 - `PlaceOnBed` (lowest point → z=0; serves BOTH lanes: it measures on the mesh and moves
-  the original, so a solid stays a solid), `PrintCheck` (report → Panel), `OverhangFaces`
+  the original, so a solid stays a solid), `Drop` (PlaceOnBed as a scrubbable FALL: a
+  `timeline` slider 0→1, analytic bounce with restitution fixed per `material` — plastic
+  0.55, lead 0.08, rubber 0.85… — then, with `settle` on, the part TOPPLES for real:
+  `_settle_plan` walks the quasi-static cascade on the convex hull (com outside the
+  contact patch → tip about the nearest support edge until the next facet lands, ≤40
+  steps, replayed partially at scrub time). The energy guard — every step must strictly
+  lower the com — is what stops a sphere rolling forever while letting the edge-balanced
+  cube go over; balanced ties resolve deterministically. t=1 is always fully at rest;
+  optional `plane` input. Gizmo `kind:"timeline"` (nodes.html): Edit-on-canvas shows a
+  Z-only translate arrow — pull the part down to advance t, lift to rewind, one part
+  height ≈ the full slider; wired `t` locks it. LIVE REPLAY: `_drop` attaches the whole
+  journey as data to its result (`_noodle_anim`: bounce segs + topple steps, world
+  coords, baked t); `_preview_of` lifts it into previews[id].anim, and nodes.html
+  (`dropMatrixAt`/`applyDropAnim`) replays any t as pure matrix math at 60fps while the
+  slider or a wired Number Slider drags (drag anticipation — see §6b), mesh pose =
+  M(t)·M(t_baked)⁻¹ —
+  the engine re-bakes exactly when the drag settles. COLLISIONS: the `collide` toggle —
+  off by default, it costs real compute — un-fans multiple shapes wired into one Drop
+  into ONE scene (`_drop_collide` → `_dyn_sim`) and runs REAL rigid-body dynamics
+  (pybullet, DIRECT mode): every part is its convex hull, they all fall TOGETHER —
+  colliding mid-air, pushing each other over, tumbling, stacking — simulated once at a
+  fixed 1/240s step (deterministic per scene) in MILLIMETRES directly (so the fixed
+  collision margin is sub-micron, not the ~1mm it becomes when shrunk to metres; CCD +
+  hull-volume masses), recorded as 60Hz keyframes per body until the scene sleeps
+  (restitutionVelocityThreshold=100mm/s + friction/damping, ~0.6-1s). Each returned
+  shape carries its own keyframe plan (`_noodle_anim` kind "keys"); mesh_extractor emits
+  a `{kind:"Scene", bodies:[...]}` preview, viewer.js builds a Group of independently-
+  posable meshes, and nodes.html (`keyInterp`/`sceneBodyPose`) replays the whole pile
+  LIVE (lerp+slerp) while the slider drags. Limits: falling parts are hulls, chaotic like
+  real falling. THE CONTAINER: the `container` socket is an IMMOVABLE collider the parts
+  fall into — a bowl, a tray, a crate. It is the one body that is NOT hulled: bullet allows
+  a concave triangle soup for STATIC bodies only (`GEOM_FORCE_CONCAVE_TRIMESH`, mass 0,
+  `_static_colliders` feeds it in bed coordinates), so a bowl keeps its cavity and really
+  cradles what you pour in — verified against the analytic seat, balls resting on a
+  spherical inner wall to <0.03mm. Wiring one implies scene mode whatever the `collide`
+  toggle says (the emitter un-fans on `collide or container`), so a SINGLE part falls in
+  too — and then a plain preview carries an anim of kind "keys", which `applyDropAnim`
+  routes to `sceneBodyPose` instead of `dropMatrixAt`. It is not an output; with no
+  motion wired it never moves, so preview the bowl node itself. A MOVING CONTAINER
+  (`ContainerMotion` → the `motion` socket) is the exception, and §5d-bis below.
+  GRIP: `grip` scales the friction of the whole
+  scene (statics, parts, bed). It is not a detail — on a SLOPED static face high
+  friction grabs a part and flings it sideways instead of letting it slide off, so
+  `examples/galton-board.json` at grip 1 throws its balls to the walls (bimodal,
+  hollow centre, gaussian fit −0.13) and at 0.15 gives a real bell (fit +0.81).
+  MESH-LANE TRAP, paid for: `Mesh.__slots__` must list `_noodle_anim` (and now
+  `_noodle_extra`). A build123d
+  Shape takes any attribute, so the B-Rep lane carried the Drop timeline for free
+  and nobody noticed that on the mesh lane the assignment hit the slots wall and was
+  swallowed by `_drop`'s try/except — a dropped mesh simply never replayed, and a
+  collide scene of meshes came back as one merged blob instead of N posable bodies),
+  `PrintCheck` (report → Panel), `OverhangFaces`
   (the faces needing support, as a mesh of its own → its own colour in the viewer),
   `SupportVolume` (the support as a BODY), `OrientForPrint` (every stable pose scored; two
   outputs — the oriented mesh and the table saying why — from ONE search, via
@@ -336,7 +461,136 @@ thirds of the material within one — so orientation decides **where the part br
 - **Strength needs a load.** With a `load` vector the score is how much of it crosses the
   layers; with none declared the optimiser optimises for printability and will hand you the
   weakest possible part. That is the whole of `examples/print-orientation.json`.
+- **§5d-bis. The container that MOVES** (`ContainerMotion` → `Drop.motion`): the bowl
+  stops being furniture. It is a PRESCRIBED motion, not a simulated one — you dictate
+  it and the parts inside answer only through contact and friction, which is why they
+  lag, slide, climb the wall and spill instead of following rigidly. One node covers
+  the lot because `cycles` picks the shape of the motion: 0 = a RAMP (tilt, pour, tip a
+  crate) that goes there once and STAYS; >0 = an OSCILLATION about the start pose
+  (shake, stir, vibrate) that always returns to it. `delay` waits (fill the bowl, THEN
+  tilt); rotation is about the container's own centre unless a `pivot` is wired.
+  - **`resetBaseVelocity` is load-bearing, and this was measured.**
+    `resetBasePositionAndOrientation` ALONE does not carry the contents: it teleports
+    the body, so the contact has zero relative velocity, friction has nothing to
+    transmit and the tray slides out from under the part (a box on a tray translated
+    50mm rode along **1.2%** — i.e. not at all). Pairing it with `resetBaseVelocity`
+    every step gives **99.3%**. The obvious alternative — a real mass on a `JOINT_FIXED`
+    constraint driven by `changeConstraint` — carries just as well (99.9%) and is still
+    WRONG here: mass > 0 forbids `GEOM_FORCE_CONCAVE_TRIMESH`, so it would hull the bowl
+    and throw away the cavity, which is the only reason `container` exists.
+  - The motion is dictated in WORLD xyz and the colliders live in bed coordinates, so
+    `_motion_driver` carries it over: `R_bed = Bᵀ R_world B`, and since bullet poses a
+    body as `x → R x + pos`, turning about a pivot is ENTIRELY the `pos = p − R p` term
+    (get it wrong and the bowl swings through the scene on an invisible arm).
+  - **A driven rig must never let the scene fall asleep**: `_dyn_sim`'s 0.5s-of-calm
+    exit would otherwise trigger BEFORE a slow tilt even begins and the pile would ride
+    along frozen — hence the `tau <= _drive_until` guard, and `_t_max` grown to cover
+    the motion. A shaker never settles, so it runs its full declared length.
+  - **Drawing it needed no frontend change at all.** The container is not an output and
+    must not become one, so the posed container rides the result as `_noodle_extra`;
+    `mesh_extractor._preview_of` turns those into extra bodies of the same `Scene`
+    preview, each with its own `kind:"keys"` track — which `viewer.js` already renders
+    as independently-posable children and `sceneBodyPose` already replays at 60fps.
+    A single part + a moving container is PROMOTED to a Scene for this reason (else the
+    bowl would be invisible). Verified in the browser: scrubbing `t` moves all 4 bodies,
+    bowl included. Preview the Drop, not the bowl, or you get a static ghost of it too.
+  - Example: `examples/container-tilt.json` (balls land, then the bowl tips over its own
+    rim and pours them out). Costs ~5ms per simulated second to drive.
 - Tests: `tests/test_print.py`.
+
+## 5e. Voronoi 3D + universal Populate
+
+`PopulateGeometry` (display "Populate") and `Voronoi3D` are the point→partition
+pair. Helpers in the transpiler PREAMBLE; both stay memo-cacheable because the
+seed lives *inside* the helper (`np.random.RandomState`), not on the emitted line
+(`_MEMO_NONDET` matches emitted-line substrings only).
+
+- **Populate is universal** — one node, one `region` socket (`raw=True`,
+  `accepts=[solid, mesh]`), dispatching in `_populate` on the runtime TOPOLOGY of
+  what's wired (not duck-typing `position_at` — Edge *and* Face have one):
+  nothing → the legacy `0..w × 0..h` box at z=0 (bit-exact with the old node);
+  **open curve → 1D** along it, uniform by arc length (`edge.position_at(t)`, t is
+  already normalized arc length); **closed curve / flat XY face → 2D** *really
+  inside* the region (`Face.is_inside`, top-up rounds — not just its bbox); **curved
+  face → 2.5D** on the surface, uniform by area (`trimesh.sample.sample_surface`);
+  **solid / watertight mesh → 3D** inside the volume. The `raw` socket is
+  load-bearing: without it the `curve→surface` (`_face`) and `solid→mesh`
+  (`_to_mesh`) casts would fire at the wire and the helper could never tell a curve
+  from a face. A *closed* curve is re-filled inside the helper (`_face`) — the
+  legacy Rectangle/Circle-as-boundary idiom — while an open one scatters along.
+- **3D volume fill has no rtree** (`trimesh.contains` needs it, absent from the
+  image): point-in-mesh is `_winding_inside` — the generalized winding number in
+  pure numpy (|w|>0.25 = inside), run on a manifold3d-simplified *proxy* when the
+  mesh is heavy (>4k tris; it's only an inside oracle, so no verification like
+  MeshSimplify does). Rejection loop, 24 rounds, then a clear "run Mesh Fix" error.
+- **Voronoi3D** (`mesh` category, list output `cells`): `scipy.spatial.Voronoi` in
+  3D with sites mirrored across the **6 planes** of the domain box (body bbox if
+  wired, else the points' extent — the 3D analog of `_voronoi2d`'s mirror trick) so
+  every kept cell is finite. Each cell = its Voronoi vertices, shrunk toward the
+  centroid by `scale`, hulled straight into a Manifold (`Manifold.hull_points` — a
+  Voronoi cell is convex, the hull IS the cell), then `cell ^ body`. Output is a
+  list of `mesh` bodies (downstream is booleans; `MeshToSolid` is the explicit
+  bridge back to B-Rep). Coplanar/degenerate points → clear `QhullError`-wrapped
+  ValueError; cap 2000 points. ~0.1s for 60 cells clipped to a 5k-tri sphere.
+- **The lattice** = Populate(volume of a body) → Voronoi3D(same body, scale<1) →
+  `MeshSubtract` the shrunk cells from the body: the walls *between* cells become
+  the part. `examples/voronoi-3d-lattice.json`. Tests:
+  `tests/test_populate_voronoi3d.py` (pure-Python: wire shape + emission).
+
+## 5f. Union fuses, Join sews — and they are different OCCT operations
+
+A boolean merges shapes that **overlap** (`+`, BRepAlgoAPI); sewing stitches shapes
+that merely **share a border** (BRepBuilderAPI_Sewing, reached through
+`Face.sew_faces`/`Shell`, and `Wire.combine` for edges). Union used to be asked for
+both and silently answered the second one wrong: two faces on different planes came
+back as `f0 + f1` — a loose `Sketch` of 2 faces, no shell, no error, and in the
+viewport it *looks* joined.
+
+- **`Join`** (`boolean` category, `_join` in the PREAMBLE): one collector, curves +
+  surfaces + solids. Faces win over edges when a shape has both (an input with faces
+  is a surface; its edges are that surface's border). Six box faces → a closed shell
+  → a real `Solid`; five → an open `Shell` (previewed fine, 4 triangles for an L).
+  The closed test is load-bearing: `Solid(open_shell)` builds happily and returns an
+  **invalid** solid (measured: volume 800 on a 1000 box) rather than raising.
+  Pieces that do not touch are an **error**, not a silent Compound — that is the
+  entire point of the node. `tolerance` reaches `Wire.combine` only; `sew_faces`
+  has no tolerance argument and uses OCCT's own.
+- **`Union` refuses what it cannot fuse**: when every atom is a face, `_coplanar_check`
+  requires them planar and on one plane, else it raises and names Join. Solids are
+  untouched (disjoint solids fusing into a multi-piece part stays legal and is used),
+  and coplanar region merges keep working — `lego-brick` fuses `Text` glyph fragments
+  that way, `axl cage` fuses `MakeFace`/`Fillet2D` output. Curves never could reach
+  Union: there is no `curve→solid` cast, so `validate()` rejects the wire.
+- Tests: `tests/test_join.py` (pure-Python contract); the sewing itself is exercised
+  in the worker.
+
+**What Join feeds — and three traps found downstream of it.** The obvious next node
+after joining faces is `Shell` (thicken the open surface) or `Shell By Faces`:
+
+- **A failed `Solid.thicken` POISONS its input.** BRepOffset registers its
+  modifications on the input faces' TShapes, so a thicken that fails corrupts those
+  faces for every node still holding them — measured: `Polyhedron → Join(all but one
+  face) → Shell` made the *sibling* `Shell By Faces`, hollowing the same polyhedron
+  through the left-out face, return volume **4728 on a part of 2536**, invalid,
+  instead of 432. `_thicken` thickens a `deepcopy`. Same family as the `_reanchor`
+  trap: OCCT hands out shared topology and a node must not scribble on what it did
+  not build.
+- **OCCT cannot thicken every open shell**, and says so badly: it returns a SHELL
+  when it could not close the wall, and build123d's blind `TopoDS.Solid(...)` cast
+  turns that into `Standard_TypeMismatch: TopoDS::Solid`. Sharp dihedral angles
+  between many facets are its weak spot — of the platonic solids minus a face, the
+  tetra/cube/dodeca thicken fine and the **octa/icosa never do**, at any tolerance,
+  join mode or thickness (all swept). `_thicken` now raises a readable error naming
+  the way that does work, and refuses to return a wall that fails `is_valid` (it
+  renders like a part without being one).
+- **`_shell_faces` used to swallow its own failure** (`except Exception: return
+  _part`) — no error, no hollow, a node that quietly handed back its input. That is
+  what an open surface wired into `Shell By Faces` did. It now rejects a non-solid
+  with a message and propagates a real offset failure.
+- **The route that works** for a hollow polyhedron with an opening: hollow the CLOSED
+  solid and pick the openings there — `Polyhedron → FacesByArea/FacesByNormal →
+  ShellByFaces`. Verified end-to-end (icosahedron, wall 0.5 → volume 432.1, valid,
+  watertight) and on every platonic solid. Do NOT remove the faces first.
 
 ## 5b. Lists & fan-out (Grasshopper-style)
 
@@ -359,9 +613,11 @@ which node outputs are lists (`_produces_list` + `_LIST_PRODUCERS`) so lists
 propagate down a chain. List nodes live in the `data` category (ListCreate,
 ListSort, ListItem, ListReverse, ListSlice, First/Last, Flatten, Concat, …);
 `_sort` uses build123d `ShapeList.sort_by` for shapes, Python `sorted` otherwise.
-Other list-producers: `Voronoi2D` (scipy → cell faces), `DivideSurface`
-(`Face.position_at` UV grid → points) — both fan out downstream (Extrude per
-cell, scatter per point). scipy/numpy are available in the worker.
+Other list-producers: `Voronoi2D` (scipy → cell faces), `Voronoi3D` (scipy 3D +
+`manifold3d.hull_points`/boolean → convex mesh **cells** clipped to a body, §5e),
+`DivideSurface` (`Face.position_at` UV grid → points), `PopulateGeometry`
+(universal scatter, §5e) — all fan out downstream (Extrude per cell, scatter per
+point). scipy/numpy are available in the worker.
 Frontend multi-connect = dynamic input slots sharing one socket name (see
 `onConnectionsChange` + `fromGraphJSON` in `nodes.html`).
 
@@ -384,8 +640,56 @@ transpiler **PREAMBLE** and call it from the template (e.g. `_bbox_plane`,
 `_rotate`). Wire compatibility changes go in `cad_nodes/casts.py` (§5) — the
 frontend picks them up from `/api/wiretypes`.
 
+**Search aliases.** `aliases=[…]` adds the words a user from another CAD would type into
+the add-node search (`Split` answers to "cut" and "trim"): litegraph 0.7.18
+matches ONLY the registered type path and its `searchbox_extras` are gated by the
+same test, so nodes.html overrides the canvas INSTANCE's `onSearchBox`
+(`nodeSearchRows` — the constructor sets `this.onSearchBox = null`, which would
+shadow the prototype) and matches type + label + aliases itself.
+
+**Personal aliases** are the same idea, user-side and hot: a node's right-click
+menu → "🔎 Search aliases…" opens a chip modal (`editAliases`) where the built-in
+ones sit LOCKED next to yours, which carry a red ✕. Every add/remove PUTs the
+whole personal list to `/api/aliases/{type}` and re-draws from the response (so
+the chips show what is really stored, server-side normalisation included; a
+failed save rolls them back). That writes `projects/_aliases.json` (`{node_type: [word, …]}` — a file, so the
+project/library listings that filter on `is_dir()` never see it; `_`-prefixed, so
+`validate_graph_id` can never let a project collide with it). The editor loads
+them at boot into `USER_ALIASES` and `aliasesOf()` merges the two lists, ranked
+alike. The file is deliberately plain and greppable: **a word that earns its keep
+gets promoted BY HAND into `NodeDef.aliases`** in catalog.py, and dropped from the
+JSON. Catalog aliases are shown in the modal but never editable there — code owns them.
+
 **Group nodes** (BuildPart/BuildSketch) use `is_group=True` + a `builder`
 template and emit nested `with` blocks — see existing examples.
+
+### 6b. Drag anticipation (the old ✥ fastDrag)
+
+It is **not a mode of its own**: `fastDrag()` in nodes.html is `liveMode &&
+fastEnabled`, so turning Live on turns it on. `fastEnabled` is the escape hatch
+for a slow machine (Settings ⚙ checkbox, persisted in localStorage
+`noodle:settings:fastDrag`, default on) — with it off, Live still works, it just
+waits for each run. There is no toolbar button any more.
+
+The contract: while a param drags, replay it locally in Three.js; when the drag
+settles, `scheduleLive()` re-bakes it exactly. The local replay must therefore be
+an *anticipation of the engine's answer*, never a different one.
+
+**When you add a node, ask whether it can be anticipated.** Compatibility is
+decided at DRAG TIME, not at node creation — it depends on the wiring and on
+whether a preview mesh exists, so it cannot be a static flag on the NodeDef:
+
+- `applyLocalTransform(node)` — the node's own preview moved as a delta from the
+  baked params. Today: Move/Rotate/Scale (a `Location`) and Drop (its shipped
+  `_noodle_anim`). Add a node here only if the transform is expressible as a
+  matrix on the already-meshed preview.
+- `applyDropTargets(node)` — a value node (Number Slider…) wired into a `Drop.t`,
+  which replays each target instead of itself.
+
+Both return **false** when they cannot help, and the caller falls through to the
+plain debounced re-run. That fallback is what makes an unanticipated node correct
+but merely slower — so when in doubt, return false. A node that anticipates
+WRONGLY is far worse than one that does not anticipate at all.
 
 **Apply / reload rules:**
 - Backend Python change → `docker restart noodle` (process caches imports;

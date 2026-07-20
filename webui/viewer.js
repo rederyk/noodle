@@ -18,6 +18,10 @@ import * as THREE from 'three';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
 // distinct, legible-on-dark palette; terminals cycle through it by default
 export const PALETTE = ['#2dd4a0', '#3b82f6', '#f59e0b', '#e94560', '#a855f7',
@@ -48,11 +52,74 @@ function geomFromData(m) {
   g.computeVertexNormals();
   return g;
 }
-export function meshFromData(m, color) {
-  return new THREE.Mesh(geomFromData(m),
-    new THREE.MeshStandardMaterial({ color, roughness: .4, metalness: .12, side: THREE.DoubleSide }));
+// A hue per index, walked by the golden angle so neighbours never collide. It is
+// deterministic, not random: "random colours" that reshuffle on every re-render
+// would make a part you are looking at change identity while you turn it.
+// Finish decides what a preview is MADE of. `glass` is real transmission, not
+// opacity: light refracts through it and the pieces behind stay in the right
+// order, which flat alpha blending cannot do at any price. It costs a render
+// target per frame — Settings can turn it off (HQ = false) and everything falls
+// back to cheap alpha, but in a CAD viewport being able to trust what you see
+// through a wall is worth more than the frames.
+let HQ = true;
+export function setQuality(on) { HQ = !!on; }
+// The layer the glow pass renders alone. An emitter is on 0 AND here, so it
+// still draws normally in the main pass; everything else stays on 0 only.
+export const GLOW_LAYER = 1;
+export function markGlow(obj) {
+  obj.traverse(o => {
+    const m = o.material;
+    if (!m) return;
+    const emits = (Array.isArray(m) ? m : [m]).some(
+      x => x && x.emissive && x.emissiveIntensity > 0 && x.emissive.getHex() !== 0);
+    if (emits) o.layers.enable(GLOW_LAYER);
+  });
+}
+export function makeMaterial(color, finish) {
+  const base = { color, side: THREE.DoubleSide };
+  if (finish === 'glass') {
+    return HQ
+      ? new THREE.MeshPhysicalMaterial({ ...base, roughness: .08, metalness: 0,
+          transmission: 1, thickness: 6, ior: 1.45, transparent: true })
+      : new THREE.MeshStandardMaterial({ ...base, roughness: .2, metalness: 0,
+          transparent: true, opacity: .35, depthWrite: false });
+  }
+  if (finish === 'emissive') {
+    // Below 1 on purpose. Pushed past it, ACES desaturates the highlight and the
+    // body goes flat WHITE — you lose the colour of the thing that is glowing.
+    // The halo is what says "source"; the core only has to stay saturated.
+    return new THREE.MeshStandardMaterial({ ...base, emissive: color,
+      emissiveIntensity: .9, roughness: .5, metalness: 0 });
+  }
+  if (finish === 'metal')
+    return new THREE.MeshStandardMaterial({ ...base, roughness: .22, metalness: 1 });
+  return new THREE.MeshStandardMaterial({ ...base, roughness: .4, metalness: .12 });
+}
+
+export function rainbowHue(i) {
+  const c = new THREE.Color();
+  c.setHSL(((i * 137.508) % 360) / 360, 0.62, 0.56);
+  return c;
+}
+export function meshFromData(m, color, parts, finish) {
+  const geo = geomFromData(m);
+  const std = c => makeMaterial(c, finish);
+  // Rainbow over a fanned list: one geometry group per piece (`parts` counts
+  // triangles, so the offsets are 3x that) and a material per group. Without it
+  // the whole buffer keeps ONE material and one draw call, exactly as before.
+  if (color === 'rainbow' && parts && parts.length > 1) {
+    const mats = []; let start = 0;
+    parts.forEach((n, i) => {
+      geo.addGroup(start * 3, n * 3, i);
+      mats.push(std(rainbowHue(i)));
+      start += n;
+    });
+    return new THREE.Mesh(geo, mats);
+  }
+  return new THREE.Mesh(geo, std(color === 'rainbow' ? rainbowHue(0) : color));
 }
 function lineFromPolylines(polys, color) {
+  if (color === 'rainbow') color = rainbowHue(0);
   const segs = [];
   for (const poly of polys)
     for (let i = 0; i + 1 < poly.length; i++) { segs.push(poly[i], poly[i + 1]); }
@@ -63,6 +130,7 @@ function lineFromPolylines(polys, color) {
   return new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color, linewidth: 2 }));
 }
 function spheresFromData(pts, color, r) {
+  if (color === 'rainbow') color = rainbowHue(0);
   const geo = new THREE.SphereGeometry(r, 12, 12);
   const mat = new THREE.MeshStandardMaterial({ color, roughness: .45, metalness: .1 });
   const im = new THREE.InstancedMesh(geo, mat, pts.length);
@@ -84,9 +152,28 @@ function previewsExtent(previews, ids) {
   return Math.max(s.length(), 1);
 }
 function objFromPreview(p, color, opts, scale) {
+  if (p.bodies) {                              // a collide Scene: one child per body,
+    const grp = new THREE.Group();             // each independently posable at scrub time
+    p.bodies.forEach((b, i) => {
+      // Every body of a collide scene is already its own mesh with its own
+      // material, so a colour per body is free — no extra draw calls at all.
+      const child = objFromPreview(b, color === 'rainbow' ? rainbowHue(i) : color,
+                                   opts, scale);
+      if (!child) return;
+      child.userData.bodyIndex = i;
+      child.userData.anim = b.anim || null;
+      grp.add(child);
+    });
+    grp.userData.isScene = true;
+    return grp;
+  }
   if (p.mesh) {
-    const obj = meshFromData(p.mesh, color);
-    if (opts && opts.wireframe) { obj.material.wireframe = true; obj.material.metalness = 0; }
+    const obj = meshFromData(p.mesh, color, p.parts, opts && opts.finish);
+    if (opts && opts.wireframe) {
+      for (const mt of (Array.isArray(obj.material) ? obj.material : [obj.material])) {
+        mt.wireframe = true; mt.metalness = 0;
+      }
+    }
     return obj;
   }
   if (p.polylines) return lineFromPolylines(p.polylines, color);
@@ -115,7 +202,7 @@ export class CadViewer {
       new THREE.MeshBasicMaterial({ color: 0xe94560 })));
     const previewGroup = new THREE.Group(); scene.add(previewGroup);
     const ax = new THREE.AxesHelper(20); ax.material.transparent = true; ax.material.opacity = .6; scene.add(ax);
-    scene.add(new THREE.AmbientLight(0x404060, 2.5));
+    scene.add(new THREE.AmbientLight(0x404060, 1.1));
     const key = new THREE.DirectionalLight(0xffffff, 2); key.position.set(40, 60, 80); scene.add(key);
     const fill = new THREE.DirectionalLight(0x8888cc, .8); fill.position.set(-40, -20, 40); scene.add(fill);
 
@@ -125,9 +212,63 @@ export class CadViewer {
     camera.position.set(60, -60, 45);
 
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  // Filmic tone mapping + an image-based environment. This is the whole
+  // difference between "shaded triangles" and "a render": specular highlights
+  // that wrap, and a sky/floor gradient reflected in every curved face.
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();                       // the cubemap is kept, the generator is not
+  }
     renderer.setSize(c.clientWidth, c.clientHeight);
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.autoClear = false;             // ViewHelper overlays after the main render
+    // ── SELECTIVE bloom ───────────────────────────────────────────────────
+    // Blooming the finished image cannot work here, and the reason is worth
+    // writing down: `transmission` is not alpha blending — three renders the
+    // scene into a separate target and samples it refracted through the glass,
+    // so an emitter seen THROUGH a wall arrives already attenuated, lands under
+    // the luminance threshold, and the bloom pass never sees it. The glow
+    // stopped at the glass.
+    // So the emitters get their own layer, are rendered ALONE on black, blurred,
+    // and composited ADDITIVELY over the finished frame. Nothing thresholds them
+    // (the buffer is black except for them, so threshold 0 and a wide radius give
+    // the soft spread the old pass could not), and being additive on top they
+    // spill across the glass — which is exactly what the eye reads as light
+    // coming through. It is a 2D lie: no refraction of the glow, no caustics.
+    // Those need rays. At screen size, in a CAD viewport, you cannot tell.
+    this._glowScene = null;                 // built lazily, below
+    this._glowComposer = new EffectComposer(renderer);
+    this._glowComposer.renderToScreen = false;
+    this._glowPass = new RenderPass(scene, this.camera);
+    this._glowComposer.addPass(this._glowPass);
+    // HALF resolution on purpose: bloom is a blur, and a blur does not need the
+    // pixels. Full-res cost the bowl scene ~1fps against ~29 — the mip chain is
+    // rebuilt per frame and a transmission material already re-renders the scene
+    // once. Half res is visually identical here and ~4x cheaper.
+    this._bloom = new UnrealBloomPass(
+      new THREE.Vector2((c.clientWidth || 2) / 2, (c.clientHeight || 2) / 2),
+      1.6, 0.8, 0.0);                       // strength, radius, threshold
+    this._glowComposer.addPass(this._bloom);
+    this._glowComposer.setSize((c.clientWidth || 2) / 2, (c.clientHeight || 2) / 2);
+    this._bloomOn = false;
+
+    // the full-screen quad that adds the blurred emitters back over the frame.
+    // toneMapped:false — the frame underneath is already tone mapped; mapping the
+    // glow a second time would grey it down to nothing.
+    this._glowQuadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    this._glowQuadScene = new THREE.Scene();
+    // Scaled down (`color`) because the target holds LINEAR, un-tone-mapped values —
+    // three only tone maps when it renders to the canvas — and because the pass
+    // hands back emitters+blur, so the core would otherwise be added twice.
+    this._glowQuadMat = new THREE.MeshBasicMaterial({
+      color: 0x595959,
+      map: this._glowComposer.renderTarget2.texture,
+      blending: THREE.AdditiveBlending, transparent: true,
+      depthTest: false, depthWrite: false, toneMapped: false });
+    this._glowQuadScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this._glowQuadMat));
 
     const controls = new OrbitControls(camera, canvas);
     controls.enableDamping = true; controls.dampingFactor = .08;
@@ -167,8 +308,25 @@ export class CadViewer {
       }
       this._wasAnimating = anim;
       this.controls.update();
+      // Bloom is what makes an emissive surface look like a SOURCE rather than a
+      // brightly painted one — the glow has to spill onto its surroundings. The
+      // extra passes run only while something in the scene actually declares
+      // itself emissive, and never when HQ is off.
+      const glow = this._bloomOn && HQ && this._glowComposer;
+      if (glow) {
+        // pass 1 — the emitters ALONE, on black, blurred into the glow target.
+        const mask = this.camera.layers.mask, bg = this.scene.background;
+        this.camera.layers.set(GLOW_LAYER);
+        this.scene.background = null;            // or the clear colour blooms too
+        this._glowPass.camera = this.camera;     // the viewport swaps persp/ortho
+        this._glowComposer.render();
+        this.camera.layers.mask = mask;
+        this.scene.background = bg;
+      }
       this.renderer.clear();
       this.renderer.render(this.scene, this.camera);
+      // pass 2 — add the blur back over the finished frame, glass included.
+      if (glow) this.renderer.render(this._glowQuadScene, this._glowQuadCam);
       this.viewHelper.render(this.renderer);
     };
     tick();
@@ -185,6 +343,12 @@ export class CadViewer {
       this._ortho.updateProjectionMatrix();
     }
     this.renderer.setSize(c.clientWidth, c.clientHeight);
+    if (this._glowComposer) {
+      this._glowComposer.setSize(c.clientWidth / 2, c.clientHeight / 2);
+      // setSize rebuilds the targets, so the quad must be re-pointed at the new one
+      this._glowQuadMat.map = this._glowComposer.renderTarget2.texture;
+    }
+    if (this._bloom) this._bloom.resolution.set(c.clientWidth / 2, c.clientHeight / 2);
   }
 
   setGrid(on) { this.grid.visible = on; }
@@ -364,7 +528,20 @@ export class CadViewer {
   _clearPreviewGroup() {
     for (let i = this.previewGroup.children.length - 1; i >= 0; i--) {
       const c = this.previewGroup.children[i]; this.previewGroup.remove(c);
-      c.geometry.dispose(); c.material.dispose();
+      // A collide Scene is a GROUP of bodies, not a Mesh: it carries no geometry
+      // of its own, and reaching for one threw — aborting the clear mid-loop, so
+      // the stale meshes stayed and every re-render after the first was broken
+      // (that is what "Live doesn't work" looked like). Dispose the whole
+      // subtree, and only what actually has something to dispose.
+      c.traverse(o => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) {
+          for (const m of (Array.isArray(o.material) ? o.material : [o.material])) {
+            if (m.map) m.map.dispose();
+            m.dispose();
+          }
+        }
+      });
     }
     this.previewGroup.position.set(0, 0, 0);
   }
@@ -382,10 +559,11 @@ export class CadViewer {
   //   colorOf(id, order) -> hex   (default: palette by order index)
   //   wireOf(id) -> bool          (default: false)
   //   onEmpty()                   (called when nothing is drawable; e.g. STL fallback)
-  renderPreviews(previews, { colorOf, wireOf, onEmpty } = {}) {
+  renderPreviews(previews, { colorOf, wireOf, finishOf, onEmpty } = {}) {
+    let glowing = false;   // does anything in this view declare itself a source?
     previews = previews || {};
     this._clearPreviewGroup();
-    const drawable = e => e && (e.mesh || e.polylines || e.points);
+    const drawable = e => e && (e.mesh || e.polylines || e.points || e.bodies);
     const order = Object.keys(previews).filter(k => drawable(previews[k]))
       .sort((a, b) => nodeNum(a) - nodeNum(b));   // stable order for colour slots
     if (!order.length) { if (onEmpty) onEmpty(); return { order: [], colors: {}, meshes: {}, size: null }; }
@@ -394,12 +572,17 @@ export class CadViewer {
     const colors = {}, meshes = {};
     for (const id of order) {
       const color = colorOf ? colorOf(id, order) : PALETTE[order.indexOf(id) % PALETTE.length];
-      const obj = objFromPreview(previews[id], color, { wireframe: wireOf ? wireOf(id) : false }, scale);
+      const obj = objFromPreview(previews[id], color,
+      { wireframe: wireOf ? wireOf(id) : false,
+        finish: (fin => (fin === 'emissive' && (glowing = true), fin))(
+                  finishOf ? finishOf(id) : null) }, scale);
       if (!obj) continue;
       obj.userData.nodeId = id;
+      markGlow(obj);                      // put its emitters on the glow layer
       this.previewGroup.add(obj);
       colors[id] = color; meshes[id] = obj;
     }
+    this._bloomOn = glowing;          // pay for the second pass only when it shows
     const box = new THREE.Box3().setFromObject(this.previewGroup);
     const size = new THREE.Vector3(); box.getSize(size);
     if (!this._framed) { this.frame(); this._framed = true; }
@@ -434,8 +617,13 @@ export class CadViewer {
     this._ray.setFromCamera(this._mouse, this.camera);
     this._ray.params.Line.threshold = 0.5;
     this._ray.params.Points.threshold = 3;
-    const hits = this._ray.intersectObjects(this.previewGroup.children, false)
-      .filter(h => h.object.visible !== false);   // don't pick hidden (e.g. isolated) shapes
-    return (hits.length && hits[0].object.userData.nodeId) || null;
+    const hits = this._ray.intersectObjects(this.previewGroup.children, true)
+      .filter(h => h.object.visible !== false);   // recurse into Scene groups
+    for (const h of hits) {                        // walk up to the node-owning object
+      let o = h.object;
+      while (o && o.userData.nodeId == null && o !== this.previewGroup) o = o.parent;
+      if (o && o.userData.nodeId != null) return o.userData.nodeId;
+    }
+    return null;
   }
 }

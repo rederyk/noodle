@@ -34,6 +34,22 @@ _EXAMPLE_DESCRIPTIONS = {
     "bolt-flange": "Bolt-circle flange: one hole polar-arrayed and subtracted "
                    "wholesale — Grasshopper-style list fan-out.",
     "csg-boolean": "CSG basics: a box minus a sphere (Subtract boolean).",
+    "drop-bounce": "Drop: one timeline slider scrubs three materials "
+                   "falling side by side — plastic clatters, lead thuds, rubber "
+                   "keeps bouncing.",
+    "drop-stack": "Drop with collide: three boxes fall into ONE scene — one "
+                  "lands, one stacks, and the half-off cube tips over the edge, "
+                  "rolls down the wall and lands flat on the bed beside.",
+    "container-tilt": "Drop with a container that MOVES: the balls land in the "
+                      "bowl, then it tips over its own rim and pours them out. "
+                      "The motion is dictated, not simulated — the balls answer "
+                      "to it through contact and friction alone.",
+    "drop-in-bowl": "Drop with a container: three balls poured into a bowl that "
+                    "never moves. The bowl is the one body kept CONCAVE, so it "
+                    "cradles them instead of shedding them.",
+    "galton-board": "The normal distribution, fallen out of gravity: 60 balls "
+                    "down a grid of diamond pegs, with a blade you slide to bend "
+                    "the whole distribution. Turn `grip` up and watch the bell die.",
     "parametric-gear": "Custom node from scratch — a spur gear written in one "
                        "CodeBlock, driven by #@param knobs.",
     "gear-row-fanout": "Grasshopper-style fan-out — a Range feeds the gear "
@@ -44,6 +60,10 @@ _EXAMPLE_DESCRIPTIONS = {
                      "subtracted from a plate into a perforated panel.",
     "voronoi-vase": "Advanced combo — Voronoi cells mapped onto a revolved "
                     "surface, shelled into a thin-walled vase.",
+    "voronoi-3d-lattice": "TRUE 3D Voronoi — points scattered INSIDE a sphere "
+                          "become convex mesh cells, shrunk and subtracted so "
+                          "the walls between them are the part: an organic "
+                          "lattice (Populate volume fill + Voronoi3D).",
     "parametric-curves": "Parametric curves — a Spline through points, an "
                          "ArcCenter and a Line as building blocks for wire geometry.",
     "predicate-selectors": "Selecting by RULE, not by clicking — EdgesByType picks "

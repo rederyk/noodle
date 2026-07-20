@@ -32,6 +32,8 @@ certify the clever one.
 | node | what it does |
 |---|---|
 | `PlaceOnBed` | lowest point → z=0, optionally centred in XY. Serves **both lanes** (measures on the mesh, moves the original), so a solid stays a solid |
+| `Drop` | PlaceOnBed as a **fall you can scrub**: a `timeline` slider from 0 (where the part is) to 1 (at rest), analytic bounce under gravity, restitution fixed per `material` (plastic 0.55, rubber 0.85, steel 0.65, wood 0.45, lead 0.08, clay 0). Optional `plane` input sets what it falls onto (default the bed). Both lanes, translation only |
+| `ContainerMotion` | a **prescribed** motion for a Drop's `container` — one translation + one rotation, `cycles` choosing ramp (tilt, pour) or oscillation (shake, stir). Not gravity: you dictate it, and the contents answer through contact alone (§2c) |
 | `PrintCheck` | text report → a Panel: height and layers, bed contact, overhang area past the critical angle, and the **weak plane** (area + height) |
 | `OverhangFaces` | the faces that need support, as a mesh of its own — so the viewer gives them their own colour and you *see* them on the part |
 | `SupportVolume` | the support material itself, **as a body**: preview it, inspect it, export it. The honest cost, not a gesture at it |
@@ -40,6 +42,176 @@ certify the clever one.
 `OrientForPrint` has **two outputs** from one search (`_emit_orient`, modelled on
 `_emit_center`): scoring the poses means slicing each of them, and doing it twice because
 a Panel happens to be wired in would be daft.
+
+`Drop` (`_drop` + `_drop_segs`/`_drop_height` + `_settle_plan` in the PREAMBLE) is two
+phases on one slider. **Bounce**: one free fall plus a geometric series of parabolas —
+each impact keeps `e` of the speed, bounces below 0.1% of the drop count as rest. With
+`e=0.08` (lead) the fall is nearly the whole phase — one dead thud — where rubber spends
+most of it bouncing. **Topple** (`settle`, on by default): the quasi-static cascade. A
+resting body is stable iff its centre of mass projects inside the support polygon — the
+same test OrientForPrint uses to *enumerate* stable poses; `_settle_plan` walks the *path*
+between them on the convex hull: com outside the contact patch → tip about the nearest
+support edge (or corner) until the next hull facet touches, repeat (≤40 steps). Each step
+is recorded as (pivot, axis, angle, seconds) and replayed — partially, ease-in `f²` — at
+scrub time, composed as `Shape.rotate(Axis(...))` on the B-Rep lane and one 4×4 on the
+mesh lane, conjugated through the wired plane's frame.
+
+Two rules carry the honesty. The **energy guard**: a step that does not strictly lower the
+centre of mass is not a topple — a tessellated sphere "toppling" facet to facet releases
+nothing and is declared at rest (it may creep a facet or two first — physically fair),
+where a cube balanced on an edge drops its centre 20% and goes over. And **deterministic
+ties**: a part balanced exactly (the 45° cube — com dead over the support edge, zero
+torque) tries both senses and takes the one that descends; a graph must give the same
+answer twice, where a real part would be tipped by the first draught.
+
+The timeline is bounce seconds + topple seconds (g = 9810 mm/s²), normalised to the
+slider: `t=1` is always fully at rest, material and topples change the *shape* of the
+journey, not its reach. Heights are measured on the tessellation (same reason as
+`PlaceOnBed`); a part starting *under* the plane surfaces linearly — it cannot fall. The
+com is `trimesh.center_mass` when the mesh is watertight, the bbox centre otherwise.
+Why this took a second pass: the bounce has a closed form, toppling does not — it is
+contact dynamics (which edge, how far, then which edge next), a genuinely simulated
+cascade, just quasi-static instead of a full rigid-body integrator.
+
+And because the plan is *data* — segments and steps, not code — the engine ships it with
+the preview (`_noodle_anim` on the result → `previews[id].anim` in view.json) and the
+editor replays any t in the browser as pure matrix math (`dropMatrixAt`, nodes.html):
+with Live on, dragging the t slider (or a Number Slider wired into `t`, or the
+timeline gizmo) animates the fall at 60fps with zero engine round trips; the exact
+re-bake lands when the drag settles. One physics, computed once, played anywhere.
+
+**Collisions (`collide`, off by default).** Several shapes wired into ONE Drop become one
+scene instead of a fan (the transpiler un-fans `shape`; the output is a list again). This
+is where the quasi-static single-body model gives way to **real rigid-body dynamics**
+(`_dyn_sim`, pybullet in DIRECT mode): every part is its convex hull, and they all fall
+**together** — colliding in mid-air, pushing each other over, tumbling, stacking — because
+coupled contact is exactly what a sequential lowest-first cascade cannot express. The run
+is simulated once at a fixed 1/240 s step (deterministic for a given scene on a given
+build) and recorded as 60 Hz keyframes per body until the scene sleeps.
+
+Three engine choices carry the quality. **Units are millimetres directly, not scaled to
+metres**: pybullet's collision margin is a fixed absolute value, so a 20 mm cube shrunk to
+0.02 m rests ~1 mm above the bed, where the same cube at mm scale rests sub-micron —
+verified across scales (S=1 → 0.001 mm gap, S=0.001 → 1 mm). Tunnelling risk is
+scale-invariant (speed × dt / thickness), so nothing is lost, and a per-body swept sphere
+(CCD) covers the thin, fast cases. **`restitutionVelocityThreshold` = 100 mm/s**: below it
+a contact is inelastic — the 1 mm/s I first used made every real contact elastic and the
+pile jittered for the full 8 s instead of settling; with the threshold plus rolling /
+spinning friction and angular damping a three-box scene sleeps in ~0.6-1 s. **Mass is the
+hull volume**, so ratios are physical (a heavy part settles a light one, not the reverse).
+
+Because the plan is again *data* — per-body keyframe tracks (times, positions,
+quaternions) — the whole scene replays in the browser: each body carries its own
+`_noodle_anim` of kind `"keys"`, `mesh_extractor` emits a `{kind:"Scene", bodies:[…]}`
+preview, `viewer.js` builds a Group of independently-posable meshes, and `nodes.html`
+(`keyInterp` + `sceneBodyPose`, lerp + slerp) moves each body to any t while the slider
+drags — the same live-replay story as the single drop, now for a whole pile. The demo
+(`drop-stack`): three boxes fall as one scene — one lands, one stacks, and the half-off
+cube tumbles over the edge, rolls off and ends flat on the bed beside. Declared limits:
+the falling parts are convex HULLS, not their true meshes; rest poses carry the
+solver's contact margin (sub-micron in mm units), not CAD exactness; deterministic per
+scene but chaotic in the physical sense — nudge a part a hair and the pile lands
+differently. That is not a bug; that is what falling is.
+
+### 2b. The container — the one body that keeps its concavity
+
+Hulls are fine for the things that fall and fatal for the thing they fall *into*: the hull
+of a bowl is a dome, and a dome sheds. So `Drop` grew a second input, **`container`** — an
+immovable collider that never moves and is never an output.
+
+Bullet will accept a **concave triangle soup** for a body, but only a static one
+(`GEOM_FORCE_CONCAVE_TRIMESH`, mass 0). That restriction lines up exactly with what a
+container is, so the trade writes itself: **the thing that holds is exact, the things that
+fall are hulls.** `_static_colliders` turns the wired shape (or shapes — several may be
+wired) into (vertices, faces) in bed coordinates and `_dyn_sim` registers each as a static
+body, a little grippier and deader than the bed (restitution 0.2, lateral friction 0.9,
+plus rolling/spinning friction) so a part that lands in a bowl *stops* there instead of
+skating round the cavity for the full 8 s.
+
+Verified against the analytic seat: a hemispherical bowl of inner radius 18 (floor at
+z = 2), three balls of r = 4 poured in. They come to rest at radial offset 1.63 / 6.19 /
+8.94 and heights 6.17 / 7.56 / 9.24 mm — where a ball resting on that inner wall at radius
+ρ must sit at 20 − √(14² − ρ²) = 6.00 / 7.44 / 9.22. The first sits on the floor, the other
+two nestle against it and ride up the wall, each within 0.03 mm of where the geometry says
+it must be.
+
+A wired container **implies scene mode**, whatever the `collide` toggle says: the emitter
+un-fans the shapes on `collide or container`, because parts falling into one bowl are one
+scene by definition, and a single part dropped into a bowl is the whole point of the
+socket. One consequence reaches the browser: a single body now arrives as a plain preview
+carrying a keyframe plan rather than a `Scene`, so `applyDropAnim` routes an anim of kind
+`"keys"` to `sceneBodyPose` instead of the analytic `dropMatrixAt`.
+
+Open: a very heavy container mesh is fed to bullet whole (it builds a BVH — fine so far,
+but a 200k-triangle bowl has not been measured). "You cannot shake the bowl" was the other
+one, and §2c closes it.
+
+### 2c. Moving the thing that was holding still (`ContainerMotion`)
+
+A container that only ever holds is half a container. `ContainerMotion` → the `motion`
+socket makes it tilt, shake, spin or tip — and the point is that this is **dictated, not
+simulated**. Gravity is not doing it; you are. The parts inside answer only through
+contact and friction, which is exactly why they lag behind a spin, slide, climb the wall
+and spill rather than following the container rigidly.
+
+One generic node instead of a menu of presets, because **`cycles` is the real axis**:
+
+| | `cycles` | what it is |
+|---|---|---|
+| tilt / pour / tip a crate | 0 | a **ramp** — go there once and stay |
+| shake / stir / vibrate / tap | > 0 | an **oscillation** about the start pose, returning to it |
+
+Everything else falls out: pour = rotate ~110–135° (past the wall, or nothing comes out),
+cycles 0; shake = move 10, cycles 8; settle a powder = move z 3, cycles 20; centrifuge =
+rotate z 720. `delay` waits before it starts — fill the bowl, *then* tilt it. Rotation is
+about the container's own centre unless a `pivot` is wired (the hinge of a hopper, the lip
+a crate goes over).
+
+**How to drive a static body — measured, because the obvious way silently does nothing.**
+A tray translated 50 mm in 1 s under a resting box:
+
+| driver | box carried |
+|---|---|
+| `resetBasePositionAndOrientation` alone | **−1.2 %** (nothing) |
+| `reset…` + `resetBaseVelocity` every step | **99.3 %** |
+| mass > 0 + `JOINT_FIXED` + `changeConstraint` | 99.9 % |
+
+The first *teleports* the body: the contact exists but with zero relative velocity, so the
+friction solver has nothing to transmit and the tray slides out from under the part. The
+third works and is still wrong here — **mass > 0 forbids `GEOM_FORCE_CONCAVE_TRIMESH`**, so
+it would hull the bowl and throw away the cavity, which is the only reason §2b exists. So:
+mass 0, concave, reset pose *and* velocity every step. The velocity is a forward difference
+of the prescribed pose, and its angular part is taken exactly (axis-angle) rather than by
+the usual `2·dq.xyz/dt` small-angle reading, which drifts ~1 % by 30° a step — a spin node
+is entitled to ask for a whole turn in a fraction of a second.
+
+**Frames.** The user dictates the motion in world xyz; the colliders live in bed
+coordinates. `_motion_driver` carries both over — `R_bed = Bᵀ R_world B` — and since bullet
+poses a body as `x → R x + pos`, rotating about a pivot is *entirely* the `pos = p − R p`
+term. Get that wrong and the container swings through the scene on an invisible arm
+instead of turning in place; there is a test pinning the pivot fixed.
+
+**A driven rig must not be allowed to fall asleep.** `_dyn_sim` exits after half a second
+of calm, which for a tilt that begins at t = 1 s would fire *before the motion starts* and
+freeze the whole pile mid-ride. Hence the `tau <= _drive_until` guard and `_t_max` grown to
+cover the motion. A shaker never settles by construction, so it runs its full length.
+
+**Drawing it took no frontend change.** A moving container has to be seen moving or the
+pile looks haunted — but it is not an output and must not become one. So the posed
+container rides the result as `_noodle_extra`, `mesh_extractor._preview_of` turns those
+into extra bodies of the same `Scene` preview with their own `kind:"keys"` tracks, and
+`viewer.js` + `sceneBodyPose` already know how to render and replay exactly that. A single
+part plus a moving container is *promoted* to a Scene for this reason. Verified headlessly:
+scrubbing `t` moves all four bodies of `examples/container-tilt.json`, bowl included, the
+bowl reading 135° of tip at t = 0 and 0° once the ramp completes at t ≈ 0.73.
+
+Costs ~5 ms per simulated second to drive. Preview the **Drop**, not the bowl — the bowl's
+own preview is a static ghost of it.
+
+Open: the motion is one rigid track for the whole container rig (several shapes wired into
+`container` move together — no per-body motion); there is no way to key an arbitrary path
+beyond one translation + one rotation; and nothing couples the motion back to the parts'
+sleep detection, so a long shake simulates every frame of itself.
 
 ## 3. How each number is got
 

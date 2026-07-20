@@ -187,6 +187,18 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 .modal .col b{color:var(--text);display:block;margin-bottom:4px;}
 .modal .col span{color:var(--text-dim);display:block;line-height:1.6;}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;}
+/* alias chips (Search aliases modal): built-in = locked, personal = removable */
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 2px;min-height:26px;}
+.chip{display:inline-flex;align-items:center;gap:6px;background:var(--bg-3);border:1px solid var(--border);
+  border-radius:13px;padding:3px 10px;font-size:12px;color:var(--text);}
+.chip.locked{background:var(--bg-1);color:var(--text-dim);}
+.chip.locked .lk{font-size:10px;opacity:.8;}
+.chip .x{cursor:pointer;font-size:13px;line-height:1;color:var(--accent);opacity:.75;
+  background:none;border:none;padding:0 0 1px;}
+.chip .x:hover{opacity:1;color:var(--accent-hover);}
+.chip-empty{font-size:12px;color:var(--text-dim);font-style:italic;padding:3px 0;}
+.chip-add{display:flex;gap:8px;margin-top:10px;}
+.chip-add input{flex:1;margin:0;}
 .kbd-grid{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:12px;}
 .kbd-grid kbd{background:var(--bg-3);border:1px solid var(--border);border-radius:4px;padding:1px 6px;
   font-family:var(--mono);font-size:11px;color:var(--text);}
@@ -292,7 +304,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
     <!-- ZONA ESECUZIONE -->
     <div class="tb-zone">
       <button class="tb-btn primary" id="btn-run" onclick="runGraph()" title="Run the graph (Ctrl+Enter)">▶ Run</button>
-      <button class="tb-btn toggle js-live-btn" id="btn-live" onclick="toggleLive()" title="Auto-run on every change">Live</button>
+      <button class="tb-btn toggle js-live-btn" id="btn-live" onclick="toggleLive()" title="Auto-run on every change — and drags (Move/Rotate/Scale, a Drop timeline) replay live in the viewport while you hold them. Settings ⚙ turns that anticipation off.">Live</button>
       <button class="tb-btn toggle js-cost-btn" id="btn-cost" onclick="toggleCost()" title="Show each node's cost from the last run (blue = served by the cache)">Costi</button>
       <div class="status-pill" id="status">Ready</div>
       <span class="health-dot" id="health" title="Backend health"></span>
@@ -357,7 +369,6 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
           <button class="tb-icon" onclick="frameView()" title="Fit to view (F · dbl-click)">⛶</button>
           <button class="tb-icon on" id="btn-grid" onclick="toggleGrid()" title="Show / hide grid">▦</button>
           <button class="tb-icon" id="btn-proj" onclick="toggleProjection()" title="Perspective / Orthographic (O)">⧉</button>
-          <button class="tb-icon" id="btn-fast" onclick="toggleFastDrag()" title="Drag Move/Rotate/Scale = instant local preview">✥</button>
           <button class="tb-icon" id="btn-isolate" onclick="toggleIsolate()" title="Isolate selected — show only the selected nodes'/group's shapes (I)">◎</button>
         </div>
       </div>
@@ -470,7 +481,7 @@ body{font-family:var(--font);background:var(--bg-0);color:var(--text);}
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';        // sub-shape picker modal
 import { TransformControls } from 'three/addons/controls/TransformControls.js'; // on-canvas gizmo
-import { CadViewer, PALETTE, nodeNum, meshFromData } from '/static/viewer.js';   // shared main viewport
+import { CadViewer, PALETTE, nodeNum, meshFromData, setQuality } from '/static/viewer.js';   // shared main viewport
 
 const API = '';
 const LiteGraph = window.LiteGraph;
@@ -482,6 +493,8 @@ window._noodle = { get lgraph(){ return lgraph; }, get lcanvas(){ return lcanvas
   get viewer(){ return viewer; }, get picker(){ return picker; },
   get execGlow(){ return execGlow; }, get lastCost(){ return lastCost; },
   get showCost(){ return showCost; },
+  get THREE(){ return THREE; },
+  paramChange(n){ return onParamChange(n); },
   togglePick(i){ return togglePick(i); } };
 let currentName = null;
 let lastNodeErrors = {};   // last execution's node_id -> error, for feedback reports
@@ -495,8 +508,17 @@ let liveMode = false;      // auto-run on every change
 let liveTimer = null;      // debounce handle
 let runAbort = null;       // AbortController for the in-flight run
 let loadingGraph = false;  // suppress live triggers while rebuilding the graph
-let fastDrag = false;      // local JS transform while dragging Move/Rotate/Scale
+// Drag anticipation: replay a drag locally in Three.js instead of waiting for a
+// round trip. It is not a mode of its own — it is how Live behaves while you are
+// still dragging, so it rides on liveMode. The setting is the escape hatch for a
+// machine where the local replay costs more than it saves (default: on).
+const FAST_FLAG = 'noodle:settings:fastDrag';
+const HQ_FLAG = 'noodle:settings:hqRender';
+setQuality(localStorage.getItem(HQ_FLAG) !== '0');
+let fastEnabled = localStorage.getItem(FAST_FLAG) !== '0';
+const fastDrag = () => liveMode && fastEnabled;
 let previewMeshes = {};    // graph node-id -> THREE.Mesh currently shown
+let previewAnims  = {};    // graph node-id -> Drop animation plan (view previews[].anim)
 // RefImage: editor-only textured quads drawn in the viewport as modelling refs
 const refGroup = new THREE.Group();  // added to viewer.scene lazily in syncRefImages
 const refMeshes = {};                // graph node-id -> THREE.Mesh (reference quad)
@@ -794,14 +816,27 @@ function registerNodes(defs){
           {content: self.bypassed ? '✓ Bypass' : '⊘ Bypass  (Ctrl+B)',
            callback: ()=> setBypass(self, !self.bypassed)},
           {content: '▣ Group selected  (Ctrl+G)', callback: ()=> groupSelected()},
+          {content: '🔎 Search aliases…', callback: ()=> editAliases(self.cadType)},
         ];
         if (self.widgets && self.widgets.some(w=>w.isEye)){   // a node that renders geometry
           opts.push({content: (self.wireframe?'✓ ':'')+'Wireframe',
             callback: ()=>{ self.wireframe = !self.wireframe; refreshDisplay(); }});
+          opts.push({content: '✨ Finish', has_submenu: true,
+            callback: (v,o,e,menu)=>{
+              const set = f => ()=>{ self.previewFinish = f; refreshDisplay(); };
+              new LiteGraph.ContextMenu([
+                {content:'Solid (default)', callback:set(null)},
+                {content:'🔎 Glass — real transmission, see through it', callback:set('glass')},
+                {content:'💡 Emissive — it glows', callback:set('emissive')},
+                {content:'🪙 Metal', callback:set('metal')},
+              ], {event:e, parentMenu:menu, title:'Finish'});
+              return false;
+            }});
           opts.push({content: '🎨 Preview colour', has_submenu: true,
             callback: (v,o,e,menu)=>{
               const sw = c=>`<span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:${c};margin-right:6px;vertical-align:middle"></span>`;
-              const entries = [{content:'Auto (palette)', callback:()=>{ self.previewColor=null; refreshDisplay(); }}];
+              const entries = [{content:'Auto (palette)', callback:()=>{ self.previewColor=null; refreshDisplay(); }},
+                {content:'🌈 Rainbow (one hue per piece)', callback:()=>{ self.previewColor='rainbow'; refreshDisplay(); }}];
               for(const c of PALETTE) entries.push({content: sw(c)+c, callback:()=>{ self.previewColor=c; refreshDisplay(); }});
               entries.push({content:'Custom…', callback:()=>{ const x=prompt('Hex colour (e.g. #44cc88):', self.previewColor||'#44cc88'); if(x){ self.previewColor=x.trim(); refreshDisplay(); } }});
               new LiteGraph.ContextMenu(entries, {event:e, parentMenu:menu, title:'Preview colour'});
@@ -820,6 +855,127 @@ function registerNodes(defs){
   for (const [t,c] of Object.entries(WIRE_COLORS)){
     LGraphCanvas.link_type_colors[t] = c;
   }
+}
+
+// ── add-node search: find a node by its LABEL and its ALIASES too ──
+// Litegraph 0.7.18 filters the search on the registered TYPE PATH alone
+// (cad/<category>/<Type>, substring, case-insensitive) — and `searchbox_extras`
+// is gated by that very same test (inner_test_filter), so an alias word that
+// isn't already in the path can never be found through it. Overriding
+// `onSearchBox` is the one real hook: it short-circuits litegraph's own
+// filtering and takes the rows we return. They ARE type paths, so litegraph's
+// select() still creates the node the normal way — nothing else changes, and a
+// row keeps reading `cad/modifiers/Split` so the alias teaches the real name.
+// Aliases are of two kinds and rank identically: the catalog's built-in ones
+// (NodeDef.aliases — "cut"/"trim" -> Split) and the user's PERSONAL ones, added
+// from a node's right-click menu and kept server-side in projects/_aliases.json
+// (see aliasesOf / editAliases). Personal ones are a proving ground: what earns
+// its keep gets promoted by hand into catalog.py.
+// Assigned to the CANVAS INSTANCE (see `new LGraphCanvas` below), not to the
+// prototype: LGraphCanvas's constructor sets `this.onSearchBox = null`, an own
+// property that would shadow anything put on the prototype.
+let USER_ALIASES = {};                       // {node_type: [word, ...]}, from /api/aliases
+const aliasesOf = t => (USER_ALIASES[t] || []).concat((catalog[t] || {}).aliases || []);
+
+function nodeSearchRows(helper, str){
+  const q = (str||'').trim().toLowerCase();
+  const hits = [];
+  for (const def of Object.values(catalog)){
+    if (def.hidden) continue;                      // deprecated: same as skip_list
+    const path = 'cad/'+def.category+'/'+def.type;
+    if (!q){ hits.push([path, 0]); continue; }     // empty query = show everything
+    const hay = [path, def.label || def.type].concat(aliasesOf(def.type));
+    let best = -1;
+    hay.forEach((h, i) => {
+      const at = h.toLowerCase().indexOf(q);
+      if (at < 0) return;
+      const rank = (at === 0 ? 0 : 10) + (i === 0 ? 0 : 1);   // prefix first, path over alias
+      if (best < 0 || rank < best) best = rank;
+    });
+    if (best >= 0) hits.push([path, best]);
+  }
+  hits.sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
+  return hits.map(h => h[0]);
+};
+
+// A node's search aliases, edited in a small modal off its right-click menu.
+// Two kinds, side by side as chips: the catalog's built-in ones are LOCKED (they
+// live in catalog.py, and are where a personal word graduates to once it has
+// earned its keep) and yours carry a red ✕. Every add/remove PUTs the whole
+// personal list (/api/aliases/<type> -> projects/_aliases.json) and re-draws from
+// what came BACK, so the chips show what is actually stored, server-side
+// normalisation included. A failed save rolls the chips back.
+async function editAliases(type){
+  const def = catalog[type];
+  if (!def) return;
+  const built = def.aliases || [];
+  let mine = (USER_ALIASES[type] || []).slice();
+  const esc = s => String(s).replace(/[&<>"]/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const m = buildModal(
+    `<h3>Search aliases — ${esc(def.label || type)}</h3>` +
+    `<p>The words that should find <b>${esc(type)}</b> in the add-node search ` +
+    `(double-click the canvas). Yours are saved for the whole app.</p>` +
+    `<div class="chips" id="__ac"></div>` +
+    `<div class="chip-add"><input class="menu-search" id="__ai" ` +
+    `placeholder="add an alias — comma-separate several"></div>` +
+    `<div class="modal-actions"><button class="tb-btn primary" id="__ax">Done</button></div>`);
+  const chips = m.ov.querySelector('#__ac'), inp = m.ov.querySelector('#__ai');
+
+  function draw(){
+    chips.innerHTML = '';
+    for (const w of built){
+      const c = document.createElement('span');
+      c.className = 'chip locked';
+      c.title = 'Built in — edit it in catalog.py';
+      c.innerHTML = `<span class="lk">🔒</span>${esc(w)}`;
+      chips.appendChild(c);
+    }
+    for (const w of mine){
+      const c = document.createElement('span');
+      c.className = 'chip';
+      c.innerHTML = `${esc(w)}<button class="x" title="Remove">✕</button>`;
+      c.querySelector('.x').onclick = () => save(mine.filter(x => x !== w));
+      chips.appendChild(c);
+    }
+    if (!chips.children.length)
+      chips.innerHTML = '<span class="chip-empty">No aliases yet — '
+                      + 'the node is still found by its name.</span>';
+  }
+  async function save(next){
+    const prev = mine;
+    mine = next; draw();                              // optimistic: the UI stays live
+    try{
+      const r = await fetch(`${API}/api/aliases/${encodeURIComponent(type)}`, {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({aliases: next})});
+      if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+      mine = (await r.json()).aliases || [];
+      if (mine.length) USER_ALIASES[type] = mine; else delete USER_ALIASES[type];
+      draw();
+    }catch(e){
+      mine = prev; draw();
+      log(`aliases · ${type}: save failed — ${e.message}`, 'err');
+    }
+  }
+  function add(){
+    const known = new Set(built.concat(mine).map(w => w.toLowerCase()));
+    const fresh = [];
+    for (const w of inp.value.split(',').map(x => x.trim()).filter(Boolean)){
+      if (known.has(w.toLowerCase())) continue;       // already there, in either list
+      known.add(w.toLowerCase());
+      fresh.push(w);
+    }
+    inp.value = '';
+    if (fresh.length) save(mine.concat(fresh));
+  }
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter'){ e.preventDefault(); add(); }
+    if (e.key === 'Escape') m.close();
+  });
+  m.ov.querySelector('#__ax').onclick = () => { add(); m.close(); };  // Done also takes what's typed
+  draw();
+  setTimeout(() => inp.focus(), 0);
 }
 
 function clampNum(v, p){
@@ -855,6 +1011,7 @@ function evalNum(raw){
 // keep their values untouched.
 // ════════════════════════════════════════════════════════════════════
 const SLIDER_GEAR_W = 18;   // right hotspot; ends before litegraph's x < width-12 dead zone
+const SLIDER_PLAY_W = 16;   // ▶ sits just left of the ⚙, on the same row
 
 function niceCap(v){        // smallest 1 / 2.5 / 5 × 10^k ≥ v (min 10)
   if (!(v > 10)) return 10;
@@ -872,18 +1029,26 @@ function trimNum(n){ return String(+Number(n).toFixed(4)); }
 // loaded or edited after widget creation just applies. A user ⚙ config wins;
 // otherwise: ±10 clipped to hard bounds, grown to contain the current value,
 // growth capped at soft_max when set (the anti-blowup guard, e.g. fan-out counts).
+const PLAY_DEFAULT = {speed: 0.5, mode: 'loop'};   // sweeps/sec, once|loop|pingpong
+function playCfg(ui){
+  const p = (ui && ui.play) || null;
+  if (!p) return Object.assign({}, PLAY_DEFAULT);
+  return {speed: (+p.speed > 0 ? +p.speed : PLAY_DEFAULT.speed),
+          mode: (p.mode === 'once' || p.mode === 'pingpong') ? p.mode : 'loop'};
+}
 function sliderCfg(node, w){
   const h = w.hard;
   const ui = node.properties && node.properties._ui && node.properties._ui[w.uiKey];
-  if (ui){
+  if (ui && ui.min != null && ui.max != null){
     const step = Math.max((+ui.step > 0 ? +ui.step : w.defStep), w.isInt ? 1 : 1e-4);
-    return {lo: Math.max(h.min, +ui.min), hi: Math.min(h.max, +ui.max), step, custom: true};
+    return {lo: Math.max(h.min, +ui.min), hi: Math.min(h.max, +ui.max), step,
+            custom: true, play: playCfg(ui)};
   }
   const v = Number(w.value) || 0;
   const cap = (w.softMax != null) ? Math.min(w.softMax, h.max) : h.max;
   const hi = Math.max(Math.min(cap, Math.max(10, niceCap(v))), h.min);
   const lo = Math.min(Math.max(h.min, v < 0 ? -niceCap(-v) : -10), hi);
-  return {lo, hi, step: w.defStep, custom: false};
+  return {lo, hi, step: w.defStep, custom: false, play: playCfg(ui)};
 }
 
 function addCadSlider(node, name, init, apply, opts){
@@ -901,7 +1066,8 @@ function addCadSlider(node, name, init, apply, opts){
 }
 
 function drawCadSlider(ctx, node, w, width, y, H){
-  const margin = 15, gx = width - margin - SLIDER_GEAR_W, tw = gx - margin;
+  const margin = 15, gx = width - margin - SLIDER_GEAR_W;
+  const px = gx - SLIDER_PLAY_W, tw = px - margin;
   const cfg = sliderCfg(node, w);
   ctx.fillStyle = LiteGraph.WIDGET_BGCOLOR || '#222';
   ctx.fillRect(margin, y, width - margin * 2, H);
@@ -913,6 +1079,9 @@ function drawCadSlider(ctx, node, w, width, y, H){
   if (!w.disabled) ctx.strokeRect(margin, y, width - margin * 2, H);
   if (lcanvas.ds.scale > 0.5){
     ctx.textAlign = 'center';
+    const on = isPlaying(w);
+    ctx.fillStyle = on ? '#e0a33a' : '#667';                // ▶ lit while sweeping
+    ctx.fillText(on ? '❚❚' : '▶', px + SLIDER_PLAY_W / 2, y + H * (on ? 0.70 : 0.72));
     ctx.fillStyle = cfg.custom ? '#9ab' : '#667';           // ⚙ lit when customised
     ctx.fillText('⚙', gx + SLIDER_GEAR_W / 2, y + H * 0.72);
     const dec  = w.isInt ? 0 : stepDecimals(cfg.step);
@@ -928,11 +1097,13 @@ function cadSliderMouse(ev, pos, node, w){
   const pm = LiteGraph.pointerevents_method || 'mouse';
   const down = ev.type === pm + 'down', move = ev.type === pm + 'move', up = ev.type === pm + 'up';
   const width = node.size[0], margin = 15, gx = width - margin - SLIDER_GEAR_W;
+  const px = gx - SLIDER_PLAY_W;
   if (down && pos[0] >= gx){ w._drag = false; openSliderCfg(node, w, ev); return true; }
-  if (down) w._drag = true;
+  if (down && pos[0] >= px){ w._drag = false; toggleSliderPlay(node, w); return true; }
+  if (down){ w._drag = true; stopSliderPlay(w); }   // a hand on the slider wins
   if ((down || move) && w._drag){
     const cfg = sliderCfg(node, w);
-    let f = (pos[0] - margin) / ((gx - margin) || 1);
+    let f = (pos[0] - margin) / ((px - margin) || 1);
     f = f < 0 ? 0 : f > 1 ? 1 : f;
     let v = cfg.lo + (cfg.hi - cfg.lo) * f;
     v = Math.round(v / cfg.step) * cfg.step;
@@ -942,6 +1113,85 @@ function cadSliderMouse(ev, pos, node, w){
   }
   if (up) w._drag = false;
   return true;
+}
+
+// ── slider PLAY: sweep a param over its drag window, on a clock ─────────────
+// The value is driven exactly as a drag drives it (`w.callback`), so everything
+// downstream — undo, the ✎ field, the gizmo snapshots — behaves as if a hand
+// were on the slider. Which is also why it composes with Live for free: while
+// the value keeps changing, scheduleLive()'s 120ms debounce is reset every
+// frame and never fires, so an anticipatable node (Move/Rotate/Scale, a slider
+// wired into Drop.t — see §6b) replays locally at 60fps and the exact re-bake
+// lands once, when play stops. That is the drag contract, unchanged.
+// A node that CANNOT be anticipated would otherwise show nothing at all until
+// you hit stop, because that same debounce never fires — so play pumps the
+// engine instead: one run at a time, the next starting only when the last has
+// landed. Slower than 60fps by a lot, but it moves, and it never queues.
+// Editor-only: `_ui[key].play` rides in the same namespace as the drag window
+// (the engine resolves params by catalog name and ignores `_ui`). The PLAYING
+// state itself is deliberately transient — it is not saved, and loading a graph
+// stops everything. Nobody wants to open a file and find it already running.
+const playing = new Map();      // w -> {node, u, dir}
+let playRaf = null, playLast = 0;
+
+function isPlaying(w){ return playing.has(w); }
+function playActive(){ return playing.size > 0; }
+
+function toggleSliderPlay(node, w){
+  if (playing.has(w)){ stopSliderPlay(w); return; }
+  const cfg = sliderCfg(node, w);
+  // start from where the slider already is, so ▶ continues rather than jumps
+  let u = (Number(w.value) - cfg.lo) / ((cfg.hi - cfg.lo) || 1);
+  u = u < 0 ? 0 : u > 1 ? 1 : u;
+  if (cfg.play.mode === 'once' && u >= 1) u = 0;    // rewind a finished sweep
+  playing.set(w, {node, u, dir: 1});
+  if (!playRaf){ playLast = performance.now(); playRaf = requestAnimationFrame(playTick); }
+  lcanvas && lcanvas.setDirty(true, true);
+}
+function stopSliderPlay(w){
+  if (!playing.delete(w)) return;
+  if (!playing.size && playRaf){ cancelAnimationFrame(playRaf); playRaf = null; }
+  scheduleLive();                 // the exact re-bake, as when a drag settles
+  lcanvas && lcanvas.setDirty(true, true);
+}
+function stopAllPlay(){ for (const w of Array.from(playing.keys())) stopSliderPlay(w); }
+function stopPlayForNode(node){   // a deleted node must not keep driving callbacks
+  for (const [w, st] of Array.from(playing)) if (st.node === node) stopSliderPlay(w);
+}
+
+function playTick(now){
+  playRaf = null;
+  const dt = Math.min((now - playLast) / 1000, 0.1);   // clamp: a backgrounded tab
+  playLast = now;                                      // must not jump the sweep
+  for (const [w, st] of Array.from(playing)){
+    const cfg = sliderCfg(st.node, w);
+    let u = st.u + st.dir * cfg.play.speed * dt;
+    if (cfg.play.mode === 'pingpong'){
+      while (u > 1 || u < 0){ u = u > 1 ? 2 - u : -u; st.dir = -st.dir; }
+    } else if (cfg.play.mode === 'loop'){
+      u = ((u % 1) + 1) % 1;
+    } else if (u >= 1){ u = 1; }
+    st.u = u;
+    let v = cfg.lo + (cfg.hi - cfg.lo) * u;
+    v = Math.round(v / cfg.step) * cfg.step;
+    v = Math.min(w.hard.max, Math.max(w.hard.min, v));
+    v = w.isInt ? Math.round(v) : +v.toFixed(4);
+    if (v !== Number(w.value)) w.callback(v);
+    if (cfg.play.mode === 'once' && u >= 1) stopSliderPlay(w);
+  }
+  lcanvas && lcanvas.setDirty(true, true);
+  if (playing.size) playRaf = requestAnimationFrame(playTick);
+}
+
+// The engine pump for params no fast path can anticipate. One run at a time —
+// runGraph() aborts whatever is in flight, so overlapping calls would starve
+// every run but the last and nothing would ever appear on screen.
+let playPumpBusy = false;
+async function playPump(){
+  if (!liveMode || playPumpBusy || loadingGraph) return;
+  playPumpBusy = true;
+  try { await window.runGraph(); }
+  finally { playPumpBusy = false; }
 }
 
 // ⚙ popup: edit one slider's drag window + step. Writes node.properties._ui
@@ -971,6 +1221,25 @@ function openSliderCfg(node, w, ev){
   title.style.cssText = 'color:var(--text);font-weight:600;margin-bottom:2px';
   el.appendChild(title);
   const iMin = row('min', cfg.lo), iMax = row('max', cfg.hi), iStep = row('step', cfg.step);
+  const sep = document.createElement('div');
+  sep.textContent = '▶ play';
+  sep.style.cssText = 'color:var(--text);font-weight:600;margin-top:6px';
+  el.appendChild(sep);
+  const iSpeed = row('speed (sweeps/s)', cfg.play.speed);
+  const iMode = (() => {
+    const r = document.createElement('label');
+    r.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px';
+    const s = document.createElement('select');
+    s.style.cssText = 'width:92px;background:var(--bg-1);color:var(--text);border:1px solid var(--border);'+
+      'border-radius:5px;padding:3px 6px;font:inherit';
+    for (const [v, lbl] of [['once','once'],['loop','loop'],['pingpong','ping-pong']]){
+      const o = document.createElement('option'); o.value = v; o.textContent = lbl;
+      if (cfg.play.mode === v) o.selected = true;
+      s.appendChild(o);
+    }
+    r.append('mode', s); el.appendChild(r);
+    return s;
+  })();
   const hint = document.createElement('div');
   hint.textContent = `typed values allow ${trimNum(w.hard.min)}…${trimNum(w.hard.max)}`;
   hint.style.cssText = 'font-size:10.5px;opacity:.7';
@@ -998,8 +1267,11 @@ function openSliderCfg(node, w, ev){
     lo = Math.max(w.hard.min, Math.min(lo, hi));
     hi = Math.min(w.hard.max, Math.max(hi, lo));
     if (w.isInt) step = Math.max(1, Math.round(step));
+    let speed = evalNum(iSpeed.value);
+    if (!(speed > 0)) speed = PLAY_DEFAULT.speed;
     node.properties._ui = node.properties._ui || {};
-    node.properties._ui[w.uiKey] = {min: lo, max: hi, step};
+    node.properties._ui[w.uiKey] = {min: lo, max: hi, step,
+                                    play: {speed, mode: iMode.value}};
     done();
   };
   bOk.onclick = commit;
@@ -1978,6 +2250,7 @@ function toGraphJSON(name){
     else if (n.previewMode === 'off') nd.preview = false;   // 'auto' -> omitted
     if (n.bypassed) nd.bypassed = true;
     if (n.previewColor) nd.color = n.previewColor;
+    if (n.previewFinish) nd.finish = n.previewFinish;
     if (n.wireframe) nd.wireframe = true;
     if (n.multiInputs && n.multiInputs.size) nd.multi = [...n.multiInputs];
     nodes.push(nd);
@@ -2014,6 +2287,7 @@ function createNodeFromData(nd){
   node.previewMode = nd.preview === true ? 'on' : nd.preview === false ? 'off' : 'auto';
   if (nd.bypassed){ node.bypassed = true; node.mode = LiteGraph.NEVER; }
   if (nd.color) node.previewColor = nd.color;
+  if (nd.finish) node.previewFinish = nd.finish;
   if (nd.wireframe) node.wireframe = true;
   if (nd.multi) for (const nm of nd.multi) node.multiInputs.add(nm);
   if (nd.params && nd.params.selection){ node.selectionData = nd.params.selection; updateSelectBtn(node); }
@@ -2092,6 +2366,9 @@ function fromGraphJSON(data){
   if (sketchNode) exitCurveDrawMode();
   closeInlineNoteEditor(false);   // drop any open note editor before the canvas is rebuilt
   loadingGraph = true;
+  stopAllPlay();                  // the widgets are about to be destroyed. AFTER
+                                  // loadingGraph, so its parting scheduleLive() is
+                                  // swallowed instead of running the incoming graph.
   lastCost = null;                // costs belong to the graph that produced them
   lgraph.clear();
   const map = {};
@@ -2266,8 +2543,8 @@ window.toggleCost = function(){
   if (lcanvas) lcanvas.setDirty(true, true);
 };
 window.toggleFastDrag = function(){
-  fastDrag = !fastDrag;
-  document.getElementById('btn-fast').classList.toggle('on', fastDrag);
+  fastEnabled = !fastEnabled;
+  localStorage.setItem(FAST_FLAG, fastEnabled ? '1' : '0');
 };
 
 // ── selection actions (shared by keyboard, context menu, floating toolbar) ──
@@ -2579,17 +2856,139 @@ function onParamChange(node){
   scheduleHistory();   // param edits become undo steps (debounced across a drag)
   if (node && node.cadType === 'RefImage'){ syncRefImages(); return; }   // editor-only: no re-exec
   if (node && node.cadGated) refreshSubtype(node);   // filter/transform: tag follows mode
-  if (fastDrag && applyLocalTransform(node)){
+  if (fastDrag() && applyLocalTransform(node)){
     scheduleLive();   // re-bake exactly once the drag settles
     return;
   }
+  if (fastDrag() && applyDropTargets(node)){
+    scheduleLive();   // a slider wired into Drop t: same live replay, per target
+    return;
+  }
+  // Playing and nothing could anticipate it: scheduleLive()'s debounce is reset
+  // every frame and would never fire, so the sweep would be invisible until stop.
+  if (playActive()){ playPump(); return; }
   if (liveMode) scheduleLive();
+}
+
+// ── Drop live replay ────────────────────────────────────────────────────────
+// The engine ships the WHOLE fall with the preview (previews[id].anim: bounce
+// segments + topple steps, world coordinates, and the t it was baked at), so
+// the browser can play any t of the timeline as pure matrix math — the same
+// physics, anticipated at 60fps while the slider drags; the exact re-bake
+// lands when the drag settles.
+function dropMatrixAt(anim, t){
+  const M = new THREE.Matrix4();
+  const n = new THREE.Vector3(anim.n[0], anim.n[1], anim.n[2]);
+  const tau = Math.min(Math.max(+t || 0, 0), 1) * anim.T;
+  const h0 = anim.h0;
+  if (tau < anim.Tb || !(anim.steps||[]).length){      // still in the air
+    const f = anim.Tb > 0 ? tau / anim.Tb : 1;
+    let h = 0;
+    if (h0 <= 0) h = h0 * (1 - f);
+    else {
+      let tn = f * anim.tot_n;
+      for (const [d, up] of anim.segs){
+        if (tn <= d){ h = h0 * Math.max((up == null ? 1 - tn*tn : up*tn - tn*tn), 0); break; }
+        tn -= d;
+      }
+    }
+    return M.makeTranslation(n.x*(h-h0), n.y*(h-h0), n.z*(h-h0));
+  }
+  M.makeTranslation(-h0*n.x, -h0*n.y, -h0*n.z);        // landed…
+  let left = tau - anim.Tb;
+  for (const s of anim.steps){                         // …then the topples, in order
+    let deg = s.deg, partial = false;
+    if (left >= s.du - 1e-12){ left -= s.du; }
+    else { const fr = Math.max(0, left / s.du); deg = s.deg * fr * fr; partial = true; }
+    const ax = new THREE.Vector3(s.ax[0], s.ax[1], s.ax[2]).normalize();
+    M.premultiply(new THREE.Matrix4().makeTranslation(-s.p[0], -s.p[1], -s.p[2]))
+     .premultiply(new THREE.Matrix4().makeRotationAxis(ax, deg * Math.PI/180))
+     .premultiply(new THREE.Matrix4().makeTranslation(s.p[0], s.p[1], s.p[2]));
+    if (partial) break;
+  }
+  return M;
+}
+
+// A collide body ships a KEYFRAME plan instead (kind "keys"): pybullet ran the
+// whole scene once, and here we interpolate (lerp + slerp) the pose at any t.
+function keyInterp(anim, tau){
+  const T = anim.times; if (!T || !T.length) return null;
+  const q = (i)=> new THREE.Quaternion(anim.quat[i][0], anim.quat[i][1], anim.quat[i][2], anim.quat[i][3]);
+  if (tau <= T[0])            return { p: anim.pos[0], q: q(0) };
+  if (tau >= T[T.length-1])   return { p: anim.pos[T.length-1], q: q(T.length-1) };
+  let lo = 0, hi = T.length - 1;
+  while (hi - lo > 1){ const mid = (lo+hi)>>1; if (T[mid] <= tau) lo = mid; else hi = mid; }
+  const f = (tau - T[lo]) / ((T[hi] - T[lo]) || 1);
+  const p = [0,1,2].map(i => anim.pos[lo][i]*(1-f) + anim.pos[hi][i]*f);
+  return { p, q: q(lo).slerp(q(hi), f) };
+}
+
+// Move one Scene body (baked at anim.t) to tNew. Its world vertices sit at pose
+// (pB,qB); target is (pT,qT). The rigid delta is Δq = qT·qB⁻¹, and the child's
+// offset = pT − Δq·pB, so vertex y → Δq·(y−pB) + pT.
+function sceneBodyPose(anim, tNew, child){
+  const T = anim.T || 1;
+  const at = keyInterp(anim, Math.min(Math.max(tNew,0),1) * T);
+  const bk = keyInterp(anim, Math.min(Math.max(anim.t,0),1) * T);
+  if (!at || !bk) return;
+  const dq = at.q.clone().multiply(bk.q.clone().invert());
+  const pB = new THREE.Vector3(bk.p[0], bk.p[1], bk.p[2]);
+  const pT = new THREE.Vector3(at.p[0], at.p[1], at.p[2]);
+  child.quaternion.copy(dq);
+  child.position.copy(pT).sub(pB.clone().applyQuaternion(dq));
+}
+
+// Seat `node`'s preview at timeline position tNew, relative to its baked t. A
+// single Drop is one mesh moved by M(tNew)·M(tBaked)⁻¹; a collide Scene is a
+// group whose bodies each carry their own keyframe plan.
+function applyDropAnim(node, tNew){
+  const m = previewMeshes['n'+node.id];
+  if (!m) return false;
+  if (m.userData && m.userData.isScene){
+    let any = false;
+    for (const child of m.children){
+      const a = child.userData && child.userData.anim;
+      if (a && a.kind === 'keys'){ sceneBodyPose(a, tNew, child); any = true; }
+    }
+    return any;
+  }
+  const anim = previewAnims['n'+node.id];
+  if (!anim) return false;
+  // One part falling into a `container` is still a simulated scene — it just has
+  // a single body, so it arrives as a plain preview carrying a keyframe plan.
+  if (anim.kind === 'keys'){ sceneBodyPose(anim, tNew, m); return true; }
+  const rel = dropMatrixAt(anim, tNew).multiply(dropMatrixAt(anim, anim.t).invert());
+  rel.decompose(m.position, m.quaternion, m.scale);
+  return true;
+}
+
+// A dragged value node (Number Slider…) wired straight into Drop `t` sockets:
+// replay each connected Drop live instead of waiting for the engine.
+function applyDropTargets(node){
+  if (!node || !node.outputs || !lgraph) return false;
+  const v = node.properties && node.properties.value;
+  if (typeof v !== 'number') return false;
+  let hit = false;
+  for (const out of node.outputs){
+    for (const lid of (out.links || [])){
+      const lk = lgraph.links[lid]; if (!lk) continue;
+      const tn = lgraph.getNodeById(lk.target_id);
+      if (!tn || tn.cadType !== 'Drop') continue;
+      const sock = (tn.inputs || [])[lk.target_slot];
+      if (!sock || (sock.cadName || sock.name) !== 't') continue;
+      if (applyDropAnim(tn, v)) hit = true;
+    }
+  }
+  return hit;
 }
 
 // Move/Rotate/Scale a node's own preview mesh in Three.js (60fps), as a delta
 // from the params baked into the current mesh. Returns false if not applicable.
+// Drop replays its shipped timeline the same way (dropMatrixAt).
 function applyLocalTransform(node){
-  if (!node || !['Move','Rotate','Scale'].includes(node.cadType)) return false;
+  if (!node) return false;
+  if (node.cadType === 'Drop') return applyDropAnim(node, +node.properties.t);
+  if (!['Move','Rotate','Scale'].includes(node.cadType)) return false;
   const m = previewMeshes['n'+node.id];
   if (!m) return false;                 // this node's result isn't on screen
   const b = node._baked || {}, p = node.properties;
@@ -2688,10 +3087,13 @@ function enterGizmoEdit(node){
   gizmoParamStart = {};
   for (const name of g.binds) gizmoParamStart[name] = +node.properties[name] || 0;
   transformControls.setMode(g.kind === 'rotate' ? 'rotate' : g.kind === 'scale' ? 'scale' : 'translate');
-  // rotate constrains to the node's single chosen axis; others show all 3
+  // rotate constrains to the node's single chosen axis; timeline (Drop) is a
+  // translate that only rides the fall axis (Z); others show all 3
   if (g.kind === 'rotate'){
     const ax = gizmoAxisLetter(node);
     transformControls.showX = ax==='x'; transformControls.showY = ax==='y'; transformControls.showZ = ax==='z';
+  } else if (g.kind === 'timeline'){
+    transformControls.showX = transformControls.showY = false; transformControls.showZ = true;
   } else {
     transformControls.showX = transformControls.showY = transformControls.showZ = true;
   }
@@ -2749,6 +3151,16 @@ function gizmoDragUpdate(){
     let r = 1, best = 0;
     for (const c of ['x','y','z']){ const dv = Math.abs(s[c]-1); if (dv > best){ best = dv; r = s[c]; } }
     gizmoWriteParam(node, g.binds[0], gizmoParamStart[g.binds[0]] * (r || 1e-6));
+  } else if (g.kind === 'timeline'){                        // Drop: drag along Z scrubs t
+    // Pull the part DOWN and time advances, lift it and time rewinds. One part
+    // height (or its height above the bed, whichever is larger) = the full
+    // timeline, so the gesture is "drag it to the plane" — clamped 0..1 by the
+    // catalog range in gizmoWriteParam.
+    const dz = gizmoAnchor.position.z - gizmoStart.z;
+    let span = Math.max(gizmoStart.z, 10);
+    const pm = previewMeshes['n'+node.id];
+    if (pm){ const b=new THREE.Box3().setFromObject(pm); span = Math.max(span, b.max.z-b.min.z); }
+    gizmoWriteParam(node, g.binds[0], gizmoParamStart[g.binds[0]] - dz/span);
   } else {                                                  // translate
     const d = gizmoAnchor.position.clone().sub(gizmoStart); // world delta
     gizmoWriteParam(node, g.binds[0], gizmoParamStart[g.binds[0]] + d.x);
@@ -2758,7 +3170,9 @@ function gizmoDragUpdate(){
   node.setDirtyCanvas && node.setDirtyCanvas(true,true);
   // optimistic preview: applyLocalTransform covers Move/Rotate/Scale; for the
   // point producers (ConstructPoint/Vector) shift their dot by the world delta.
-  if (!applyLocalTransform(node) && g.kind === 'translate'){
+  // Timeline (Drop) rides the same fallback: the mesh follows the cursor until
+  // the debounced exact run lands the bounce/topple frame (memo makes it cheap).
+  if (!applyLocalTransform(node) && (g.kind === 'translate' || g.kind === 'timeline')){
     const m = previewMeshes['n'+node.id];
     if (m) m.position.copy(gizmoAnchor.position.clone().sub(gizmoStart));
   }
@@ -2795,7 +3209,9 @@ function showGizmoHint(node){
     host.style.position = host.style.position || 'relative';
     host.appendChild(el);
   }
-  el.textContent = '✎ Editing '+(node.title||node.cadType)+' — drag to move · Esc to stop';
+  const verb = (node._gizmo||{}).kind === 'timeline'
+    ? 'drag ↓ to drop, ↑ to rewind' : 'drag to move';
+  el.textContent = '✎ Editing '+(node.title||node.cadType)+' — '+verb+' · Esc to stop';
   el.style.display = 'block';
 }
 
@@ -3539,18 +3955,24 @@ function renderPreviews(view){
   const r = viewer.renderPreviews((view && view.previews) || {}, {
     colorOf: (id, order)=> resolveColor(id, order),
     wireOf:  (id)=> !!(nodeIndex[id] && nodeIndex[id].wireframe),
+    finishOf:(id)=> (nodeIndex[id] && nodeIndex[id].previewFinish) || null,
     onEmpty: ()=>{ previewMeshes = {}; renderLegend([]); if(lcanvas) lcanvas.setDirty(true, true);
       viewer.loadSTL(`${API}/api/projects/${currentName}/download?t=`+Date.now(),
         { onSize:(s)=>{ if(s) setStats(`${s.x.toFixed(1)} × ${s.y.toFixed(1)} × ${s.z.toFixed(1)} mm`); } }); },
   });
   previewMeshes = r.meshes;
+  previewAnims = {};                     // Drop timelines riding the previews (fastDrag replay)
+  const pvs = (view && view.previews) || {};
+  for (const id in pvs) if (pvs[id] && pvs[id].anim) previewAnims[id] = pvs[id].anim;
   applyIsolate();                        // re-hide unselected shapes after a fresh render
   syncRefImages();                       // draw RefImage reference quads alongside the model
   if(!r.order.length) return;            // onEmpty handled the legend / STL fallback
   const legend = [];
   for(const id of r.order){
     const n = nodeIndex[id], color = r.colors[id];
-    if(n){ n._baked = {...n.properties}; n.boxcolor = color; }   // snapshot + title dot
+    // the title dot cannot show a sentinel: rainbow gets one stand-in swatch
+    if(n){ n._baked = {...n.properties};
+           n.boxcolor = (color === 'rainbow') ? '#9b6dd6' : color; }   // snapshot + title dot
     legend.push({id, color, label:(n && (n.title||n.cadType)) || id, wire: !!(n && n.wireframe)});
   }
   renderLegend(legend);
@@ -3637,7 +4059,10 @@ function renderLegend(items){
   el.innerHTML = '';
   for(const it of items){
     const row = document.createElement('div'); row.className='leg-row'; row.title='select '+it.label;
-    row.innerHTML = `<span class="leg-sw" style="background:${it.color}"></span>`+
+    const sw = it.color === 'rainbow'
+      ? 'background:linear-gradient(90deg,#e0564f,#dbb63c,#5ec26a,#4aa3d8,#9b6dd6)'
+      : `background:${it.color}`;
+    row.innerHTML = `<span class="leg-sw" style="${sw}"></span>`+
                     `<span class="leg-name">${it.label}${it.wire?' ▦':''}</span>`;
     row.addEventListener('click', ()=> selectNodeById(it.id));
     el.appendChild(row);
@@ -4512,10 +4937,11 @@ function initGraph(){
   lgraph = new LGraph();
   const canvas = document.getElementById('graph-canvas');
   lcanvas = new LGraphCanvas(canvas, lgraph);
+  lcanvas.onSearchBox = nodeSearchRows;   // find nodes by label/alias, not just type path
   lcanvas.background_image = null;
   // live triggers on structural changes (guarded while loading a graph)
   lgraph.onNodeAdded = ()=>{ scheduleHistory(); scheduleLive(); };
-  lgraph.onNodeRemoved = ()=>{ scheduleHistory(); syncRefImages(); scheduleLive(); };   // drop a removed ref quad now
+  lgraph.onNodeRemoved = (n)=>{ stopPlayForNode(n); scheduleHistory(); syncRefImages(); scheduleLive(); };   // drop a removed ref quad now
   lgraph.onConnectionChange = ()=>{ scheduleHistory(); scheduleLive(); };
   lcanvas.onNodeMoved = ()=>scheduleHistory();     // a node drag settled -> undo step
   // group moves/resizes, wire drags: any canvas gesture that ends here is a candidate
@@ -4936,11 +5362,29 @@ window.openSettings = function(){
       `<small style="color:var(--txt-dim)">Puts the last run's wall-clock on each node. `+
       `Blue means the memo cache served it without re-running; amber&rarr;green is a real `+
       `recompute, hue by cost; red means it threw.</small></span></label>`+
+    `<label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;margin-top:12px">`+
+      `<input type="checkbox" id="set-fast" ${fastEnabled?'checked':''} style="margin-top:3px">`+
+      `<span><b>Anticipate drags while Live is on</b><br>`+
+      `<small style="color:var(--txt-dim)">Dragging Move / Rotate / Scale — or a Drop timeline — `+
+      `replays in the viewport at 60fps instead of waiting for the engine; the exact re-bake `+
+      `lands when you let go. Turn it off if the local replay costs your machine more than `+
+      `it saves: Live still works, it just waits for each run.</small></span></label>`+
+    `<label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;margin-top:12px">`+
+      `<input type="checkbox" id="set-hq" ${localStorage.getItem(HQ_FLAG)!=='0'?'checked':''} style="margin-top:3px">`+
+      `<span><b>High-quality rendering</b><br>`+
+      `<small style="color:var(--txt-dim)">Glass finishes refract properly instead of being faked with `+
+      `alpha, so overlapping parts stay in the right order — the thing flat transparency cannot do at `+
+      `any price. It costs a render target per frame. Off, glass falls back to cheap alpha blending.</small></span></label>`+
     `<div class="modal-actions"><button class="tb-btn primary" id="set-ok">Done</button></div>`);
   const cb=m.ov.querySelector('#set-fb');
   cb.addEventListener('change', ()=>{ localStorage.setItem(FEEDBACK_FLAG, cb.checked?'1':'0'); applyFeedbackSetting(); });
   const cc=m.ov.querySelector('#set-cost');
   cc.addEventListener('change', ()=>{ if (cc.checked !== showCost) toggleCost(); });
+  const ch=m.ov.querySelector('#set-hq');
+  ch.addEventListener('change', ()=>{ localStorage.setItem(HQ_FLAG, ch.checked?'1':'0');
+    setQuality(ch.checked); refreshDisplay(); });
+  const cf=m.ov.querySelector('#set-fast');
+  cf.addEventListener('change', ()=>{ if (cf.checked !== fastEnabled) toggleFastDrag(); });
   m.ov.querySelector('#set-ok').onclick=()=>m.close();
 };
 
@@ -5151,6 +5595,12 @@ document.addEventListener('keydown', e=>{
       const wt = await (await fetch(`${API}/api/wiretypes`)).json();
       if (wt && wt.input_accepts) INPUT_ACCEPTS = wt.input_accepts;
     }catch(e){ log('wiretypes: using built-in fallback','err'); }
+    // personal search aliases (projects/_aliases.json) — merged with the
+    // catalog's built-in ones by nodeSearchRows. Absent file = {}, never fatal.
+    try{
+      const ua = await (await fetch(`${API}/api/aliases`)).json();
+      USER_ALIASES = (ua && ua.aliases) || {};
+    }catch(e){ log('aliases: none loaded','err'); }
     const defs = await (await fetch(`${API}/api/nodes`)).json();
     registerNodes(defs);
     log(`registered ${defs.length} node types`);

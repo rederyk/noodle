@@ -244,7 +244,15 @@ def extract_view(shape, linear_frac: float = 0.02, angular: float = 0.4,
 
 
 def _is_point(v) -> bool:
-    """A bare point/vector: has X/Y/Z but isn't a topological shape (no edges)."""
+    """A bare point/vector: has X/Y/Z but isn't a topological shape (no edges).
+
+    A build123d Vertex is BOTH — a topological shape that is nothing but a
+    position — so the no-edges test alone rejects it and a picked vertex draws
+    as nothing at all (it has no mesh and no wire; dots are the only way to see
+    it). Name-check it, the way the transpiler's _as_point already does.
+    """
+    if type(v).__name__ == "Vertex":
+        return True
     return (hasattr(v, "X") and hasattr(v, "Y") and hasattr(v, "Z")
             and not hasattr(v, "edges") and not hasattr(v, "faces"))
 
@@ -292,6 +300,77 @@ def _bbox_of_coords(coords) -> dict | None:
 
 
 def _preview_of(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict | None:
+    """Compact per-node preview: _preview_geom's geometry, plus any animation
+    plan the node runtime attached to its result (`_noodle_anim` — today the
+    Drop node's fall/topple timeline). The plan rides the preview entry as
+    `anim`, reaches the editor through view.json, and lets the browser replay
+    the motion at 60fps while the slider drags — no engine round trip."""
+    # A fanned collide result is a LIST whose items each carry their own
+    # keyframe plan — render them as a SCENE of independently-animated bodies
+    # (one sub-mesh + anim each) so the browser can replay the whole pile, not
+    # a single merged blob frozen at one t.
+    # `_noodle_extra` are bodies that belong in the PICTURE but not in the output:
+    # today a Drop container that MOVES (tilts, shakes, spins). They join the same
+    # Scene, each carrying its own keyframe track, so the browser replays them
+    # exactly like the falling parts — and a single part plus a moving container
+    # is promoted to a Scene too, because otherwise the bowl would be invisible.
+    items = list(value) if isinstance(value, (list, tuple)) else [value]
+    extras = []
+    for v in items:
+        for x in (getattr(v, "_noodle_extra", None) or []):
+            extras.append(x)
+    if extras or (isinstance(value, (list, tuple)) and any(
+            getattr(v, "_noodle_anim", None) is not None for v in value)):
+        bodies, lo, hi = [], [1e30, 1e30, 1e30], [-1e30, -1e30, -1e30]
+        for v in items + extras:
+            g = _preview_geom(v, linear_frac, angular)
+            if g is None:
+                continue
+            g["anim"] = getattr(v, "_noodle_anim", None)
+            bodies.append(g)
+            bb = g.get("bbox")
+            if bb:
+                lo = [min(lo[i], bb["min"][i]) for i in range(3)]
+                hi = [max(hi[i], bb["max"][i]) for i in range(3)]
+        if bodies:
+            box = ({"min": lo, "max": hi,
+                    "size": [hi[i] - lo[i] for i in range(3)]}
+                   if hi[0] > -1e30 else None)
+            return {"kind": "Scene", "bodies": bodies, "bbox": box}
+
+    entry = _preview_geom(value, linear_frac, angular)
+    anim = getattr(value, "_noodle_anim", None)
+    if entry is not None and anim is not None:
+        entry["anim"] = anim
+    return entry
+
+
+def _merged_pieces(value, linear_frac: float, angular: float) -> dict | None:
+    """One buffer, but with the seams remembered: every item of a fanned list is
+    tessellated on its own and concatenated, and `parts` records how many
+    triangles each contributed. Returns None if the pieces are not all meshable
+    triangles (points and curves keep the old whole-value path)."""
+    verts: list = []
+    tris: list = []
+    parts: list = []
+    for item in value:
+        g = _preview_geom(item, linear_frac, angular)
+        if g is None or "mesh" not in g:
+            return None                       # not a uniform bag of triangles
+        off = len(verts)
+        verts.extend(g["mesh"]["vertices"])
+        tris.extend([[t[0] + off, t[1] + off, t[2] + off]
+                     for t in g["mesh"]["triangles"]])
+        parts.append(len(g["mesh"]["triangles"]))
+    if not tris:
+        return None
+    entry: dict = {"kind": "Compound", "mesh": {"vertices": verts, "triangles": tris},
+                   "parts": parts}
+    entry["bbox"] = _bbox_of_coords(verts)
+    return entry
+
+
+def _preview_geom(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict | None:
     """Compact per-node preview. Three render paths, tried in order:
       - points    : a Vector or list of Vectors -> dots
       - mesh      : a solid/sketch -> tessellated triangles
@@ -301,6 +380,18 @@ def _preview_of(value, linear_frac: float = 0.02, angular: float = 0.4) -> dict 
     pts = _points_of(value)
     if pts is not None:
         return {"kind": "Points", "points": pts, "bbox": _bbox_of_coords(pts)}
+
+    # 1a) a LIST of drawable pieces: tessellate each one and remember where it
+    # starts. `parts` (one triangle count per piece) is what lets the viewer give
+    # every piece its own colour WITHOUT re-executing — colour is a display
+    # setting and re-rendering reads the cached view.json, so the split has to be
+    # in the data whether or not anyone is looking at it. It costs one int per
+    # piece against megabytes of vertices; merging still happens, so an unrainbowed
+    # array is still one buffer and one draw call.
+    if isinstance(value, (list, tuple)) and len(value) > 1:
+        merged = _merged_pieces(value, linear_frac, angular)
+        if merged is not None:
+            return merged
 
     shape = _as_shape(value)
     if shape is None:

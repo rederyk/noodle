@@ -102,6 +102,14 @@ class NodeDef:
     # Hidden from the editor's add-node search/menu (frontend sets litegraph's
     # skip_list), but still registered so older graphs referencing it load & run.
     hidden: bool = False
+    # Extra names the add-node search should find this node under — the words a
+    # user coming from another CAD would type ("cut"/"trim" for Split). Matched by
+    # nodes.html's own search (nodeSearchRows; litegraph's searchbox_extras can't
+    # do it — see CLAUDE.md §6). Search entries ONLY, never node types, so nothing
+    # else in the app (graph.json, the transpiler, MCP) ever sees them: `type`
+    # stays the id. The user's own additions live in projects/_aliases.json and
+    # get promoted HERE by hand once they've earned it.
+    aliases: list[str] = field(default_factory=list)
     is_group: bool = False
     # For group nodes: how to read the result out of the context manager var.
     group_kind: Optional[str] = None  # "part" | "sketch" | "line"
@@ -277,6 +285,36 @@ register(NodeDef("Wedge", "primitives_3d", "Wedge",
     description="Wedge: a box whose top face shrinks to the rectangle "
                 "[xmin..xmax] x [zmin..zmax] (ramps, tapered blocks). Keep "
                 "0 <= xmin < xmax <= xsize and likewise for z."))
+
+register(NodeDef("Polyhedron", "primitives_3d", "Polyhedron",
+    inputs=_origin_in() + _pin("faces", "size"),
+    params=[Param("kind", "select", "kind", "platonic", widget="select",
+                  options=["platonic", "prism", "antiprism", "bipyramid", "sphere"]),
+            _i("faces", 6, 4, 200, label="faces"),
+            _f("size", 10, 0.1, 500, label="size (circumradius)"),
+            Param("as_mesh", "bool", "mesh output", False, widget="checkbox")],
+    outputs=_geo(),
+    aliases=["poliedro", "platonic", "tetrahedron", "cube", "octahedron",
+             "dodecahedron", "icosahedron", "prism", "antiprism", "bipyramid",
+             "dice", "d20", "geodesic"],
+    code_template={"algebra": "_polyhedron({kind}, {faces}, {size}, {as_mesh})"},
+    description="A polyhedron with the face count you ask for: the BIGGEST one of "
+                "its family that fits in a sphere of radius `size` (every vertex "
+                "sits on that sphere). `kind` picks the family — platonic (4/6/8/"
+                "12/20: tetra, cube, octa, dodeca, icosa), prism (k+2 faces), "
+                "antiprism (2k+2), bipyramid (2k), or sphere (any even count: "
+                "near-uniform points hulled, F = 2V-4 — a geodesic-ish ball). "
+                "`faces` SNAPS to the nearest count the family can build, so the "
+                "slider always lands on a real solid. Beware the honest limit: "
+                "'most volume per unit SURFACE for N faces' is an open problem "
+                "past a few counts and its answers surprise (the best 5-faced "
+                "solid is a triangular prism, not a square pyramid; the best "
+                "8-faced one is not the regular octahedron), so this maximises "
+                "within a family inscribed in a sphere, which is exact. Output is "
+                "a real B-Rep solid with planar faces — Fillet/Chamfer/booleans "
+                "all work. `mesh output` returns the same hull on the mesh lane "
+                "instead (for Mesh Union & co.); leave it off unless you need it, "
+                "as a mesh will not go into a Fillet."))
 
 register(NodeDef("ConstructPoint", "vector", "Construct Point",
     inputs=[Socket("x", WIRE_DATA, required=False),
@@ -587,17 +625,23 @@ register(NodeDef("MakeFace", "operations", "Surface (Make Face)",
                 "Polyline, …) into a 2D face, ready for Extrude / Revolve / Loft. "
                 "Fans out over a list of curves (one face each)."))
 
-register(NodeDef("PopulateGeometry", "operations", "Populate Geometry",
-    inputs=[Socket("region", WIRE_SURFACE, required=False)],
+register(NodeDef("PopulateGeometry", "operations", "Populate",
+    inputs=[Socket("region", WIRE_SURFACE, required=False, raw=True,
+                   accepts=[WIRE_SOLID, WIRE_MESH])],
     params=[_i("count", 40, 1, 5000, label="count"),
             _i("seed", 1, 0, 100000, label="seed", widget="input"),
             _f("width", 100, 1, 5000, label="width", widget="input"),
             _f("height", 100, 1, 5000, label="height", widget="input")],
     outputs=[Socket("points", WIRE_VECTOR)],
     code_template={"algebra": "_populate({count}, {seed}, {width}, {height}, {region})"},
-    description="Scatter `count` random points (z=0), deterministic per `seed`, "
-                "inside the `region` rectangle if wired (else a width x height "
-                "box). Feed into Voronoi2D, an origin, or Move."))
+    description="Scatter `count` random points, deterministic per `seed` — and "
+                "WHERE they land depends on what you wire into `region`: an OPEN "
+                "curve scatters ALONG it (uniform by arc length), a closed curve "
+                "or flat sketch INSIDE the region (really inside, not its "
+                "bounding box), a curved surface ON it (uniform by area), a "
+                "solid or watertight mesh INSIDE the volume. Nothing wired: a "
+                "width x height box at z=0. Feed Voronoi2D from a flat fill, "
+                "Voronoi3D from a volume fill, or any origin/Move to scatter."))
 
 register(NodeDef("Voronoi2D", "operations", "Voronoi 2D",
     inputs=[Socket("points", WIRE_VECTOR, list_access=True),
@@ -648,9 +692,42 @@ register(NodeDef("Union", "boolean", "Union",
     # solids yields a solid — so the output mirrors what flows in.
     output_follows="shapes",
     code_template={"algebra": "_union({shapes})"},
+    aliases=["fuse", "boolean union", "unione", "add", "merge", "combine"],
     description="Boolean union — fuses everything wired in into one shape. Feed "
-                "a whole list or many wires into the single socket; 2D faces "
-                "fuse into a region, 3D solids into one part."))
+                "a whole list or many wires into the single socket; 3D solids "
+                "fuse into one part, and COPLANAR 2D faces into one region. It "
+                "is a boolean, not a sew: faces on different planes only touch, "
+                "they do not overlap, so Union refuses them and points you at "
+                "Join — which stitches them into a shell."))
+
+register(NodeDef("Join", "boolean", "Join",
+    # The complement of Union, and the reason Union no longer pretends: a boolean
+    # fuses OVERLAPPING material, Join sews pieces that merely SHARE A BORDER.
+    # One collector, same shift-drag / list idiom as Union. Declared `surface`
+    # (the common case) but widened to curves and solids — the helper dispatches
+    # on what really arrives. A `multiple` collector skips boundary casts
+    # (CLAUDE.md §5c), so a CLOSED curve reaches the node as a curve rather than
+    # being filled into a face on the way in — which is what lets Join chain it.
+    inputs=[Socket("shapes", WIRE_SURFACE, multiple=True,
+                   accepts=[WIRE_CURVE, WIRE_SOLID])],
+    params=[_f("tolerance", 0.001, 0.0, 10, step=0.001, widget="input"),
+            Param("make_solid", "bool", "close into a solid", True,
+                  widget="checkbox")],
+    outputs=_sk(),
+    output_follows="shapes",
+    aliases=["sew", "stitch", "weld", "unisci", "cuci", "shell", "wire",
+             "combine", "knit", "merge faces"],
+    # The collector SPREADS its wires (`a, b`), so bracket them: `_join` takes the
+    # pieces as one list and keeps its tolerance/close args positional after it.
+    code_template={"algebra": "_join([{shapes}], {tolerance}, {make_solid})"},
+    description="Sew touching SURFACES into one shell, or chain touching CURVES "
+                "into one wire. Six faces of a box come back as a closed shell "
+                "and — with `close into a solid` on — as a real solid you can "
+                "fillet and boolean; five come back as an open surface. Pieces "
+                "that do not share their border edges are an error, not a silent "
+                "bag of parts: raise `tolerance` (curves only — faces sew on "
+                "OCCT's own tolerance) or check they really meet. Use Union "
+                "instead when the shapes OVERLAP and you want them fused."))
 
 register(NodeDef("Subtract", "boolean", "Subtract",
     # `b` is list-access: a LIST of tools (e.g. a fanned set of cutters) is
@@ -704,7 +781,7 @@ register(NodeDef("FilletChamferCorners", "modifiers", "Fillet / Chamfer Corners"
     inputs=[Socket("shape", WIRE_SURFACE, raw=True)] + _pin("size"),
     params=[_mode_param(), _f("size", 2, 0.01, 100, step=0.05)],
     outputs=_cv(),
-    code_template={"algebra": "_outline(_round(_face({shape}).vertices(), {mode}, {size}))"},
+    code_template={"algebra": "_outline(_round_corners({shape}, {mode}, {size}))"},
     description="Round (fillet) or bevel (chamfer) all corners of a 2D "
                 "face/sketch — `mode` picks which. Feed a closed curve or a Make "
                 "Face result; outputs the rounded outline as a curve (fill it "
@@ -726,13 +803,13 @@ register(NodeDef("Chamfer", "modifiers", "Chamfer",
 register(NodeDef("Fillet2D", "modifiers", "Fillet Corners",
     inputs=[Socket("shape", WIRE_SURFACE, raw=True)] + _pin("radius"),
     params=[_f("radius", 2, 0.01, 100, step=0.05)], outputs=_sk(), hidden=True,
-    code_template={"algebra": "fillet(_face({shape}).vertices(), radius={radius})"},
+    code_template={"algebra": "_round_corners({shape}, 'fillet', {radius})"},
     description="Deprecated: use Fillet / Chamfer Corners. Round 2D corners."))
 
 register(NodeDef("Chamfer2D", "modifiers", "Chamfer Corners",
     inputs=[Socket("shape", WIRE_SURFACE, raw=True)] + _pin("length"),
     params=[_f("length", 1.5, 0.01, 100, step=0.05)], outputs=_sk(), hidden=True,
-    code_template={"algebra": "chamfer(_face({shape}).vertices(), length={length})"},
+    code_template={"algebra": "_round_corners({shape}, 'chamfer', {length})"},
     description="Deprecated: use Fillet / Chamfer Corners. Bevel 2D corners."))
 
 # ===========================================================================
@@ -854,7 +931,7 @@ register(NodeDef("FilletChamferSelected", "modifiers", "Fillet / Chamfer (select
     inputs=[Socket("part", WIRE_SOLID), Socket("selection", WIRE_SELECTION, list_access=True)],
     params=[_mode_param(), _f("size", 2, 0.01, 100, step=0.05)],
     outputs=_geo(),
-    code_template={"algebra": "_round({selection}, {mode}, {size})"},
+    code_template={"algebra": "_round({part}, {selection}, {mode}, {size})"},
     description="Round (fillet) or bevel (chamfer) only the sub-shapes chosen by "
                 "a Select node — edges (3D) or corners/vertices (2D). `mode` picks "
                 "which, `size` is the radius / bevel length."))
@@ -863,13 +940,13 @@ register(NodeDef("FilletChamferSelected", "modifiers", "Fillet / Chamfer (select
 register(NodeDef("FilletSelectedEdges", "modifiers", "Fillet Selected Edges",
     inputs=[Socket("part", WIRE_SOLID), Socket("edges", WIRE_SELECTION, list_access=True)],
     params=[_f("radius", 2, 0.01, 100, step=0.05)], outputs=_geo(), hidden=True,
-    code_template={"algebra": "fillet({edges}, radius={radius})"},
+    code_template={"algebra": "_round({part}, {edges}, 'fillet', {radius})"},
     description="Deprecated: use Fillet / Chamfer (selected). Round chosen edges."))
 
 register(NodeDef("ChamferSelectedEdges", "modifiers", "Chamfer Selected Edges",
     inputs=[Socket("part", WIRE_SOLID), Socket("edges", WIRE_SELECTION, list_access=True)],
     params=[_f("length", 1.5, 0.01, 100, step=0.05)], outputs=_geo(), hidden=True,
-    code_template={"algebra": "chamfer({edges}, length={length})"},
+    code_template={"algebra": "_round({part}, {edges}, 'chamfer', {length})"},
     description="Deprecated: use Fillet / Chamfer (selected). Bevel chosen edges."))
 
 register(NodeDef("ExtrudeSelectedFace", "modifiers", "Push / Pull Face",
@@ -924,18 +1001,27 @@ register(NodeDef("Section", "modifiers", "Section",
                 "global origin when nothing is wired."))
 
 register(NodeDef("Split", "modifiers", "Split",
+    # raw=True: the tool must arrive AS WIRED. Without it the surface->plane cast
+    # (_as_plane) would flatten a curved cutting surface into the plane it roughly
+    # lies in, and the whole point of accepting a surface would be lost.
     inputs=[Socket("shape", WIRE_SOLID),
-            Socket("plane", WIRE_PLANE, required=False)],
+            Socket("plane", WIRE_PLANE, required=False, raw=True)],
     params=[Param("keep", "select", "keep", "top", widget="select",
                   options=["top", "bottom", "both"],
                   code_map={"top": "Keep.TOP", "bottom": "Keep.BOTTOM",
-                            "both": "Keep.BOTH"})],
+                            "both": "Keep.BOTH"}),
+            Param("solid", "bool", "solid", True, widget="checkbox")],
     outputs=_geo(),
-    code_template={"algebra": "_split({shape}, {plane}, {keep})"},
-    description="Cut a shape in two with a plane and keep the side above it "
-                "(`top`), below it (`bottom`) or `both` halves. Wire a Bounding "
-                "Plane / Plane node to place the cut; defaults to XY through the "
-                "origin. Unlike Section (a 2D slice), Split keeps solid geometry."))
+    aliases=["Cut", "Trim"],
+    code_template={"algebra": "_split({shape}, {plane}, {keep}, {solid})"},
+    description="Cut a shape in two and keep the side above the tool (`top`), "
+                "below it (`bottom`) or `both` halves. The tool is whatever is "
+                "wired into `plane`: a Plane (Bounding Plane / Plane node), a "
+                "SURFACE — the cut follows it curve and all — or another SOLID, "
+                "which cuts along its skin. Defaults to XY through the origin. "
+                "`solid` off leaves the cut OPEN: the faces the tool created are "
+                "dropped and you get a shell, not a capped solid. Unlike Section "
+                "(a 2D slice), Split keeps the geometry it cut."))
 
 # ===========================================================================
 # 6. Transforms
@@ -959,17 +1045,27 @@ register(NodeDef("Move", "transform", "Move",
                 "to each position (one moved copy per vector)."))
 
 register(NodeDef("Rotate", "transform", "Rotate",
-    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE, WIRE_MESH])] + _pin("angle"),
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE, WIRE_MESH]),
+            Socket("pivot", WIRE_VECTOR, required=False)] + _pin("angle"),
     params=[_f("angle", 90, -360, 360),
             Param("axis", "select", "axis", "Z", widget="select",
                   options=["X", "Y", "Z"],
-                  code_map={"X": "Axis.X", "Y": "Axis.Y", "Z": "Axis.Z"})],
+                  code_map={"X": "Axis.X", "Y": "Axis.Y", "Z": "Axis.Z"}),
+            Param("about", "select", "about", "world", widget="select",
+                  options=["world", "part", "group"])],
     outputs=_geo(),
     gizmo={"kind": "rotate", "binds": ["angle"], "axisParam": "axis",
            "anchor": "origin", "lock": ["angle"]},
-    code_template={"algebra": "_rotate({shape}, {axis}, {angle})"},
+    code_template={"algebra": "_rotate({shape}, {axis}, {angle}, {pivot}, {about})"},
     output_follows="shape",
-    description="Rotate a shape (or a plane) around a global axis."))
+    description="Rotate a shape (or a plane, or a mesh). `about` picks the centre: "
+                "`world` turns about the global axis (a part away from the origin "
+                "ORBITS — the old behaviour), `part` about its own bbox centre (it "
+                "turns in place), `group` about the collective bbox centre when a "
+                "list is wired in — the ensemble turns as one rigid body. Wire a "
+                "point into `pivot` to name the centre exactly; it overrides the "
+                "dropdown. The centre is measured on the tessellation (the fast "
+                "OCCT box is oversized — same reason Place on Bed does)."))
 
 register(NodeDef("Scale", "transform", "Scale",
     inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_CURVE, WIRE_MESH])] + _pin("factor"),
@@ -1770,6 +1866,20 @@ register(NodeDef("MeshIntersect", "mesh", "Mesh Intersect",
     code_template={"algebra": "_mesh_bool('intersect', {a}, {b})"},
     description="Boolean intersection A & B on meshes."))
 
+register(NodeDef("Voronoi3D", "mesh", "Voronoi 3D",
+    inputs=[Socket("points", WIRE_VECTOR, list_access=True),
+            Socket("body", WIRE_MESH, required=False)],
+    params=[_f("scale", 0.9, 0.05, 1.0, 0.05, label="scale")],
+    outputs=[Socket("cells", WIRE_MESH)],
+    code_template={"algebra": "_voronoi3d({points}, {body}, {scale})"},
+    description="TRUE 3D Voronoi: each point becomes a closed convex mesh CELL, "
+                "clipped to `body` if wired (a solid casts in automatically). "
+                "`scale` shrinks every cell toward its centre — Mesh Subtract "
+                "the shrunk cells from the body and the walls between cells "
+                "become the part: a voronoi lattice. Feed `points` from "
+                "Populate with the same body in its region (a volume fill). "
+                "List output — fans out downstream. Cap 2000 points."))
+
 register(NodeDef("MeshSimplify", "mesh", "Mesh Simplify",
     inputs=[Socket("mesh", WIRE_MESH)],
     params=[_f("tolerance", 0.05, 0.001, 5.0, 0.01, label="tolerance (mm)"),
@@ -1822,6 +1932,102 @@ register(NodeDef("PlaceOnBed", "print", "Place on Bed",
                 "is oversized (the live view marks its bbox `approx`), so a part dropped "
                 "by it hovers above the bed by up to 1% of its size — invisible on "
                 "screen, and a failed first layer."))
+
+register(NodeDef("Drop", "print", "Drop",
+    aliases=["Drop on Plane", "Fall", "Gravity", "Bounce", "Settle"],
+    inputs=[Socket("shape", WIRE_SOLID, accepts=[WIRE_SURFACE, WIRE_MESH]),
+            Socket("container", WIRE_SOLID, accepts=[WIRE_SURFACE, WIRE_MESH],
+                   required=False),
+            Socket("motion", WIRE_DATA, required=False),
+            Socket("plane", WIRE_PLANE, required=False)] + _pin("t"),
+    params=[_f("t", 1.0, 0.0, 1.0, step=0.01, label="timeline"),
+            Param("material", "select", "material", "plastic", widget="select",
+                  options=["plastic", "rubber", "steel", "wood", "lead", "clay"]),
+            Param("settle", "bool", "settle (topple)", True, widget="checkbox"),
+            Param("collide", "bool", "collide (stack)", False, widget="checkbox"),
+            _f("grip", 1.0, 0.0, 2.0, step=0.05, label="grip (friction)")],
+    outputs=_geo(),
+    output_follows="shape",
+    gizmo={"kind": "timeline", "binds": ["t"], "anchor": "preview", "lock": ["t"]},
+    code_template={"algebra": "_drop({shape}, {plane}, {t}, {material}, {settle}, "
+                              "{collide}, {container}, {grip}, {motion})"},
+    description="Place on Bed, but as a FALL you can scrub: drag `timeline` from 0 "
+                "(where the part is now) to 1 (at rest on the plane). The part drops "
+                "under gravity, BOUNCES — each impact keeps a fixed fraction of the "
+                "speed, set by `material`: rubber keeps going (e=0.85), plastic "
+                "clatters (0.55), lead lands with one dead thud (0.08), clay just "
+                "stops — and then, with `settle`, TOPPLES for real: if its centre of "
+                "mass is not over the contact patch it tips about the support edge, "
+                "rolls onto the next face of its hull, and repeats until it rests in "
+                "a genuinely stable pose (a cube dropped on its edge falls flat; a "
+                "sphere is left alone — rolling releases no energy and is not a "
+                "topple). t=1 is always fully at rest — material and topples change "
+                "the SHAPE of the journey, not its length. Falls along the wired "
+                "plane's normal (default: the bed, z=0). Wire a Number Slider into "
+                "`t` to drive several Drops from ONE timeline, or a list of times to "
+                "scatter the trajectory as a motion trail. With `collide` on, SEVERAL "
+                "shapes wired into this one node fall as ONE SCENE instead of a fan: "
+                "real rigid-body dynamics (pybullet), so they fall TOGETHER — colliding "
+                "in mid-air, pushing each other over, tumbling and stacking — simulated "
+                "once and recorded as keyframes the slider scrubs (and the browser "
+                "replays live). It costs real compute, hence the toggle. Each body is "
+                "its convex HULL, and the pile is "
+                "deterministic for a given scene but chaotic like real falling — nudge "
+                "a part and it lands differently. Both lanes — a solid stays a solid. "
+                "Wire a shape into `container` and it becomes an IMMOVABLE collider that "
+                "the falling parts land in: a bowl, a tray, a crate. Unlike the falling "
+                "parts it is NOT hulled — it keeps its true concave surface, so a bowl "
+                "really does cradle what you pour into it, and its inner wall stops the "
+                "pile spreading. It never moves and is not an output (preview the bowl "
+                "node itself); wiring one turns scene mode on by itself, so a single part "
+                "still falls into it. `grip` scales the friction of the whole scene: 1 is "
+                "the default world, where parts settle and stay put. Turn it DOWN and "
+                "everything gets slippery — which is not a detail. On a sloped face high "
+                "friction grabs a part and flings it sideways instead of letting it slide "
+                "off, so a Galton board built at grip 1 throws its balls to the walls and "
+                "the bell collapses into two lumps; at 0.3 it comes out normal. Measured, "
+                "not guessed."))
+
+register(NodeDef("ContainerMotion", "print", "Container Motion",
+    aliases=["Shake", "Tilt", "Pour", "Stir", "Agitate", "Spin", "Vibrate",
+             "Tumble", "Shaker"],
+    inputs=[Socket("offset", WIRE_VECTOR, required=False),
+            Socket("pivot", WIRE_VECTOR, required=False)],
+    params=[_f("x", 0, -500, 500, label="move x"),
+            _f("y", 0, -500, 500, label="move y"),
+            _f("z", 0, -500, 500, label="move z"),
+            _f("rx", 0, -720, 720, step=1, label="rotate x"),
+            _f("ry", 0, -720, 720, step=1, label="rotate y"),
+            _f("rz", 0, -720, 720, step=1, label="rotate z"),
+            _f("cycles", 0, 0, 30, step=0.5, label="cycles (0=one way)"),
+            _f("duration", 1.0, 0.05, 20, step=0.05, label="duration (s)"),
+            _f("delay", 0.0, 0.0, 20, step=0.05, label="delay (s)"),
+            Param("easing", "select", "easing", "smooth", widget="select",
+                  options=["smooth", "linear"])],
+    outputs=_data("motion"),
+    code_template={"algebra": "_container_motion({offset}, {x}, {y}, {z}, "
+                              "{rx}, {ry}, {rz}, {pivot}, {cycles}, {duration}, "
+                              "{delay}, {easing})"},
+    description="MOVE the thing that was holding still: wire this into a Drop's "
+                "`motion` and its `container` — the bowl, the tray, the crate — "
+                "tilts, shakes or spins on the same timeline instead of just "
+                "sitting there. This is not gravity and not a fall. You dictate "
+                "the motion; the parts inside answer to it through contact and "
+                "friction alone, which is why they lag, slide, climb the wall and "
+                "spill rather than following it rigidly. `cycles` picks the shape "
+                "of the motion and everything else falls out of it: 0 is a RAMP — "
+                "go there once and stay, which is a tilt, a pour, a crate tipped "
+                "over; above 0 it OSCILLATES about the starting pose that many "
+                "times, which is a shake, a stir, a vibration, a tap. So: pour = "
+                "rotate x/y ~110 (past the wall, or nothing comes out) with cycles "
+                "0; shake = move 10 with cycles 8; settle a powder = move z 3, "
+                "cycles 20; centrifuge = rotate z 720. `delay` waits before it "
+                "starts — fill the bowl first, THEN tilt it. Rotation is about the "
+                "container's own centre unless you wire a `pivot` (the hinge of a "
+                "hopper, the lip a crate tips over). Motion needs a container: on "
+                "its own it does nothing. Costs almost nothing to drive (~5ms per "
+                "simulated second), but it keeps the scene awake for its whole "
+                "duration — a shaker never settles, so it runs the full length."))
 
 register(NodeDef("PrintCheck", "print", "Print Check",
     inputs=[Socket("mesh", WIRE_MESH)],

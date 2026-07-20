@@ -132,6 +132,7 @@ def _annot(node) -> str:
     return f"  # @node:{node.id} ({node.type})"
 
 PREAMBLE = """\
+import copy as _copy
 import json as _json
 import math
 import os
@@ -612,6 +613,13 @@ def _at(_shape, _origin):
     pts = _origin_points(_origin)
     if not pts:
         return _shape
+    if _is_mesh(_shape):
+        # A mesh has no .moved()/Location and cannot go in a Compound — it is a
+        # matrix on the vertex array, exactly as in _mesh_matrix. Same contract:
+        # one point moves it, many give a copy at each (concatenated into one).
+        copies = [_shape.transformed(_mesh_matrix("move", x=p.X, y=p.Y, z=p.Z))
+                  for p in pts]
+        return copies[0] if len(copies) == 1 else _mesh_concat(copies)
     if len(pts) == 1:
         return _shape.moved(Pos(pts[0].X, pts[0].Y, pts[0].Z))
     return Compound(children=[_shape.moved(Pos(p.X, p.Y, p.Z)) for p in pts])
@@ -642,21 +650,80 @@ def _shell(_part, _thickness):
         return offset(_part, amount=-_thickness, openings=top)
     # open surface: thicken it into a solid wall
     surf = _part if isinstance(_part, (Shell, Face)) else _face(_part)
-    return Solid.thicken(surf, _thickness)
+    return _thicken(surf, _thickness)
+
+
+def _thicken(_surf, _thickness):
+    \"\"\"`Solid.thicken` with the two ways it fails made legible.
+
+    build123d ends its thicken with a blind `TopoDS.Solid(...)` cast, but OCCT's
+    BRepOffset hands back a SHELL whenever it could not close the wall — so the
+    user sees `Standard_TypeMismatch: TopoDS::Solid`, which says nothing. And the
+    shell it returns is not salvageable in general: measured on an icosahedron
+    minus one face, sewing it back gives volume 483.49 that neither BRepCheck nor
+    a tessellation accepts (not watertight, faces missing from the triangulation).
+
+    Sharp dihedral angles between many facets are BRepOffset's weak spot — of the
+    platonic solids minus a face, the tetra/cube/dodeca thicken fine and the
+    octa/icosa do not, at any tolerance, join mode or thickness (all swept). The
+    broken wall is deliberately NOT returned: it renders like a part and is not
+    one. Say what happened and what to do instead.
+
+    TRAP, paid for: it thickens a COPY. BRepOffset registers its modifications on
+    the input faces' TShapes, so a FAILED thicken poisons them for whatever else
+    still holds them — measured: Polyhedron -> Join(all but one face) -> Shell,
+    and the sibling Shell By Faces that hollowed the same polyhedron through the
+    left-out face then returned volume 4728 on a part of 2536, invalid, instead
+    of 432. Same family as the `_reanchor` trap: OCCT hands out shared topology
+    and a node must not scribble on what it did not build.\"\"\"
+    try:
+        _out = Solid.thicken(_copy.deepcopy(_surf), _thickness)
+    except Exception as _exc:
+        raise ValueError(
+            "Shell could not thicken this open surface into a wall — OCCT's "
+            "offset choked on it (%s), as it does on sharp angles between many "
+            "facets (a polyhedron with a face removed is the classic case). "
+            "Hollow the CLOSED solid instead and choose the openings there: "
+            "part -> a face selector -> Shell By Faces. That is a hollowing "
+            "rather than an offset of a loose surface, and it is exact."
+            % type(_exc).__name__)
+    if not _out.is_valid:
+        raise ValueError(
+            "Shell thickened this open surface into an INVALID wall (%d faces, "
+            "volume %.2f) — it would render like a part without being one. Use "
+            "Shell By Faces on the closed solid instead."
+            % (len(_out.faces()), _out.volume))
+    return _out
 
 
 def _shell_faces(_part, _faces, _thickness):
     \"\"\"Hollow a solid to a wall of _thickness, leaving the SELECTED faces open.
     Like _shell but the openings come from a face selector instead of the +Z
     face — pair with FacesByNormal / FacesByType / CombineSelection. An empty
-    selection makes a fully closed hollow shell.\"\"\"
+    selection makes a fully closed hollow shell.
+
+    It hollows a CLOSED SOLID — that is the whole operation. Fed an open surface
+    (a Join of faces, a Section, a non-solid Loft) `offset()` refuses, and this
+    used to swallow the exception and hand BACK THE INPUT: no error, no hollow,
+    a node that quietly did nothing. Both cases now say so.\"\"\"
     if _part is None or not _thickness:
         return _part
+    _solid = bool(list(_part.solids())) if hasattr(_part, "solids") else False
+    if not _solid:
+        raise ValueError(
+            "Shell By Faces hollows a closed solid, and it got an open surface "
+            "(%s). Remove the faces AFTER hollowing, not before: hollow the "
+            "closed part here and pick the openings with the `faces` selector. "
+            "To give a loose surface a wall thickness instead, use Shell."
+            % type(_part).__name__)
     _op = list(_faces) if _faces else []
     try:
         return offset(_part, amount=-_thickness, openings=_op)
-    except Exception:
-        return _part
+    except Exception as _exc:
+        raise ValueError(
+            "Shell By Faces could not hollow this part to %g (OCCT: %s). A wall "
+            "thicker than the part's thinnest feature is the usual cause — try "
+            "a smaller thickness." % (_thickness, type(_exc).__name__))
 
 
 def _bbox_solid(_shape):
@@ -738,7 +805,14 @@ class Mesh:
     # this class (it is defined in the generated script's globals), so it sniffs
     # for this attribute rather than using isinstance.
     _noodle_mesh = True
-    __slots__ = ("tm",)
+    # `_noodle_anim` is the Drop timeline riding on a result. It has to be a slot:
+    # a build123d Shape takes any attribute, so the B-Rep lane carried the plan for
+    # free and nobody noticed that on the mesh lane the assignment was hitting the
+    # __slots__ wall and being swallowed by _drop's try/except — a mesh dropped or
+    # collided simply never replayed in the browser, silently.
+    # `_noodle_extra` rides the same way: the moving `container` bodies, which are
+    # NOT outputs of the node but must still be drawn (and animated) in its preview.
+    __slots__ = ("tm", "_noodle_anim", "_noodle_extra")
 
     def __init__(self, tm):
         self.tm = tm
@@ -976,6 +1050,199 @@ def _mesh_bool(_mode, *_items):
     return _from_manifold(mf.Manifold.batch_boolean(mans, op))
 
 
+def _voronoi3d(_points, _body=None, _scale=0.9):
+    \"\"\"3D Voronoi cells as closed convex Mesh bodies, clipped to `body`.
+
+    Sites are mirrored across the SIX planes of the domain box (the body's bbox
+    if wired, else the points' extent) so every kept cell is finite — the 3D
+    analog of _voronoi2d's trick. Each finite cell is its Voronoi vertices,
+    shrunk toward the centroid by `scale`, hulled straight into a manifold
+    (Manifold.hull_points — a Voronoi cell is convex by construction, the hull
+    IS the cell), then intersected with the body. Mesh Subtract the shrunk
+    cells from the body for a voronoi lattice. Measured: 60 sites clipped to a
+    5k-triangle sphere in under 0.1s.\"\"\"
+    import numpy as np
+    from scipy.spatial import Voronoi
+    pts = _origin_points(_points)
+    if len(pts) < 2:
+        return []
+    if len(pts) > 2000:
+        raise ValueError("Voronoi 3D: %d points — cap is 2000 (each one is a "
+                         "solid cell and a boolean)." % len(pts))
+    P = np.array([(p.X, p.Y, p.Z) for p in pts], dtype=float)
+    body = _as_mesh(_body)
+    if body is not None:
+        lo, hi = body.tm.bounds
+    else:
+        lo, hi = P.min(axis=0), P.max(axis=0)
+    pad = []
+    for (x, y, z) in P:
+        pad += [(2 * lo[0] - x, y, z), (2 * hi[0] - x, y, z),
+                (x, 2 * lo[1] - y, z), (x, 2 * hi[1] - y, z),
+                (x, y, 2 * lo[2] - z), (x, y, 2 * hi[2] - z)]
+    try:
+        vor = Voronoi(np.vstack([P, pad]))
+    except Exception:
+        raise ValueError("Voronoi 3D needs points spread in a VOLUME (>= 2, not "
+                         "all coplanar) — wire a solid into Populate's region to "
+                         "scatter them inside a body.")
+    mf = _mf()
+    s = float(_scale)
+    man_body = _to_manifold(body, "Voronoi 3D") if body is not None else None
+    out = []
+    for i in range(len(P)):                        # original sites only
+        reg = vor.regions[vor.point_region[i]]
+        if not reg or -1 in reg:
+            continue
+        v = vor.vertices[reg]
+        c = v.mean(axis=0)
+        cell = mf.Manifold.hull_points((c + s * (v - c)).astype(np.float32))
+        if man_body is not None:
+            cell = cell ^ man_body
+        m = _from_manifold(cell)
+        if m is not None:
+            out.append(m)
+    return out
+
+
+_PLATONIC_FACES = (4, 6, 8, 12, 20)
+
+
+def _poly_snap(_kind, _n):
+    \"\"\"Round a requested face count to one this family can actually build, and
+    return (faces, k) — k being the base polygon's side count where there is one.
+
+    There is no polyhedron for every (family, face count) pair, so the slider
+    SNAPS rather than failing: a prism has k+2 faces, an antiprism 2k+2, a
+    bipyramid 2k, and a triangulated hull of V vertices has exactly 2V-4.\"\"\"
+    n = max(4, int(_n))
+    if _kind == "platonic":
+        return min(_PLATONIC_FACES, key=lambda f: (abs(f - n), f)), 0
+    if _kind == "prism":
+        k = max(3, n - 2)
+        return k + 2, k
+    if _kind == "antiprism":
+        k = max(3, (n - 2) // 2)
+        return 2 * k + 2, k
+    if _kind == "bipyramid":
+        k = max(3, n // 2)
+        return 2 * k, k
+    return max(4, n - n % 2), 0            # sphere: F = 2V - 4, so F is even
+
+
+def _poly_ring(_k, _z, _twist=0.0):
+    \"\"\"A regular _k-gon lying ON the unit sphere at height _z (hence radius
+    sqrt(1-z^2)), turned by _twist of one edge.\"\"\"
+    import numpy as np
+    r = max(0.0, 1.0 - _z * _z) ** 0.5
+    a = 2 * np.pi * (np.arange(_k) + _twist) / _k
+    return np.stack([r * np.cos(a), r * np.sin(a), np.full(_k, float(_z))], axis=1)
+
+
+def _poly_verts(_kind, _faces):
+    \"\"\"Vertices of the requested polyhedron, ALL ON THE UNIT SPHERE.
+
+    That constraint is what makes "the most volume for N faces" a well-posed
+    question here. Unconstrained it is unbounded, and the classical isoperimetric
+    version — most volume per unit SURFACE — is an OPEN problem past a handful of
+    face counts, whose answers are not the shapes anyone guesses: the best
+    5-faced solid is a triangular prism, not a square pyramid, and the best
+    8-faced one is not the regular octahedron. So this node answers the question
+    it can answer exactly: the largest member of the chosen family inscribed in a
+    sphere of radius `size`. Prism and antiprism have one free proportion, found
+    by scanning the hull volume; the platonics, the bipyramid and the hull of
+    Fibonacci points leave nothing to choose.\"\"\"
+    import numpy as np
+    from scipy.spatial import ConvexHull
+    n, k = _poly_snap(_kind, _faces)
+    if _kind == "platonic":
+        phi = (1 + 5 ** 0.5) / 2
+        if n == 4:
+            V = [(1, 1, 1), (1, -1, -1), (-1, 1, -1), (-1, -1, 1)]
+        elif n == 8:
+            V = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)]
+        elif n == 20:
+            V = []
+            for s in (-1, 1):
+                for t in (-1, 1):
+                    V += [(0, s, t * phi), (s, t * phi, 0), (t * phi, 0, s)]
+        else:                                  # cube, and the dodecahedron on it
+            V = [(x, y, z) for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)]
+            if n == 12:
+                for s in (-1, 1):
+                    for t in (-1, 1):
+                        V += [(0, s / phi, t * phi), (s / phi, t * phi, 0),
+                              (t * phi, 0, s / phi)]
+        P = np.array(V, dtype=float)
+        return P / np.linalg.norm(P, axis=1)[:, None]
+    if _kind == "bipyramid":       # every vertex on the sphere leaves no freedom
+        return np.vstack([_poly_ring(k, 0.0), [(0, 0, 1.0), (0, 0, -1.0)]])
+    if _kind in ("prism", "antiprism"):
+        tw = 0.5 if _kind == "antiprism" else 0.0
+
+        def vol_at(z):
+            P = np.vstack([_poly_ring(k, z), _poly_ring(k, -z, tw)])
+            return float(ConvexHull(P).volume), P
+
+        # Coarse sweep, then refine around the winner: the grid alone leaves ~0.02%
+        # on the table (it stops at z=0.57 where the hexagonal prism's optimum is
+        # 1/sqrt(3)=0.5774, and makes the triangular antiprism miss being exactly a
+        # regular octahedron). Two passes cost nothing and land on the real optimum.
+        lo, hi = 0.05, 0.95
+        best = None
+        for _ in range(3):
+            zs = np.linspace(lo, hi, 46)
+            vals = [vol_at(z) for z in zs]
+            i = max(range(len(zs)), key=lambda j: vals[j][0])
+            best = vals[i][1]
+            step = zs[1] - zs[0]
+            lo, hi = max(0.01, zs[i] - step), min(0.99, zs[i] + step)
+        return best
+    nv = (n + 4) // 2                          # triangulated hull: F = 2V - 4
+    i = np.arange(nv) + 0.5                    # Fibonacci sphere: near-uniform
+    z = 1 - 2 * i / nv
+    th = np.pi * (1 + 5 ** 0.5) * i
+    r = np.sqrt(np.maximum(0.0, 1 - z * z))
+    return np.stack([r * np.cos(th), r * np.sin(th), z], axis=1)
+
+
+def _poly_solid(_V):
+    \"\"\"Sew a convex point cloud into a real B-Rep solid: hull it, MERGE the
+    coplanar triangles scipy returns into one polygonal face each, order that
+    face's vertices around its own normal, then Shell -> Solid. The merge is what
+    makes a cube six faces instead of twelve triangles — and what makes the face
+    count the node advertises the face count you actually get.\"\"\"
+    import numpy as np
+    from scipy.spatial import ConvexHull
+    h = ConvexHull(_V)
+    facets = {}
+    for i, eq in enumerate(h.equations):
+        facets.setdefault(tuple(np.round(eq, 6)), []).append(i)
+    faces = []
+    for eq, tris in facets.items():
+        P = _V[sorted({int(v) for t in tris for v in h.simplices[t]})]
+        c = P.mean(axis=0)
+        u = P[0] - c
+        u = u / np.linalg.norm(u)
+        w = np.cross(np.array(eq[:3], dtype=float), u)
+        P = P[np.argsort(np.arctan2((P - c) @ w, (P - c) @ u))]
+        faces.append(Face(Wire.make_polygon([Vector(*p) for p in P], close=True)))
+    return Solid(Shell(faces))
+
+
+def _polyhedron(_kind="platonic", _faces=6, _size=10.0, _as_mesh=False):
+    \"\"\"The Polyhedron node. ONE vertex set feeds both lanes — a hull is a hull, so
+    the B-Rep lane sews it (the default, exact planar faces you can Fillet) and the
+    `mesh output` toggle hands the same points to manifold3d instead. Positioning
+    is NOT done here: the emitter wraps any node with an `origin` socket in _at()
+    on its own, and doing it twice would double the translation.\"\"\"
+    import numpy as np
+    V = _poly_verts(_kind, _faces) * float(_size)
+    if _as_mesh:
+        return _from_manifold(_mf().Manifold.hull_points(V.astype(np.float32)))
+    return _poly_solid(V)
+
+
 def _mesh_simplify(_mesh, _tolerance=0.05, _max_error=5.0):
     \"\"\"Simplify to a BOUNDED geometric deviation (manifold3d): no surface moves
     further than `tolerance`. On the raccordo: 0.07s, 147k -> 35k triangles, volume
@@ -1201,6 +1468,792 @@ def _bed_drop(_shape, _center=True, _clearance=0.0):
     return _move(_shape, None, dx, dy, dz)
 
 
+# Coefficient of restitution on a hard bed, per material. Fixed values, and
+# honest about being a caricature: real restitution depends on both bodies,
+# the impact speed and the geometry. What matters here is the CONTRAST —
+# rubber keeps bouncing, lead lands with one dead thud.
+_DROP_E = {"plastic": 0.55, "rubber": 0.85, "steel": 0.65, "wood": 0.45,
+           "lead": 0.08, "clay": 0.0}
+
+
+def _drop_segs(_e):
+    \"\"\"Normalised bounce segments (duration, up-speed): the first fall lasts 1
+    time unit and lands at speed 2 (g=2, h0=1), then a geometric series of
+    parabolas, each keeping _e of the impact speed, until the apex sinks below
+    0.1% of the drop. Everything scales: real seconds are these times t0.\"\"\"
+    e = max(0.0, min(float(_e), 0.95))
+    segs = [(1.0, None)]
+    v, apex = 2.0, 1.0
+    for _ in range(60):
+        v *= e
+        apex *= e * e
+        if apex < 1e-3:
+            break
+        segs.append((v, v))            # duration 2v/g = v when g=2
+    return segs
+
+
+def _drop_height(_segs, _tnorm):
+    \"\"\"Height (in h0=1 units) at normalised time _tnorm along the bounce.\"\"\"
+    tau = _tnorm
+    for d, up in _segs:
+        if tau <= d:
+            if up is None:
+                return max(1.0 - tau * tau, 0.0)
+            return max(up * tau - tau * tau, 0.0)
+        tau -= d
+    return 0.0
+
+
+def _rodrigues(_e, _ang):
+    import numpy as _np
+    K = _np.array([[0.0, -_e[2], _e[1]], [_e[2], 0.0, -_e[0]], [-_e[1], _e[0], 0.0]])
+    return _np.eye(3) + math.sin(_ang) * K + (1.0 - math.cos(_ang)) * (K @ K)
+
+
+def _support_pick(_C2, _com2, _eps):
+    \"\"\"The stability geometry shared by the bed cascade and the pile tips:
+    given the 2D shadow of the contact points and the com's shadow, return
+    (None, None) when the com is INSIDE the support (at rest), else the
+    closest boundary point q and, when q lies in an edge's interior, that
+    edge — the pivot the part will tip about.\"\"\"
+    import numpy as _np
+    C2 = _C2
+    if len(C2) >= 3:
+        try:
+            from scipy.spatial import ConvexHull as _CH2
+            poly = C2[_CH2(C2).vertices]               # ccw
+        except Exception:
+            poly = None                                # collinear contacts
+        if poly is not None:
+            if all((poly[(i + 1) % len(poly)][0] - poly[i][0]) * (_com2[1] - poly[i][1])
+                   - (poly[(i + 1) % len(poly)][1] - poly[i][1]) * (_com2[0] - poly[i][0])
+                   >= -_eps for i in range(len(poly))):
+                return None, None                      # com inside: at rest
+            C2 = poly
+    if len(C2) == 1:
+        return C2[0], None
+    n2, best = len(C2), None
+    for i in range(n2 if n2 > 2 else 1):
+        a, b = C2[i], C2[(i + 1) % n2]
+        ed = b - a
+        L2 = float(ed @ ed)
+        tp = 0.0 if L2 < 1e-18 else max(0.0, min(1.0, float((_com2 - a) @ ed) / L2))
+        cp = a + tp * ed
+        d2 = float((_com2 - cp) @ (_com2 - cp))
+        if best is None or d2 < best[0]:
+            best = (d2, cp, a, b, tp)
+    _, q, a, b, tp = best
+    return q, ((a, b) if 1e-7 < tp < 1.0 - 1e-7 else None)
+
+
+def _pivot_axes(_q, _seg, _com, _p3, _eps):
+    \"\"\"Candidate tip axes (horizontal, through _p3), sense chosen so gravity
+    does the tipping. Balanced ties return both senses (edge) or the compass
+    (point) — the caller's energy guard decides which, if any, is a real
+    descent.\"\"\"
+    import numpy as _np
+    u = _com[:2] - _q
+    if _seg is not None:
+        e3 = _np.array([_seg[1][0] - _seg[0][0], _seg[1][1] - _seg[0][1], 0.0])
+        e3 /= _np.linalg.norm(e3)
+        if float(u @ u) > _eps * _eps:
+            return [e3] if _np.cross(e3, _com - _p3)[2] < 0.0 else [-e3]
+        return [e3, -e3]
+    if float(u @ u) > _eps * _eps:
+        d3 = _np.array([u[0], u[1], 0.0]) / math.sqrt(float(u @ u))
+        return [_np.cross(_np.array([0.0, 0.0, 1.0]), d3)]
+    return [_np.array([1.0, 0.0, 0.0]), _np.array([-1.0, 0.0, 0.0]),
+            _np.array([0.0, 1.0, 0.0]), _np.array([0.0, -1.0, 0.0])]
+
+
+def _settle_plan(_pts, _com, _max_steps=40):
+    \"\"\"The topple cascade: quasi-static rigid settling on the bed (z=0), played
+    out on the convex hull. Returns (steps, settled) — each step is (pivot,
+    axis, angle_deg, seconds) in bed coordinates, replayed in order (a partial
+    last step is a scrub position).
+
+    The mechanics: a resting body is stable iff its centre of mass projects
+    inside the support polygon — the same test OrientForPrint uses to ENUMERATE
+    the stable poses; this walks the PATH between them. If the com is outside,
+    gravity tips the body about the nearest support edge (or corner), it rolls
+    onto the next hull facet, and the loop repeats. Two rules carry all the
+    honesty: every step must strictly LOWER the centre of mass (the energy
+    guard — a tessellated sphere \"toppling\" facet to facet releases nothing
+    and is declared at rest, where a cube balanced on an edge drops its centre
+    by 20% and goes over), and perfectly balanced ties pick a deterministic
+    side (a real part would be tipped by the first draught; a graph must give
+    the same answer twice).\"\"\"
+    import numpy as _np
+    g = 9810.0
+    pts = _np.asarray(_pts, dtype=float).copy()
+    com = _np.asarray(_com, dtype=float).copy()
+    scale = float(_np.linalg.norm(pts.max(0) - pts.min(0))) or 1.0
+    eps_c = 1e-5 * scale               # this close to the bed = touching
+    eps_t = 1e-6 * scale               # com-over-support tie tolerance
+
+    def _first_touch(p, e):
+        # smallest positive rotation about the horizontal axis (p, e) at which
+        # some hull vertex reaches the bed: z(phi) = A cos(phi) + B sin(phi)
+        r = pts - p
+        A = r[:, 2]
+        Bz = _np.cross(_np.broadcast_to(e, r.shape), r)[:, 2]
+        best = None
+        for a, b in zip(A, Bz):
+            if a * a + b * b < (1e-9 * scale) ** 2:
+                continue               # on the axis: it IS the contact
+            phi = math.atan2(-a, b) % math.pi
+            if phi < 1e-6:
+                phi += math.pi
+            if best is None or phi < best:
+                best = phi
+        return best
+
+    steps = []
+    for _ in range(int(_max_steps)):
+        pts[:, 2] -= pts[:, 2].min()
+        com2 = com[:2]
+        C2 = pts[pts[:, 2] < eps_c][:, :2]
+        if len(C2) == 0:
+            return steps, False
+        q, seg = _support_pick(C2, com2, eps_t)
+        if q is None:
+            return steps, True                         # com inside: at rest
+        p3 = _np.array([q[0], q[1], 0.0])
+        took = False
+        for e3 in _pivot_axes(q, seg, com, p3, eps_t):
+            th = _first_touch(p3, e3)
+            if th is None or th > math.pi - 1e-6:
+                continue
+            R = _rodrigues(e3, th)
+            ncom = R @ (com - p3) + p3
+            npts = (R @ (pts - p3).T).T + p3
+            if com[2] - (ncom[2] - npts[:, 2].min()) <= max(1e-4 * scale, 1e-7):
+                continue                               # energy guard: no release, no
+            rc = com - p3                              # topple (rolling, or uphill)
+            rperp = rc - float(rc @ e3) * e3
+            tau = 2.0 * math.sqrt(max(float(_np.linalg.norm(rperp)), 1e-3) * th / g)
+            steps.append((tuple(p3), tuple(e3), math.degrees(th), tau))
+            pts, com = npts, ncom
+            took = True
+            break
+        if not took:
+            return steps, True                         # balanced / rolling: at rest
+    return steps, False                                # cap hit: report, don't loop
+
+
+def _bed_frame(_plane):
+    # (origin, basis) of the bed: columns of B are its x/y/z dirs, world frame
+    import numpy as _np
+    if isinstance(_plane, Plane):
+        o = _np.array(tuple(_plane.origin), dtype=float)
+        B = _np.column_stack([_np.array(tuple(d), dtype=float)
+                              for d in (_plane.x_dir, _plane.y_dir, _plane.z_dir)])
+        return o, B
+    return _np.zeros(3), _np.eye(3)
+
+
+def _drop_apply(_shape, _B, _o, _ops):
+    \"\"\"Seat _shape at one moment of its journey: _ops is the ordered event
+    prefix — ("t", dz) translations along the bed normal and ("r", p, ax, deg)
+    rotations in bed coordinates — applied in sequence on either lane.\"\"\"
+    import numpy as _np
+    n = _B[:, 2]
+    if _is_mesh(_shape):
+        M = _np.eye(4)
+        for op in _ops:
+            if op[0] == "t":
+                Tm = _np.eye(4)
+                Tm[:3, 3] = op[1] * n
+                M = Tm @ M
+            elif op[0] == "t3":
+                Tm = _np.eye(4)
+                Tm[:3, 3] = _B @ _np.asarray(op[1])
+                M = Tm @ M
+            else:
+                M = _tm().transformations.rotation_matrix(
+                    math.radians(op[3]), _B @ _np.asarray(op[2]),
+                    _B @ _np.asarray(op[1]) + _o) @ M
+        return _shape.transformed(M)
+    s = _shape
+    moved = False
+    for op in _ops:
+        if op[0] == "t":
+            s = _move(s, None, float(op[1] * n[0]), float(op[1] * n[1]), float(op[1] * n[2]))
+        elif op[0] == "t3":
+            v = _B @ _np.asarray(op[1])
+            s = _move(s, None, float(v[0]), float(v[1]), float(v[2]))
+        else:
+            pw = _B @ _np.asarray(op[1]) + _o
+            aw = _B @ _np.asarray(op[2])
+            s = s.rotate(Axis((pw[0], pw[1], pw[2]), (aw[0], aw[1], aw[2])), op[3])
+        moved = True
+    if not moved:
+        s = _move(s, None, 0.0, 0.0, 0.0)              # a COPY even at rest (tags ride results)
+    return s
+
+
+def _drop(_shape, _plane=None, _t=1.0, _material="plastic", _settle=True,
+          _collide=False, _container=None, _grip=1.0, _motion=None):
+    \"\"\"A real fall onto the plane, scrubbed by _t: 0 = where the part is now,
+    1 = at rest. The part falls, BOUNCES (each impact keeps _DROP_E of its
+    speed), and — with `settle` — TOPPLES: once the bounces die, the quasi-
+    static cascade of _settle_plan tips it about its support edges until its
+    centre of mass sits over the contact polygon. With `collide` and several
+    shapes wired into the SAME node they fall as ONE SCENE instead of a fan
+    (_drop_collide): sequentially, each onto the bed or onto the parts already
+    down. A `container` is an immovable collider they land IN — a bowl, a tray —
+    kept concave rather than hulled, and it turns scene mode on by itself (there
+    is no other way to honour it, and one part falling into a bowl is the point).
+    With a `motion` plan wired in, that container stops being furniture: it tilts,
+    shakes or spins on the same timeline, and the parts answer to it through
+    contact alone (_container_motion / _motion_driver).
+    Works on both lanes: it measures on the mesh and transforms the ORIGINAL, so
+    a solid stays a solid. A part starting under the plane surfaces linearly —
+    it cannot fall.\"\"\"
+    if _container is not None or (_collide and isinstance(_shape, (list, tuple))):
+        shapes = list(_shape) if isinstance(_shape, (list, tuple)) else [_shape]
+        out = _drop_collide(shapes, _plane, _t, _material, _settle, _container,
+                            _grip, _motion)
+        return out if isinstance(_shape, (list, tuple)) else (out[0] if out else None)
+    if _shape is None:
+        return None
+    m = _as_mesh(_shape)
+    if m is None:
+        return _shape
+    import numpy as _np
+    o, B = _bed_frame(_plane)
+    V = (m.tm.vertices - o) @ B                        # bed coordinates
+    h0 = float(V[:, 2].min())
+    t = max(0.0, min(float(_t), 1.0))
+    g = 9810.0
+    steps = []
+    if _settle:
+        tm_ = m.tm
+        try:
+            cw = _np.asarray(tm_.center_mass, dtype=float)
+            if not (tm_.is_watertight and float(tm_.volume) > 1e-9):
+                raise ValueError                       # open patch: mass centre is a lie
+        except Exception:
+            cw = _np.asarray(tm_.bounds, dtype=float).mean(axis=0)
+        com = (cw - o) @ B
+        com[2] -= h0
+        try:
+            from scipy.spatial import ConvexHull as _CH
+            hp = V[_CH(V, qhull_options="QJ").vertices].copy()
+        except Exception:
+            hp = V.copy()
+        hp[:, 2] -= h0
+        steps, _ok = _settle_plan(hp, com)
+    segs = _drop_segs(_DROP_E.get(str(_material), 0.55))
+    tot_n = sum(d for d, _ in segs)
+    t0 = math.sqrt(2.0 * abs(h0) / g)
+    Tb = t0 * (tot_n if h0 > 0.0 else 1.0)             # bounce (or surfacing) seconds
+    Ts = sum(s[3] for s in steps)                      # topple seconds
+    T = Tb + Ts
+    if T <= 1e-12:
+        return _shape                                  # already at rest, already stable
+    n = B[:, 2]
+    # The whole journey, as plain data riding on the result (mesh_extractor lifts
+    # it into the preview entry as `anim`): the editor replays it in the browser
+    # at 60fps while the slider drags — same math, world coordinates, plus the t
+    # THIS preview was baked at, so the browser can move relative to it.
+    plan = {"t": float(t), "T": float(T), "Tb": float(Tb), "h0": float(h0),
+            "tot_n": float(tot_n),
+            "n": [float(n[0]), float(n[1]), float(n[2])],
+            "segs": [[float(d), None if up is None else float(up)]
+                     for d, up in segs],
+            "steps": [{"p": [float(x) for x in (B @ _np.asarray(p) + o)],
+                       "ax": [float(x) for x in (B @ _np.asarray(ax))],
+                       "deg": float(deg), "du": float(du)}
+                      for (p, ax, deg, du) in steps]}
+
+    def _tag(_res):
+        try:
+            _res._noodle_anim = plan
+        except Exception:
+            pass
+        return _res
+
+    tau = t * T
+    if tau < Tb or not steps:                          # still in the air
+        f = tau / Tb if Tb > 0.0 else 1.0
+        h = h0 * (1.0 - f) if h0 <= 0.0 else h0 * _drop_height(segs, f * tot_n)
+        return _tag(_drop_apply(_shape, B, o, [("t", float(h - h0))]))
+    ops = [("t", float(-h0))]
+    left = tau - Tb                                    # landed: replay the topples
+    for (p, ax, deg, du) in steps:
+        if left >= du - 1e-12:
+            ops.append(("r", p, ax, deg))
+            left -= du
+        else:
+            fr = max(0.0, left / du)
+            ops.append(("r", p, ax, deg * fr * fr))    # ease-in: a topple starts slow
+            break
+    return _tag(_drop_apply(_shape, B, o, ops))
+
+
+def _quat_mat(_q):
+    # 3x3 from a pybullet quaternion (x, y, z, w)
+    import numpy as _np
+    x, y, z, w = float(_q[0]), float(_q[1]), float(_q[2]), float(_q[3])
+    return _np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def _quat_slerp(_qa, _qb, _f):
+    import numpy as _np
+    qa = _np.asarray(_qa, dtype=float)
+    qb = _np.asarray(_qb, dtype=float)
+    d = float(qa @ qb)
+    if d < 0.0:
+        qb, d = -qb, -d
+    if d > 0.9995:
+        q = qa + _f * (qb - qa)
+        return q / _np.linalg.norm(q)
+    th = math.acos(max(-1.0, min(1.0, d)))
+    return (math.sin((1 - _f) * th) * qa + math.sin(_f * th) * qb) / math.sin(th)
+
+
+def _mat_quat(_R):
+    \"\"\"3x3 rotation -> pybullet quaternion (x, y, z, w). Shepperd's branch: pick
+    the largest diagonal term so the divisor is never near zero.\"\"\"
+    import numpy as _np
+    R = _np.asarray(_R, dtype=float)
+    tr = R[0, 0] + R[1, 1] + R[2, 2]
+    if tr > 0.0:
+        s = math.sqrt(tr + 1.0) * 2.0
+        return [(R[2, 1] - R[1, 2]) / s, (R[0, 2] - R[2, 0]) / s,
+                (R[1, 0] - R[0, 1]) / s, 0.25 * s]
+    i = int(_np.argmax([R[0, 0], R[1, 1], R[2, 2]]))
+    j, k = (i + 1) % 3, (i + 2) % 3
+    s = math.sqrt(max(1.0 + R[i, i] - R[j, j] - R[k, k], 1e-30)) * 2.0
+    q = [0.0, 0.0, 0.0, (R[k, j] - R[j, k]) / s]
+    q[i], q[j], q[k] = 0.25 * s, (R[j, i] + R[i, j]) / s, (R[k, i] + R[i, k]) / s
+    return q
+
+
+def _container_motion(_offset=None, _x=0.0, _y=0.0, _z=0.0,
+                      _rx=0.0, _ry=0.0, _rz=0.0, _pivot=None,
+                      _cycles=0.0, _duration=1.0, _delay=0.0, _easing="smooth"):
+    \"\"\"A prescribed motion for a Drop `container`: the bowl/tray/crate stops being
+    furniture and becomes the thing that DOES something — tilt it and it pours,
+    shake it and the pile packs, spin it and the contents lag behind.
+
+    It is deliberately generic rather than a menu of presets: one translation, one
+    rotation, and `cycles`, which chooses between the two shapes of motion anyone
+    actually wants. cycles = 0 is a RAMP — go there once and stay (tilt, pour,
+    tip a crate over). cycles > 0 is an OSCILLATION about the start pose (shake,
+    stir, vibrate, tap). Every preset falls out of that: pour = rotate 110 deg,
+    cycles 0; shake = move 10mm, cycles 8; centrifuge = rotate z 720.
+
+    This is NOT gravity and NOT a fall — it is a motion you dictate, and the parts
+    inside respond to it through contact and friction alone. Returns a plain plan
+    dict; `_motion_driver` turns it into the pose(t) the solver drives.\"\"\"
+    def _v3(v, fb):
+        if v is None:
+            return [float(fb[0]), float(fb[1]), float(fb[2])]
+        if hasattr(v, "X"):
+            return [float(v.X), float(v.Y), float(v.Z)]
+        try:
+            s = list(v)[:3]
+            return [float(s[0]), float(s[1]), float(s[2])]
+        except Exception:
+            return [float(fb[0]), float(fb[1]), float(fb[2])]
+    return {"move": _v3(_offset, (_x, _y, _z)),
+            "rot": [float(_rx), float(_ry), float(_rz)],
+            "pivot": None if _pivot is None else _v3(_pivot, (0.0, 0.0, 0.0)),
+            "cycles": max(0.0, float(_cycles)),
+            "duration": max(1e-3, float(_duration)),
+            "delay": max(0.0, float(_delay)),
+            "easing": str(_easing)}
+
+
+def _motion_driver(_plan, _B, _o, _pivot_bed):
+    \"\"\"Turn a motion plan into `pose(tau) -> (position, quaternion)` for the static
+    rig, in BED coordinates (where the colliders live).
+
+    The user dictates the motion in WORLD xyz — that is how they think about a
+    tray — so both the displacement and the rotation axes are carried into the bed
+    frame here: R_bed = B^T R_world B, and a rotation about pivot p becomes the
+    base position p - R p (bullet poses a body as x -> R x + pos, so that is the
+    only way to make it turn about anything other than the bed origin).\"\"\"
+    import numpy as _np
+    if _plan is None:
+        return None, 0.0
+    mv = _np.asarray(_plan["move"], dtype=float)
+    rot = _np.asarray(_plan["rot"], dtype=float)
+    dur, dly = float(_plan["duration"]), float(_plan["delay"])
+    cyc, ease = float(_plan["cycles"]), str(_plan.get("easing", "smooth"))
+    p_b = (_np.asarray(_plan["pivot"], dtype=float) - _o) @ _B \
+        if _plan.get("pivot") is not None else _np.asarray(_pivot_bed, dtype=float)
+    d_b = mv @ _B                                      # world displacement -> bed
+    end = dly + dur
+
+    def _phase(tau):
+        u = (float(tau) - dly) / dur
+        if u <= 0.0:
+            return 0.0
+        if cyc > 0.0:
+            # An oscillation ABOUT the start pose, and it must return to it: past
+            # the end the rig is parked where it began, not frozen mid-swing.
+            return math.sin(2.0 * math.pi * cyc * min(u, 1.0)) if u <= 1.0 else 0.0
+        u = min(u, 1.0)
+        return u * u * (3.0 - 2.0 * u) if ease == "smooth" else u
+
+    def pose(tau):
+        s = _phase(tau)
+        a = _np.radians(rot * s)
+        ca, sa = _np.cos(a), _np.sin(a)
+        Rx = _np.array([[1, 0, 0], [0, ca[0], -sa[0]], [0, sa[0], ca[0]]])
+        Ry = _np.array([[ca[1], 0, sa[1]], [0, 1, 0], [-sa[1], 0, ca[1]]])
+        Rz = _np.array([[ca[2], -sa[2], 0], [sa[2], ca[2], 0], [0, 0, 1]])
+        R_b = _B.T @ (Rz @ Ry @ Rx) @ _B               # world euler -> bed frame
+        return p_b - R_b @ p_b + s * d_b, _mat_quat(R_b)
+
+    return pose, end
+
+
+def _dyn_sim(_hulls, _coms, _e, _t_max=8.0, _statics=(), _grip=1.0,
+             _pose=None, _drive_until=0.0):
+    \"\"\"The rigid-body simulation behind collide: pybullet, DIRECT mode, fixed
+    timestep (deterministic for a given scene on a given build), every part a
+    CONVEX HULL of its mesh. All parts fall TOGETHER — they hit each other in
+    the air, push each other over, tumble, stack — and the run is recorded as
+    60Hz keyframes per body until everything sleeps.
+
+    _statics are the immovable colliders (the `container` socket): mass 0, and
+    — the whole point — NOT hulled. A static body may be a concave triangle
+    soup (GEOM_FORCE_CONCAVE_TRIMESH), so a bowl keeps its cavity and actually
+    cradles what falls in instead of being a dome that sheds it. Bullet only
+    allows that for static bodies, which is exactly the trade this socket makes:
+    the thing that holds is exact, the things that fall are hulls.
+
+    `_pose(tau) -> (position, quaternion)` MOVES that rig (the ContainerMotion
+    node): tilt, shake, spin. Two things are load-bearing and both were measured.
+    resetBasePositionAndOrientation alone does NOT carry the contents — it
+    teleports the body, so the contact exists with zero relative velocity, the
+    friction solver has nothing to transmit and the tray slides out from under
+    the part (a box on a tray translated 50mm rode along 1.2% of the way, i.e.
+    not at all). Pairing it with resetBaseVelocity every step is what makes the
+    contact real: 99.3% carried. And the obvious alternative — a real mass with a
+    JOINT_FIXED constraint driven by changeConstraint — carries just as well
+    (99.9%) and is still WRONG here, because mass > 0 forbids
+    GEOM_FORCE_CONCAVE_TRIMESH: it would hull the bowl and throw away the cavity,
+    which is the only reason the container socket exists.
+
+    Units are millimetres DIRECTLY (no down-scaling): pybullet's collision
+    margin is a fixed absolute value, so working in mm makes it a sub-micron
+    gap instead of the ~1mm it becomes when a 20mm cube is shrunk to 0.02m.
+    Tunnelling risk is scale-invariant (speed x dt / thickness), so nothing is
+    lost — and continuous collision (a swept sphere per body) covers the fast,
+    thin cases anyway. Mass is the hull VOLUME (so ratios are physical: a heavy
+    part settles a light one, not the reverse). Returns (times, [pos per body],
+    [quat per body]).\"\"\"
+    import numpy as _np
+    import pybullet as _pb
+    from scipy.spatial import ConvexHull as _CH
+    cl = _pb.connect(_pb.DIRECT)
+    try:
+        # restitutionVelocityThreshold in mm/s: BELOW it a contact is inelastic.
+        # Bullet's default is 0.2 m/s = 200mm/s; the 1mm/s I first used makes
+        # every real contact elastic, so the pile jitters forever instead of
+        # settling. With this + rolling/spinning friction + angular damping a
+        # three-box scene sleeps in ~0.6s where before it ran the full 8s.
+        _pb.setPhysicsEngineParameter(fixedTimeStep=1.0 / 240.0,
+                                      numSolverIterations=80,
+                                      restitutionVelocityThreshold=100.0,
+                                      deterministicOverlappingPairs=1,
+                                      physicsClientId=cl)
+        _pb.setGravity(0.0, 0.0, -9810.0, physicsClientId=cl)
+        plane = _pb.createCollisionShape(_pb.GEOM_PLANE, physicsClientId=cl)
+        pbody = _pb.createMultiBody(0.0, plane, physicsClientId=cl)
+        _pb.changeDynamics(pbody, -1, restitution=1.0, lateralFriction=0.8 * _grip,
+                           physicsClientId=cl)
+        sids = []
+        for (sv, sf, _src) in _statics:
+            scs = _pb.createCollisionShape(
+                _pb.GEOM_MESH, vertices=_np.asarray(sv, dtype=float).tolist(),
+                indices=[int(i) for i in _np.asarray(sf).reshape(-1)],
+                flags=_pb.GEOM_FORCE_CONCAVE_TRIMESH, physicsClientId=cl)
+            sid = _pb.createMultiBody(0.0, scs, basePosition=[0.0, 0.0, 0.0],
+                                      physicsClientId=cl)
+            # A little grippier and deader than the bed: a part that lands in a
+            # bowl should stop there, not skate around the cavity for 8 seconds.
+            # Scaled by grip, and that scaling is load-bearing: at 0.9 a sloped
+            # static face GRABS a ball and throws it sideways instead of letting
+            # it slide off. Measured on the Galton board — 0.9 gives two lumps
+            # against the walls, 0.3 gives the bell.
+            _pb.changeDynamics(sid, -1, restitution=0.2, lateralFriction=0.9 * _grip,
+                               rollingFriction=0.05 * _grip, spinningFriction=0.05 * _grip,
+                               physicsClientId=cl)
+            sids.append(sid)
+        if _pose is not None and sids:
+            p0, q0 = _pose(0.0)
+            for sid in sids:
+                _pb.resetBasePositionAndOrientation(
+                    sid, [float(x) for x in p0], [float(x) for x in q0],
+                    physicsClientId=cl)
+        ids = []
+        for hv, c0 in zip(_hulls, _coms):
+            local = _np.asarray(hv, dtype=float) - c0
+            cs = _pb.createCollisionShape(_pb.GEOM_MESH, vertices=local.tolist(),
+                                          physicsClientId=cl)
+            try:
+                vol = float(_CH(local).volume)
+            except Exception:
+                vol = float(_np.prod(local.max(0) - local.min(0)))
+            r = float(_np.linalg.norm(local, axis=1).min())    # inscribed-ish radius
+            bid = _pb.createMultiBody(baseMass=max(vol, 1.0),
+                                      baseCollisionShapeIndex=cs,
+                                      basePosition=[float(x) for x in c0],
+                                      physicsClientId=cl)
+            _pb.changeDynamics(bid, -1, restitution=float(_e), lateralFriction=0.6 * _grip,
+                               rollingFriction=0.06 * _grip, spinningFriction=0.06 * _grip,
+                               linearDamping=0.02, angularDamping=0.25,
+                               ccdSweptSphereRadius=max(r * 0.4, 0.1),
+                               physicsClientId=cl)
+            ids.append(bid)
+        times, poss, quats = [], [[] for _ in ids], [[] for _ in ids]
+        spos, squat = [], []
+        still = 0
+        dt = 1.0 / 240.0
+        steps = int(240 * _t_max)
+        for k in range(steps):
+            tau = k * dt
+            if _pose is not None and sids:
+                p_a, q_a = _pose(tau)
+                p_b2, q_b2 = _pose(tau + dt)           # forward difference = the
+                lin = [(float(b) - float(a)) / dt      # velocity the solver needs
+                       for a, b in zip(p_a, p_b2)]
+                ang = _ang_vel(q_a, q_b2, dt)
+                for sid in sids:
+                    _pb.resetBasePositionAndOrientation(
+                        sid, [float(x) for x in p_a], [float(x) for x in q_a],
+                        physicsClientId=cl)
+                    _pb.resetBaseVelocity(sid, linearVelocity=lin,
+                                          angularVelocity=ang, physicsClientId=cl)
+            _pb.stepSimulation(physicsClientId=cl)
+            if k % 4:
+                continue                               # record at 60Hz (scrub lerps)
+            times.append((k + 1) / 240.0)
+            if _pose is not None:
+                p_r, q_r = _pose(tau + dt)
+                spos.append([float(x) for x in p_r])
+                squat.append([float(x) for x in q_r])
+            calm = True
+            # A driven rig must never let the scene "settle": a tray that tilts
+            # slowly would otherwise put everything to sleep BEFORE the tilt even
+            # begins, and the pile would ride along frozen.
+            if _pose is not None and tau <= _drive_until:
+                calm = False
+            for j, bid in enumerate(ids):
+                pos, q = _pb.getBasePositionAndOrientation(bid, physicsClientId=cl)
+                poss[j].append([float(p) for p in pos])
+                quats[j].append([float(x) for x in q])
+                v, w = _pb.getBaseVelocity(bid, physicsClientId=cl)
+                if (sum(x * x for x in v) > 4.0 or sum(x * x for x in w) > 0.01):
+                    calm = False
+            still = still + 1 if calm else 0
+            if still >= 30:
+                break                                  # half a second of stillness (60Hz)
+        return times, poss, quats, spos, squat
+    finally:
+        _pb.disconnect(physicsClientId=cl)
+
+
+def _ang_vel(_qa, _qb, _dt):
+    \"\"\"Angular velocity carrying quaternion _qa to _qb in _dt: the axis-angle of
+    the relative rotation dq = qb * qa^-1 (shortest arc), divided by dt. Taken
+    EXACTLY rather than as the usual 2*dq.xyz/dt small-angle reading — that one
+    drifts 1% by 30 degrees a step, and a spin node is entitled to ask for a
+    whole turn in a fraction of a second.\"\"\"
+    ax, ay, az, aw = [float(v) for v in _qa]
+    bx, by, bz, bw = [float(v) for v in _qb]
+    # qb * conj(qa)
+    dx = bw * -ax + bx * aw + by * -az - bz * -ay
+    dy = bw * -ay - bx * -az + by * aw + bz * -ax
+    dz = bw * -az + bx * -ay - by * -ax + bz * aw
+    dw = bw * aw - bx * -ax - by * -ay - bz * -az
+    if dw < 0.0:                                       # shortest arc
+        dx, dy, dz, dw = -dx, -dy, -dz, -dw
+    s = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if s < 1e-12:
+        return [0.0, 0.0, 0.0]
+    k = 2.0 * math.atan2(s, dw) / (s * _dt)            # angle / dt, along the axis
+    return [dx * k, dy * k, dz * k]
+
+
+def _keys_pose(_times, _pos, _quat, _tau):
+    \"\"\"Interpolated (position, quaternion) at _tau seconds: lerp + slerp between
+    the two bracketing keyframes.\"\"\"
+    import numpy as _np
+    if not _times:
+        return None, None
+    if _tau <= _times[0]:
+        return _np.asarray(_pos[0], dtype=float), _np.asarray(_quat[0], dtype=float)
+    if _tau >= _times[-1]:
+        return _np.asarray(_pos[-1], dtype=float), _np.asarray(_quat[-1], dtype=float)
+    import bisect
+    i = bisect.bisect_right(_times, _tau)
+    t0, t1 = _times[i - 1], _times[i]
+    f = (_tau - t0) / (t1 - t0) if t1 > t0 else 0.0
+    p = (1 - f) * _np.asarray(_pos[i - 1], dtype=float) \
+        + f * _np.asarray(_pos[i], dtype=float)
+    return p, _quat_slerp(_quat[i - 1], _quat[i], f)
+
+
+def _static_colliders(_container, _o, _B):
+    \"\"\"The `container` input as pybullet-ready triangle soups in bed coordinates:
+    (vertices, faces, source shape) per body, NOT hulled — that is the whole point
+    of the socket. Accepts one shape or several wired into it. The source shape
+    rides along because a MOVING container has to be drawn as well as simulated,
+    and the preview wants the original (either lane), not the soup.\"\"\"
+    import numpy as _np
+    out = []
+    if _container is None:
+        return out
+    # Flatten as deep as it goes: wiring an ArrayLinear (or an array of arrays —
+    # a peg grid is exactly that) into `container` hands us nested lists, and the
+    # alternative is making the user thread ListFlatten through every branch.
+    def _flat(v, out):
+        if isinstance(v, (list, tuple)):
+            for it in v:
+                _flat(it, out)
+        elif v is not None:
+            out.append(v)
+        return out
+
+    items = _flat(_container, [])
+    for c in items:
+        if c is None:
+            continue
+        m = _as_mesh(c)
+        if m is None or len(m.tm.faces) == 0:
+            continue
+        V = (_np.asarray(m.tm.vertices, dtype=float) - _o) @ _B
+        out.append((V, _np.asarray(m.tm.faces, dtype=int), c))
+    return out
+
+
+def _drop_collide(_shapes, _plane=None, _t=1.0, _material="plastic", _settle=True,
+                  _container=None, _grip=1.0, _motion=None):
+    \"\"\"The multi-body drop, done with real dynamics: every shape wired into the
+    node becomes a rigid body (its convex hull) in ONE pybullet scene, and they
+    all fall TOGETHER — colliding in the air, pushing each other, tumbling,
+    stacking — until everything sleeps. The run is recorded as keyframes; the
+    timeline scrubs them, and each returned shape carries its own keyframe plan
+    (`_noodle_anim` kind "keys") so the editor can replay the whole scene in
+    the browser. Declared limits: hulls, not the true meshes (a bowl will not
+    cradle a ball); rest poses carry the solver's contact margin (a fraction of
+    a mm), not CAD exactness; deterministic for a given scene on a given build,
+    but chaotic in the physical sense — move a part a hair and the pile lands
+    differently. That is not a bug, that is what falling IS.\"\"\"
+    import numpy as _np
+    o, B = _bed_frame(_plane)
+    e = _DROP_E.get(str(_material), 0.55)
+    t = max(0.0, min(float(_t), 1.0))
+    bodies = []
+    for i, s in enumerate(_shapes):
+        m = _as_mesh(s) if s is not None else None
+        if m is None:
+            bodies.append({"i": i, "shape": s, "hull": None})
+            continue
+        Vl = (m.tm.vertices - o) @ B
+        try:
+            from scipy.spatial import ConvexHull as _CH
+            hv = Vl[_CH(Vl, qhull_options="QJ").vertices]
+        except Exception:
+            hv = Vl
+        bodies.append({"i": i, "shape": s, "hull": hv,
+                       "c0": hv.mean(axis=0)})
+    live = [b for b in bodies if b["hull"] is not None]
+    results = [bb["shape"] for bb in bodies]           # non-meshables pass through
+    if not live:
+        return results
+    statics = _static_colliders(_container, o, B)
+    pose, drive_until = None, 0.0
+    if _motion is not None and statics:
+        allV = _np.vstack([sv for (sv, _sf, _s) in statics])
+        pose, drive_until = _motion_driver(
+            _motion, B, o, 0.5 * (allV.min(axis=0) + allV.max(axis=0)))
+    times, poss, quats, spos, squat = _dyn_sim(
+        [b["hull"] for b in live], [b["c0"] for b in live], e,
+        _t_max=max(8.0, drive_until + 2.0), _statics=statics,
+        _grip=float(_grip), _pose=pose, _drive_until=drive_until)
+    if not times:
+        return results
+    T = times[-1]
+    tau = t * T
+    for j, b in enumerate(live):
+        p_t, q_t = _keys_pose(times, poss[j], quats[j], tau)
+        if p_t is None:
+            continue
+        R = _quat_mat(q_t)                             # bed-frame pose of the body
+        ax, ang = _axis_angle(q_t)
+        c0 = b["c0"]
+        ops = []
+        if ang > 1e-9:
+            ops.append(("r", tuple(c0), tuple(ax), math.degrees(ang)))
+        ops.append(("t3", tuple(p_t - c0)))
+        res = _drop_apply(b["shape"], B, o, ops)
+        plan = {"kind": "keys", "t": float(t), "T": float(T),
+                "c0": [float(x) for x in (B @ c0 + o)],
+                "times": [float(x) for x in times],
+                "pos": [[float(x) for x in (B @ _np.asarray(pp) + o)]
+                        for pp in poss[j]],
+                "quat": [[float(x) for x in qq] for qq in quats[j]]}
+        try:
+            res._noodle_anim = plan
+        except Exception:
+            pass
+        results[b["i"]] = res
+    if pose is not None and statics and live:
+        # A moving container has to be SEEN moving, or the pile looks haunted. It
+        # is not an output of this node and must not become one, so it rides the
+        # result as `_noodle_extra`: mesh_extractor turns those into extra bodies
+        # of the same Scene preview, each with its own keyframe track, and the
+        # browser replays them with the machinery the parts already use.
+        p_s, q_s = pose(tau)
+        ax_s, ang_s = _axis_angle(q_s)
+        ops_s = []
+        if ang_s > 1e-9:
+            ops_s.append(("r", (0.0, 0.0, 0.0), tuple(ax_s), math.degrees(ang_s)))
+        ops_s.append(("t3", tuple(p_s)))
+        plan_s = {"kind": "keys", "t": float(t), "T": float(T),
+                  "c0": [float(x) for x in o],
+                  "times": [float(x) for x in times],
+                  "pos": [[float(x) for x in (B @ _np.asarray(pp) + o)]
+                          for pp in spos],
+                  "quat": [[float(x) for x in qq] for qq in squat]}
+        extras = []
+        for (_sv, _sf, src) in statics:
+            try:
+                g = _drop_apply(src, B, o, ops_s)
+                g._noodle_anim = plan_s
+                extras.append(g)
+            except Exception:
+                pass
+        if extras:
+            try:
+                results[live[0]["i"]]._noodle_extra = extras
+            except Exception:
+                pass
+    return results
+
+
+def _axis_angle(_q):
+    # (unit axis, angle rad) from a pybullet quaternion (x, y, z, w)
+    import numpy as _np
+    v = _np.asarray(_q[:3], dtype=float)
+    n = float(_np.linalg.norm(v))
+    if n < 1e-12:
+        return _np.array([0.0, 0.0, 1.0]), 0.0
+    return v / n, 2.0 * math.atan2(n, float(_q[3]))
+
+
 def _overhang_faces(_mesh, _angle=45.0, _layer=0.2):
     \"\"\"Just the faces that will need support, as a mesh of their own — so the viewer
     gives them their own colour and you SEE them on the part. Open by construction:
@@ -1396,8 +2449,10 @@ def _mesh_matrix(_kind, **_kw):
         m[:3, 3] = [_kw["x"], _kw["y"], _kw["z"]]
     elif _kind == "rotate":
         d = _kw["axis"].direction
+        p = _kw.get("point")
         m = _tm().transformations.rotation_matrix(
-            math.radians(float(_kw["angle"])), [d.X, d.Y, d.Z], [0, 0, 0])
+            math.radians(float(_kw["angle"])), [d.X, d.Y, d.Z],
+            [p.X, p.Y, p.Z] if p is not None else [0, 0, 0])
     elif _kind == "scale":
         m[0, 0], m[1, 1], m[2, 2] = _kw["x"], _kw["y"], _kw["z"]
     elif _kind == "mirror":
@@ -1407,17 +2462,56 @@ def _mesh_matrix(_kind, **_kw):
     return m
 
 
-def _rotate(_obj, _axis, _angle):
-    \"\"\"Rotate any spatial object — Shape, Plane OR Mesh — by _angle degrees about
-    a global axis. Uses Location algebra (Rot * obj) so it is polymorphic: a plane
-    rotates just like a solid (build123d Planes have no .rotate()); a mesh takes
-    the equivalent 4x4 on its vertices.\"\"\"
+def _pivot_of(_x):
+    \"\"\"The point a shape turns about when no explicit pivot is wired: the bbox
+    CENTRE, measured on the tessellation (the fast OCCT box is oversized, same
+    reason _bed_drop measures on triangles), aggregated over a list — the union
+    box of everything, so a group turns rigidly about one shared point. Planes
+    pivot on their origin; point-likes are their own pivot.\"\"\"
+    los, his = [], []
+    for it in _flatten([_x]):
+        if it is None:
+            continue
+        if isinstance(it, Plane):
+            q = it.origin
+            los.append((q.X, q.Y, q.Z)); his.append((q.X, q.Y, q.Z))
+            continue
+        q = _as_point(it)
+        if q is not None:
+            los.append((q.X, q.Y, q.Z)); his.append((q.X, q.Y, q.Z))
+            continue
+        try:
+            b = _as_mesh(it).tm.bounds
+            los.append(tuple(b[0])); his.append(tuple(b[1]))
+        except Exception:
+            continue
+    if not los:
+        return None
+    lo = [min(v[i] for v in los) for i in range(3)]
+    hi = [max(v[i] for v in his) for i in range(3)]
+    return Vector((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0)
+
+
+def _rotate(_obj, _axis, _angle, _pivot=None, _about="world"):
+    \"\"\"Rotate any spatial object — Shape, Plane OR Mesh — by _angle degrees.
+    About what: the wired _pivot point when present; else _about picks it —
+    "world" is the global axis (the old behaviour), "part"/"group" the bbox
+    centre of what came in (for a fanned list, "group" receives the collective
+    centre hoisted by the emitter, so the ensemble turns as one rigid body).
+    Uses Location algebra (Pos * Rot * Pos⁻¹ * obj) so it is polymorphic: a
+    plane rotates just like a solid; a mesh takes the equivalent 4x4.\"\"\"
     if _obj is None:
         return None
+    p = _as_point(_pivot) if _pivot is not None else None
+    if p is None and _about in ("part", "group"):
+        p = _pivot_of(_obj)
     if _is_mesh(_obj):
-        return _obj.transformed(_mesh_matrix("rotate", axis=_axis, angle=_angle))
+        return _obj.transformed(_mesh_matrix("rotate", axis=_axis, angle=_angle, point=p))
     d = _axis.direction
-    return Rot(d.X * _angle, d.Y * _angle, d.Z * _angle) * _obj
+    r = Rot(d.X * _angle, d.Y * _angle, d.Z * _angle)
+    if p is None:
+        return r * _obj
+    return Pos(p.X, p.Y, p.Z) * (r * (Pos(-p.X, -p.Y, -p.Z) * _obj))
 
 
 def _scale(_shape, _factor=1.0, _x=1.0, _y=1.0, _z=1.0):
@@ -1517,32 +2611,202 @@ def _union_atoms(_s):
     return [_s]
 
 
+def _coplanar_check(_faces):
+    \"\"\"(ok, why) — are these faces all planar and on the SAME plane?
+
+    A union of faces is a REGION MERGE and OCCT only does it in a common plane.
+    Hand it faces on different planes (or a curved one) and '+' returns them
+    side by side in a Compound: no error, no sewing, just a loose bag that looks
+    fused in the viewport. `_union` uses this to refuse instead — that is Join's
+    job, not Union's.\"\"\"
+    ref = None
+    for f in _faces:
+        try:
+            if f.geom_type != GeomType.PLANE:
+                return False, "one of them is curved (%s)" % (f.geom_type,)
+            n = Vector(f.normal_at()); c = Vector(f.center())
+        except Exception:
+            return True, ""                      # can't tell — don't block
+        if ref is None:
+            ref = (n, n.dot(c))
+            continue
+        rn, rd = ref
+        if abs(abs(n.dot(rn)) - 1.0) > 1e-6:
+            return False, "they face different directions"
+        if abs(rn.dot(c) - rd) > 1e-4:
+            return False, "they lie on parallel but distinct planes"
+    return True, ""
+
+
 def _union(*_items):
     \"\"\"Fuse any number of shapes into ONE, dimension-agnostic (build123d '+').
     Flattens nested lists, drops None; decomposes each shape into its atomic
     pieces (solids/faces) so overlapping fragments inside a single Compound fuse
     too — nothing -> None. Works for 2D faces/sketches (-> a merged region) and
     3D solids (-> one part). Union feeds its whole `shapes` collector in as one
-    arg (a list or single value); BooleanMulti spreads several — both flatten.\"\"\"
+    arg (a list or single value); BooleanMulti spreads several — both flatten.
+
+    Union is a BOOLEAN: it fuses overlapping material in a common space. It does
+    NOT sew — faces that merely touch along an edge are Join's business, and
+    asking Union for that used to return a loose Compound that never said so.\"\"\"
     parts = [p for p in _flatten(list(_items)) if p is not None]
     if not parts:
         return None
     atoms = [a for p in parts for a in _union_atoms(p)]
     if not atoms:
         return None
+    if len(atoms) > 1 and not any(isinstance(a, Solid) for a in atoms):
+        faces = [a for a in atoms if isinstance(a, Face)]
+        if len(faces) == len(atoms):
+            ok, why = _coplanar_check(faces)
+            if not ok:
+                raise ValueError(
+                    "Union fuses coplanar regions and closed solids — these %d "
+                    "faces cannot be fused (%s). Union is a boolean, not a sew: "
+                    "use the Join node to sew touching surfaces into a shell "
+                    "(and a closed shell into a solid)." % (len(faces), why))
     out = atoms[0]
     for p in atoms[1:]:
         out = out + p
     return out
 
 
-def _round(_items, _mode="fillet", _size=1.0):
+def _join(_items, _tol=1e-6, _solid=True):
+    \"\"\"Sew touching surfaces into ONE shell / chain touching curves into ONE wire.
+
+    The complement of `_union`: a boolean fuses OVERLAPPING material, this stitches
+    pieces that merely SHARE A BORDER — which OCCT does with a different operation
+    entirely (BRepBuilderAPI_Sewing, reached via Face.sew_faces/Shell, and
+    Wire.combine for edges). Six box faces become a closed shell and then a real
+    Solid; five stay a shell (an open surface — Solid() would happily build an
+    invalid one out of it, measured volume 800 on a 1000 box, so the closed check
+    is load-bearing).
+
+    Faces win over edges when both are present: an input that has faces is a
+    surface, and its edges are that surface's border, not a separate curve.
+    Pieces that do NOT touch are an ERROR, not a silent Compound — that is the
+    whole point of the node.\"\"\"
+    parts = [p for p in _flatten([_items]) if p is not None]
+    if not parts:
+        return None
+    if any(_is_mesh(p) for p in parts):
+        raise ValueError(
+            "Join works on B-Rep curves and surfaces; a mesh reached it. "
+            "Use Mesh Union (mesh lane) or Mesh To Solid first.")
+    faces, edges = [], []
+    for p in parts:
+        try:
+            fl = list(p.faces())
+        except Exception:
+            fl = []
+        if fl:
+            faces.extend(fl)
+            continue
+        try:
+            el = list(p.edges())
+        except Exception:
+            el = []
+        if not el:
+            raise ValueError(
+                "Join got something with no faces and no edges (%s)."
+                % type(p).__name__)
+        edges.extend(el)
+
+    if faces:
+        if len(faces) == 1:
+            return faces[0]
+        groups = Face.sew_faces(faces)
+        if len(groups) > 1:
+            raise ValueError(
+                "Join: these surfaces do not touch — they sew into %d separate "
+                "pieces (%s faces). Joined surfaces must SHARE their border "
+                "edges; check the pieces really meet (a Split/Section leaves "
+                "matching edges, two independent primitives usually do not)."
+                % (len(groups), "+".join(str(len(g)) for g in groups)))
+        shell = Shell(list(groups[0]))
+        if _solid and shell.wrapped is not None and shell.wrapped.Closed():
+            try:
+                solid = Solid(shell)
+                if solid.is_valid:
+                    return solid
+            except Exception:
+                pass
+        return shell
+
+    wires = Wire.combine(edges, tol=_tol)
+    if len(wires) > 1:
+        raise ValueError(
+            "Join: these curves do not touch — they chain into %d separate "
+            "wires. Raise `tolerance` if the endpoints are close but not "
+            "coincident." % (len(wires),))
+    return wires[0] if wires else None
+
+
+def _reanchor(_target, _items, _verify=True):
+    \"\"\"Point picked sub-shapes at the shape they must actually operate on.
+
+    build123d's algebra-mode fillet()/chamfer() take NO target argument: with no
+    builder context they read `_items[0].topo_parent`. That back-link survives
+    booleans still naming the PRE-boolean operand — so filleting a corner of a
+    Union ran on that operand alone and silently returned it, dropping
+    everything the Union added (measured: a 24000mm3 fused pair came back as
+    15940, and a 6402mm2 fused sketch as 3512). The node knows the real target:
+    it is the shape wired into `part`. Anchor the picks to it.
+
+    Mutating topo_parent in place is deliberate — chamfer()'s 2D branch matches
+    `v in object_list` by TShape identity, so handing it copies would match
+    nothing. `_verify` checks the picks really belong to the target (O(1) per
+    pick, hash/eq are TShape-based) so a mismatched wire keeps its old
+    behaviour instead of failing deep inside OCCT; callers that took the items
+    off the target themselves pass _verify=False and skip the set build.\"\"\"
+    if _target is None:
+        return _items
+    _own, _kinds = {}, {"Vertex": "vertices", "Edge": "edges", "Face": "faces"}
+    for _it in _items:
+        _attr = _kinds.get(type(_it).__name__)
+        if _attr is None:
+            continue
+        if _verify:
+            if _attr not in _own:
+                try:
+                    _own[_attr] = set(getattr(_target, _attr)())
+                except Exception:
+                    _own[_attr] = set()
+            if _it not in _own[_attr]:
+                continue
+        try:
+            _it.topo_parent = _target
+        except Exception:
+            pass
+    return _items
+
+
+def _round(_part, _items, _mode="fillet", _size=1.0):
     \"\"\"Round (fillet) or bevel (chamfer) a set of sub-shapes — edges (3D) or
     vertices (2D corners). One node, `_mode` picks the operation: build123d uses
-    radius= for fillet and length= for chamfer.\"\"\"
+    radius= for fillet and length= for chamfer. `_part` is the shape the picks
+    belong to; without it build123d guesses (see _reanchor) and a part built by
+    a boolean comes back truncated.\"\"\"
+    _sel = [_s for _s in _flatten([_items]) if _s is not None]
+    if not _sel:
+        raise ValueError(
+            "nothing selected to fillet/chamfer — the picks no longer match the "
+            "geometry, re-pick them in the Select node")
+    _reanchor(_part, _sel)
     if _mode == "chamfer":
-        return chamfer(_items, length=_size)
-    return fillet(_items, radius=_size)
+        return chamfer(_sel, length=_size)
+    return fillet(_sel, radius=_size)
+
+
+def _round_corners(_shape, _mode="fillet", _size=1.0):
+    \"\"\"The 2D corner round/bevel: fill the input to a face ONCE and work on that
+    face's own vertices. One _face() call, not two — the picks must belong to
+    the very face being modified for _reanchor (and build123d's 2D branch) to
+    match them.\"\"\"
+    _f = _face(_shape)
+    if _f is None:
+        return None
+    return _round(_f, list(_f.vertices()), _mode, _size)
 
 
 def _round_all(_part, _mode="fillet", _size=1.0):
@@ -1558,6 +2822,7 @@ def _round_all(_part, _mode="fillet", _size=1.0):
         return None
     try:
         _edges = _part.edges()
+        _reanchor(_part, _edges, _verify=False)   # they came off _part: no check
     except Exception:
         _edges = _part                       # already a sub-shape list
     _op = ((lambda _z: chamfer(_edges, length=_z)) if _mode == "chamfer"
@@ -2275,13 +3540,156 @@ def _domain2d(_region, _w, _h, _pts=None):
     return 0.0, 0.0, float(_w), float(_h)
 
 
-def _populate(_count=40, _seed=1, _width=100.0, _height=100.0, _region=None):
-    \"\"\"Scatter `count` random points (z=0), deterministic per `seed`, inside the
-    `region` rectangle's bounds if wired, else a 0..width x 0..height box.\"\"\"
+def _winding_inside(_V, _F, _P, _chunk=128):
+    \"\"\"Point-in-mesh by the generalized winding number (van Oosterom-Strackee),
+    pure numpy — trimesh.contains needs rtree, which is not in the image. For a
+    closed mesh the winding of an inside point is ~1, outside ~0; the 0.25
+    threshold is tolerant of near-surface points. Chunked over points to bound
+    memory (chunk x tris temporaries).\"\"\"
     import numpy as np
-    x0, y0, x1, y1 = _domain2d(_region, _width, _height)
+    V = np.asarray(_V, dtype=float)
+    F = np.asarray(_F)
+    P = np.asarray(_P, dtype=float)
+    T = V[F]                                       # (tris, 3 corners, xyz)
+    out = np.zeros(len(P), dtype=bool)
+    for s in range(0, len(P), int(_chunk)):
+        p = P[s:s + int(_chunk)]
+        a = T[None, :, 0, :] - p[:, None, :]
+        b = T[None, :, 1, :] - p[:, None, :]
+        c = T[None, :, 2, :] - p[:, None, :]
+        la = np.linalg.norm(a, axis=2)
+        lb = np.linalg.norm(b, axis=2)
+        lc = np.linalg.norm(c, axis=2)
+        det = np.einsum("kmi,kmi->km", a, np.cross(b, c))
+        den = (la * lb * lc + np.einsum("kmi,kmi->km", a, b) * lc
+               + np.einsum("kmi,kmi->km", b, c) * la
+               + np.einsum("kmi,kmi->km", a, c) * lb)
+        w = np.arctan2(det, den).sum(axis=1) / (2.0 * np.pi)
+        out[s:s + int(_chunk)] = np.abs(w) > 0.25
+    return out
+
+
+def _populate_volume(_m, _n, _rng):
+    \"\"\"Rejection-sample _n points INSIDE a watertight mesh: uniform candidates in
+    the bbox, kept by winding number. The inside test runs on a simplified proxy
+    when the mesh is heavy — it is only an oracle, so a plain manifold simplify
+    with no verification is fine (unlike MeshSimplify, whose result is the part).\"\"\"
+    import numpy as np
+    tm0 = _as_mesh(_m).tm
+    proxy = tm0
+    if len(tm0.faces) > 4000:
+        try:
+            diag = float(np.linalg.norm(tm0.bounds[1] - tm0.bounds[0]))
+            proxy = _from_manifold(
+                _to_manifold(Mesh(tm0), "Populate").simplify(diag * 0.005)).tm
+        except Exception:
+            pass
+    lo, hi = tm0.bounds
+    V, F = np.asarray(proxy.vertices, dtype=float), np.asarray(proxy.faces)
+    got, have = [], 0
+    for _round in range(24):
+        cand = _rng.uniform(lo, hi, (max(2 * int(_n), 64), 3))
+        keep = cand[_winding_inside(V, F, cand)]
+        got.append(keep)
+        have += len(keep)
+        if have >= _n:
+            break
+    P = np.vstack(got) if got else np.zeros((0, 3))
+    if len(P) < _n:
+        raise ValueError(
+            "Populate filled only %d of %d points — the body occupies too little "
+            "of its bounding box, or the mesh is not closed (run Mesh Fix)."
+            % (len(P), int(_n)))
+    return [Vector(float(x), float(y), float(z)) for x, y, z in P[:int(_n)]]
+
+
+def _populate_on_surface(_m, _n, _seed):
+    \"\"\"Area-uniform random points ON a surface (curved faces, shells, meshes):
+    trimesh sample_surface over the tessellation. Uniform BY AREA — random UV
+    through position_at would crowd points where the parametrization compresses.\"\"\"
+    pts, _fi = _tm().sample.sample_surface(_as_mesh(_m).tm, int(_n),
+                                           seed=int(_seed))
+    return [Vector(float(x), float(y), float(z)) for x, y, z in pts]
+
+
+def _populate(_count=40, _seed=1, _width=100.0, _height=100.0, _region=None):
+    \"\"\"Universal scatter, deterministic per `seed` — dispatches on what `region`
+    IS (the socket is raw, so the value arrives untouched):
+      nothing        -> the legacy 0..width x 0..height box at z=0
+      curve          -> ALONG it, uniform by arc length (1D)
+      planar XY face -> INSIDE the region — really inside, not its bbox (2D)
+      curved face    -> ON the surface, uniform by area (2.5D)
+      solid / watertight mesh -> INSIDE the volume (3D)
+    Dispatch is on topology (solids/faces/edges), not duck-typing position_at —
+    Edge and Face both have one.\"\"\"
+    import numpy as np
     rng = np.random.RandomState(int(_seed))
-    xs = rng.uniform(x0, x1, int(_count)); ys = rng.uniform(y0, y1, int(_count))
+    n = max(1, int(_count))
+    r = _region
+    if r is None:                                  # legacy path — UNCHANGED
+        xs = rng.uniform(0.0, float(_width), n)
+        ys = rng.uniform(0.0, float(_height), n)
+        return [Vector(float(x), float(y), 0.0) for x, y in zip(xs, ys)]
+    if _is_mesh(r):
+        return (_populate_volume(r, n, rng) if r.watertight
+                else _populate_on_surface(r, n, _seed))
+    solids = list(r.solids()) if hasattr(r, "solids") else []
+    faces = list(r.faces()) if hasattr(r, "faces") else []
+    edges = list(r.edges()) if hasattr(r, "edges") else []
+    if solids:                                     # 3D: inside the volume
+        return _populate_volume(_to_mesh(r), n, rng)
+    if not faces and edges:
+        # A CLOSED curve is a region BOUNDARY — the legacy idiom: Rectangle /
+        # Circle wired as `region` used to arrive filled via the _face cast,
+        # which the raw socket now skips. Fill it and treat it as the face it
+        # meant. An OPEN curve scatters ALONG itself (the 1D branch below).
+        filled = _face(r)
+        ff = list(filled.faces()) if hasattr(filled, "faces") else []
+        if ff:
+            r, faces = filled, ff
+    if faces:
+        f = faces[0]
+        flat_xy = False
+        if len(faces) == 1:
+            try:
+                flat_xy = f.is_planar and abs(f.normal_at(f.center()).Z) > 0.99
+            except Exception:
+                flat_xy = False
+        if flat_xy:
+            # 2D: draw in the bbox with the SAME two rng.uniform calls as the
+            # old node (a Rectangle rejects nothing -> byte-identical points,
+            # e.g. the voronoi vase), then keep only what is really inside.
+            bb = r.bounding_box()
+            z = (bb.min.Z + bb.max.Z) / 2.0
+            out = []
+            for _round in range(24):
+                xs = rng.uniform(bb.min.X, bb.max.X, n)
+                ys = rng.uniform(bb.min.Y, bb.max.Y, n)
+                out += [Vector(float(x), float(y), z) for x, y in zip(xs, ys)
+                        if f.is_inside((float(x), float(y), z))]
+                if len(out) >= n:
+                    break
+            if not out:
+                raise ValueError("Populate: no point landed inside the region "
+                                 "face — is it degenerate?")
+            return out[:n]
+        return _populate_on_surface(_to_mesh(r), n, _seed)   # 2.5D: ON it
+    if edges:                                      # 1D: uniform by arc length
+        L = [float(e.length) for e in edges]
+        tot = sum(L)
+        cum = np.cumsum([0.0] + L)
+        u = rng.uniform(0.0, tot, n)
+        idx = np.minimum(np.searchsorted(cum, u, side="right") - 1,
+                         len(edges) - 1)
+        out = []
+        for ui, i in zip(u, idx):
+            t = (ui - cum[int(i)]) / (L[int(i)] or 1.0)
+            p = edges[int(i)].position_at(min(max(float(t), 0.0), 1.0))
+            out.append(Vector(p.X, p.Y, p.Z))
+        return out
+    x0, y0, x1, y1 = _domain2d(r, _width, _height)  # fallback: old bbox path
+    xs = rng.uniform(x0, x1, n)
+    ys = rng.uniform(y0, y1, n)
     return [Vector(float(x), float(y), 0.0) for x, y in zip(xs, ys)]
 
 
@@ -2479,13 +3887,68 @@ def _align(_shape, _ref=None, _target=None):
     return Pos(_v.X, _v.Y, _v.Z) * _shape
 
 
-def _split(_shape, _plane=None, _keep=None):
-    \"\"\"Split a shape by a plane, keeping the requested side(s). Defaults to the
-    XY plane / Keep.TOP.\"\"\"
+def _split_tool(_t):
+    \"\"\"Coerce whatever is wired into Split's `plane` socket into a cutting tool
+    build123d's split() accepts: a Plane, a Face, or a Shell. A SOLID cuts by its
+    skin (the shell of its faces) — so a sphere trims a box along the sphere.\"\"\"
+    if _t is None:
+        return Plane.XY
+    if isinstance(_t, Plane):
+        return _t
+    if isinstance(_t, Location):
+        return Plane(_t)
+    if isinstance(_t, Shell):
+        return _t
+    _fs = list(_t.faces()) if hasattr(_t, "faces") else []
+    if not _fs:
+        return Plane.XY
+    if len(_fs) == 1 and not (hasattr(_t, "solids") and _t.solids()):
+        return _fs[0]
+    return Shell(_fs)
+
+
+def _on_tool(_p, _tool, _tol=1e-6):
+    \"\"\"True when point _p lies ON the cutting tool — i.e. the face it came from
+    is one the cut CREATED, not a face of the original shape.\"\"\"
+    try:
+        if isinstance(_tool, Plane):
+            return abs(_tool.to_local_coords(Vector(_p)).Z) <= _tol
+        return Vertex(_p.X, _p.Y, _p.Z).distance_to(_tool) <= _tol
+    except Exception:
+        return False
+
+
+def _open_cut(_r, _tool):
+    \"\"\"Drop the faces the cut created, leaving the shape OPEN where it was cut.
+    Everything else survives, sewn back into a Shell (one per piece).\"\"\"
+    if _r is None:
+        return None
+    _pieces = list(_r.solids()) or [_r]
+    _out = []
+    for _p in _pieces:
+        _keep = [_f for _f in _p.faces() if not _on_tool(_f.center(), _tool)]
+        if not _keep:
+            continue
+        try:
+            _out.append(Shell(_keep))
+        except Exception:
+            _out.append(Compound(_keep))
+    if not _out:
+        return None
+    return _out[0] if len(_out) == 1 else Compound(_out)
+
+
+def _split(_shape, _plane=None, _keep=None, _solid=True):
+    \"\"\"Split a shape by a plane, a surface or another solid, keeping the
+    requested side(s). Defaults to the XY plane / Keep.TOP. With _solid False the
+    cut is left OPEN — the faces the tool created are dropped and what comes back
+    is a shell, not a capped solid.\"\"\"
     if _shape is None:
         return None
-    _pl = _plane if isinstance(_plane, Plane) else Plane.XY
-    return split(_shape, bisect_by=_pl, keep=_keep if _keep is not None else Keep.TOP)
+    _tool = _split_tool(_plane)
+    _r = split(_shape, bisect_by=_tool,
+               keep=_keep if _keep is not None else Keep.TOP)
+    return _r if _solid else _open_cut(_r, _tool)
 
 
 def _plane_normal(_origin=None, _normal=None):
@@ -2584,6 +4047,11 @@ def _export_2d(_shape, _path, _fmt="svg"):
 _PREVIEWABLE = {catalog.WIRE_SOLID, catalog.WIRE_SURFACE, catalog.WIRE_CURVE,
                 catalog.WIRE_VECTOR, catalog.WIRE_MESH}
 
+# Pick-based selectors. Their output wire is `selection`/`data`, but at run time
+# they hold sub-shapes the viewer can draw, so the eye works on them (opt-in
+# only — see _previewed). Same list the emit dispatcher routes to _emit_select.
+_SELECT_TYPES = ("SelectEdge", "SelectFace", "SelectVertex", "SelectShape")
+
 # Node types whose output is always a Python list at runtime. Feeding one of
 # these into an item-access input makes the consumer fan out. (A fanned node is
 # added to this set dynamically as the graph is walked, so lists propagate.)
@@ -2591,7 +4059,7 @@ _LIST_PRODUCERS = {
     "ArrayLinear", "ArrayPolar", "ListCreate", "ListRange", "ListSeries", "ListRepeat",
     "ListSlice", "ListReverse", "ListSort", "ListFlatten", "Concat",
     "ListShift", "ListFilter", "ListUnique", "Random",
-    "Voronoi2D", "DivideSurface", "PopulateGeometry", "MapToSurface",
+    "Voronoi2D", "Voronoi3D", "DivideSurface", "PopulateGeometry", "MapToSurface",
     "DivideCurve", "CurveEndpoints", "Deconstruct",
     "DeconstructEdges", "DeconstructFaces",
     "Surface", "Curve", "Point",   # gated containers always emit a list (filter/transform)
@@ -2694,11 +4162,17 @@ class Transpiler:
         """Whether this node draws in the viewport. Per-node eye:
         True/False force it; None (auto) shows only terminal geometry nodes
         (those whose output isn't consumed downstream)."""
+        eye = getattr(node, "preview", None)
         previewable = (node.type == "CodeBlock" or
                        (ndef.outputs and ndef.outputs[0].wire_type in _PREVIEWABLE))
         if not previewable:
-            return False
-        eye = getattr(node, "preview", None)
+            # A selector's runtime value IS drawable — a ShapeList of picked
+            # edges/faces/vertices — its declared first output just happens to be
+            # a `selection` (or `data`) wire, which says how it may be WIRED, not
+            # what it holds. Honour an explicit eye on it, but never auto-draw:
+            # a real graph is full of wired selectors and highlighting them all
+            # unasked would bury the part under its own picks.
+            return eye is True and node.type in _SELECT_TYPES
         if eye is True:
             return True
         if eye is False:
@@ -2891,6 +4365,11 @@ class Transpiler:
         # in memo mode its var inherits the upstream key (lineage continues).
         if self._memo and chosen in self._var_key:
             self._var_key[var] = self._var_key[chosen]
+        # Bypassing a node must not silently un-draw it: it still carries a value
+        # (its upstream's), so it still answers to the eye. Unguarded, like the
+        # alias itself — there is no operation here that could throw.
+        if self._previewed(node, ndef):
+            lines.append(f"__previews__[{node.id!r}] = {var}")
 
     def _emit_select(self, node, lines: list[str]) -> None:
         """Sub-shape selector (SelectEdge/Face/Vertex): resolve the picked set
@@ -2910,6 +4389,11 @@ class Transpiler:
         # consumed WHOLE (Fillet/… inputs are list_access); its geometry output
         # (edges/faces/points) fans out downstream, so mark it a list-producer.
         self._produces_list.add(node.id)
+        # With the eye on, DRAW the picked set — edges as polylines, faces as a
+        # mesh, vertices as dots. Seeing what you picked is the whole point of a
+        # picker, and until this hook existed the eye on a selector did nothing.
+        if self._previewed(node, ndef):
+            body.append(f"__previews__[{node.id!r}] = {var}")
         self._guard(lines, body, node)
 
     def _emit_vectorize(self, node, lines: list[str]) -> None:
@@ -2923,6 +4407,8 @@ class Transpiler:
         scale = trace.get("scale", 1.0) or 1.0
         imgh = trace.get("imgH")
         body = [f"{var} = _trace_curves({contours!r}, {scale!r}, {imgh!r}){_annot(node)}"]
+        if self._previewed(node, catalog.get(node.type)):
+            body.append(f"__previews__[{node.id!r}] = {var}")
         self._guard(lines, body, node)
 
     def _emit_center(self, node, lines: list[str]) -> None:
@@ -2939,6 +4425,8 @@ class Transpiler:
                 f"{volvar} = _volume_of({src})"]
         self.out_var_of[(node.id, "center")] = var
         self.out_var_of[(node.id, "volume")] = volvar
+        if self._previewed(node, ndef):          # the centre, drawn as a dot
+            body.append(f"__previews__[{node.id!r}] = {var}")
         self._guard(lines, body, node)
 
     def _emit_orient(self, node, lines: list[str]) -> None:
@@ -2961,6 +4449,8 @@ class Transpiler:
                 f"{rep} = {plan}['report']"]
         self.out_var_of[(node.id, "result")] = var
         self.out_var_of[(node.id, "report")] = rep
+        if self._previewed(node, ndef):          # the ORIENTED mesh, not the input
+            body.append(f"__previews__[{node.id!r}] = {var}")
         self._guard(lines, body, node)
 
     def _emit_codeblock(self, node, lines: list[str]) -> None:
@@ -3090,6 +4580,32 @@ class Transpiler:
                 else:
                     subs[sock.name] = self._cast(srcs[0], sock, vars_[0])
 
+        # Drop with `collide`: the shapes wired into the node are ONE scene, not
+        # a fan — hand the whole list to the runtime (which stacks them against
+        # each other) and mark the output a list so downstream still fans.
+        # A wired `container` (the immovable bowl/tray) means the same thing: the
+        # parts fall INTO one thing, so they are one scene whatever the toggle says.
+        if node.type == "Drop":
+            if "container" in fan:                  # several statics = one rig
+                subs["container"] = fan.pop("container")
+            scene = (subs.get("collide") == "True"
+                     or subs.get("container") not in (None, "None"))
+            if scene and "shape" in fan:
+                subs["shape"] = fan.pop("shape")
+                self._produces_list.add(node.id)
+
+        # `about="group"` while the shape input fans out: every item must pivot
+        # about the ONE collective centre, or each piece spins about itself —
+        # hoist the centre out of the per-item lambda. Unfanned there is nothing
+        # to do: _rotate sees the whole value and its bbox IS the group box.
+        hoist = None
+        if (subs.get("about") == "'group'" and "shape" in fan
+                and subs.get("pivot") in (None, "None")):
+            self._counter += 1
+            pv = f"__pivot_{self._counter}"
+            hoist = f"{pv} = _pivot_of({fan['shape']})"
+            subs["pivot"] = pv
+
         template = ndef.code_template.get("algebra")
         if template is None:
             raise ValueError(f"Node {node.type} has no algebra template")
@@ -3111,7 +4627,7 @@ class Transpiler:
 
         if ndef.outputs:
             var = self._new_var(node.id)
-            body = [f"{var} = {expr}{_annot(node)}"]
+            body = ([hoist] if hoist else []) + [f"{var} = {expr}{_annot(node)}"]
             if self._previewed(node, ndef):
                 body.append(f"__previews__[{node.id!r}] = {var}")
             self._guard(lines, body, node)
@@ -3237,7 +4753,7 @@ class Transpiler:
                 self._emit_group(node, body)
             elif node.type == "CodeBlock":
                 self._emit_codeblock(node, body)
-            elif node.type in ("SelectEdge", "SelectFace", "SelectVertex", "SelectShape"):
+            elif node.type in _SELECT_TYPES:
                 self._emit_select(node, body)
             elif node.type == "TraceImage":
                 self._emit_vectorize(node, body)

@@ -198,7 +198,9 @@ def test_transpile_select_edge_and_targeted_fillet():
     assert "def _select_subshapes(" in code          # helper injected
     assert "_select_subshapes(__out_1, 'edge'" in code
     assert "[[5, 0, 5, 10, 0, 0, 1]]" in code        # signatures passed through
-    assert "fillet(__out_2, radius=1.5)" in code      # operates on the selection var
+    # operates on the selection var, against the part EXPLICITLY: build123d would
+    # otherwise infer the target from the picks' stale topo_parent (see _reanchor)
+    assert "_round(__out_1, __out_2, 'fillet', 1.5)" in code
 
 
 def test_transpile_select_face_defaults_kind_and_pushpull():
@@ -544,3 +546,219 @@ def test_new_list_nodes_fan_out_downstream():
     code = transpile(g)
     assert "_randlist(4, 0.0, 1.0, 1)" in code
     assert "_fanout" in code
+
+
+# --- Rotate: pivot + about (world / part / group) --------------------------
+def _rot_graph(about=None, extra_nodes=(), extra_conns=()):
+    params = {"angle": 45, "axis": "X"}
+    if about is not None:
+        params["about"] = about
+    return Graph.from_dict({"name": "t", "nodes": [
+        {"id": "b", "type": "Box", "params": {}},
+        {"id": "r", "type": "Rotate", "params": params},
+        *extra_nodes,
+    ], "connections": [
+        {"id": "c1", "from_node": "b", "from_socket": "result",
+         "to_node": "r", "to_socket": "shape"},
+        *extra_conns,
+    ]})
+
+
+def test_rotate_takes_an_optional_pivot_point():
+    piv = next(s for s in catalog.get("Rotate").inputs if s.name == "pivot")
+    assert piv.wire_type == "vector" and not piv.required
+
+
+def test_rotate_about_defaults_to_world_so_old_graphs_are_untouched():
+    # Backward compatibility is the contract: a graph saved before `about`
+    # existed carries no such param, and must keep orbiting the global axis.
+    p = catalog.get("Rotate").param("about")
+    assert p.default == "world"
+    assert p.options == ["world", "part", "group"]
+    g = _rot_graph()                       # no `about` in params at all
+    g.validate()
+    code = transpile(g)
+    call = next(l for l in code.splitlines() if "= _rotate(" in l)
+    assert "'world'" in call and "__pivot_" not in call
+
+
+def test_rotate_about_group_hoists_one_shared_centre_out_of_the_fanout():
+    # Two shapes multi-wired into `shape` fan out; with about=group each item
+    # must pivot about the ONE collective centre, so the emitter hoists
+    # _pivot_of([...]) before the lambda — else each piece spins about itself.
+    g = _rot_graph("group",
+                   extra_nodes=[{"id": "b2", "type": "Box", "params": {}}],
+                   extra_conns=[{"id": "c2", "from_node": "b2",
+                                 "from_socket": "result",
+                                 "to_node": "r", "to_socket": "shape"}])
+    g.validate()
+    code = transpile(g)
+    assert any(l.strip().startswith("__pivot_") and "_pivot_of(" in l
+               for l in code.splitlines())
+    call = next(l for l in code.splitlines() if "_fanout(" in l and "_rotate(" in l)
+    assert "__pivot_" in call               # the hoisted centre reaches every item
+
+
+def test_rotate_about_part_does_not_hoist():
+    # Per-part centres live in the helper: each fanned item measures its own.
+    g = _rot_graph("part",
+                   extra_nodes=[{"id": "b2", "type": "Box", "params": {}}],
+                   extra_conns=[{"id": "c2", "from_node": "b2",
+                                 "from_socket": "result",
+                                 "to_node": "r", "to_socket": "shape"}])
+    code = transpile(g)
+    assert "__pivot_" not in code
+
+
+def test_a_wired_pivot_wins_over_the_hoist():
+    # An explicit pivot point is the user naming the centre — group mode must
+    # not overwrite it.
+    g = _rot_graph("group",
+                   extra_nodes=[{"id": "b2", "type": "Box", "params": {}},
+                                {"id": "p", "type": "ConstructPoint",
+                                 "params": {"x": 5}}],
+                   extra_conns=[{"id": "c2", "from_node": "b2",
+                                 "from_socket": "result",
+                                 "to_node": "r", "to_socket": "shape"},
+                                {"id": "c3", "from_node": "p",
+                                 "from_socket": "point",
+                                 "to_node": "r", "to_socket": "pivot"}])
+    g.validate()
+    assert "__pivot_" not in transpile(g)
+
+
+# --- fillet/chamfer target (feedback 20260718-164854) ----------------------
+# build123d's algebra-mode fillet()/chamfer() take no target: they read
+# `objects[0].topo_parent`, which after a boolean still names the PRE-boolean
+# operand. Rounding a corner of a Union therefore returned that operand alone
+# and silently dropped the rest (a 6402mm2 fused sketch came back as 3512).
+# Every rounding node must hand the runtime the part EXPLICITLY.
+
+def _round_graph(node_type, params, part_socket, sel_socket=None):
+    nodes = [{"id": "a", "type": "Box", "params": {}},
+             {"id": "b", "type": "Box", "params": {}},
+             {"id": "u", "type": "Union", "params": {}},
+             {"id": "r", "type": node_type, "params": params}]
+    conns = [{"id": "1", "from_node": "a", "from_socket": "result",
+              "to_node": "u", "to_socket": "shapes"},
+             {"id": "2", "from_node": "b", "from_socket": "result",
+              "to_node": "u", "to_socket": "shapes"},
+             {"id": "3", "from_node": "u", "from_socket": "result",
+              "to_node": "r", "to_socket": part_socket}]
+    if sel_socket:
+        nodes.append({"id": "s", "type": "SelectEdge",
+                      "params": {"selection": {"kind": "edge", "indices": [0]}}})
+        conns += [{"id": "4", "from_node": "u", "from_socket": "result",
+                   "to_node": "s", "to_socket": "geometry"},
+                  {"id": "5", "from_node": "s", "from_socket": "selection",
+                   "to_node": "r", "to_socket": sel_socket}]
+    g = Graph.from_dict({"nodes": nodes, "connections": conns})
+    g.validate()
+    return g
+
+
+# --- the preview eye reaches every emit path ------------------------------
+# The eye was wired to nothing on the five special-cased emit paths: they never
+# called _previewed(), so switching it on for a selector, CenterOfMass,
+# TraceImage, OrientForPrint or a bypassed node silently did nothing. Only
+# _emit_simple/_emit_group/_emit_codeblock honoured it.
+
+def _eye_graph(node_type, params=None, extra=None, conns=None, **flags):
+    nodes = [{"id": "b", "type": "Box", "params": {}},
+             dict({"id": "e", "type": node_type, "params": params or {}}, **flags)]
+    nodes += extra or []
+    g = Graph.from_dict({"nodes": nodes, "connections": conns or []})
+    g.validate()
+    return g
+
+
+def test_selected_rounding_passes_the_part_not_just_the_picks():
+    code = transpile(_round_graph("FilletChamferSelected",
+                                  {"mode": "chamfer", "size": 15},
+                                  "part", "selection"))
+    call = next(l for l in code.splitlines() if "= _round(" in l)
+    # the union var must be the FIRST argument — the target to chamfer
+    assert "_round(__out_3, __out_4, 'chamfer', 15.0)" in call
+    # and the bare build123d call, which infers a stale target, must be gone
+    assert "chamfer(__out_4" not in code
+
+
+def test_corner_rounding_fills_the_face_once():
+    # _round_corners must call _face() a single time: two calls make two
+    # distinct Faces, and picks off one never match the other.
+    for node_type, params in (("FilletChamferCorners", {"mode": "fillet", "size": 2}),
+                              ("Fillet2D", {"radius": 2}),
+                              ("Chamfer2D", {"length": 2})):
+        g = Graph.from_dict({
+            "nodes": [{"id": "c", "type": "Circle", "params": {"radius": 5}},
+                      {"id": "r", "type": node_type, "params": params}],
+            "connections": [{"id": "1", "from_node": "c", "from_socket": "result",
+                             "to_node": "r", "to_socket": "shape"}]})
+        g.validate()
+        # the node body only — the fixed PREAMBLE legitimately calls .vertices()
+        body = transpile(g).split("# --- nodes ---", 1)[1]
+        assert "_round_corners(" in body, node_type
+        assert ".vertices()" not in body, node_type      # no double _face()
+
+
+def test_round_all_still_takes_the_part_itself():
+    code = transpile(_round_graph("FilletChamfer", {"mode": "fillet", "size": 1},
+                                  "part"))
+    assert "_round_all(__out_3, 'fillet', 1.0)" in code
+def _previews(code):
+    import re
+    return set(re.findall(r"__previews__\['(\w+)'\]", code))
+
+
+def test_eye_on_a_selector_draws_the_picked_set():
+    # A selector's output wire is `selection`, which says how it may be WIRED,
+    # not what it holds — at run time it is drawable sub-shapes.
+    for t in ("SelectEdge", "SelectFace", "SelectVertex", "SelectShape"):
+        sock = "shapes" if t == "SelectShape" else "geometry"
+        g = _eye_graph(t, {"selection": {"kind": "edge", "indices": [0]}},
+                       conns=[{"id": "1", "from_node": "b", "from_socket": "result",
+                               "to_node": "e", "to_socket": sock}],
+                       preview=True)
+        assert "e" in _previews(transpile(g)), t
+
+
+def test_a_selector_never_draws_itself_unasked():
+    # Opt-in only: a real graph is full of wired selectors and auto-drawing them
+    # all would bury the part under its own picks.
+    for eye in (None, False):
+        g = _eye_graph("SelectEdge", {"selection": {"kind": "edge", "indices": [0]}},
+                       conns=[{"id": "1", "from_node": "b", "from_socket": "result",
+                               "to_node": "e", "to_socket": "geometry"}],
+                       **({"preview": eye} if eye is not None else {}))
+        assert "e" not in _previews(transpile(g)), eye
+
+
+def test_eye_on_the_special_emit_paths():
+    # Each of these has a previewable output and its own emit path that used to
+    # skip the hook entirely.
+    for t, params in (("CenterOfMass", {}), ("TraceImage", {}),
+                      ("OrientForPrint", {})):
+        sock = {"CenterOfMass": "shape", "OrientForPrint": "mesh"}.get(t)
+        conns = ([{"id": "1", "from_node": "b", "from_socket": "result",
+                   "to_node": "e", "to_socket": sock}] if sock else [])
+        g = _eye_graph(t, params, conns=conns, preview=True)
+        assert "e" in _previews(transpile(g)), t
+
+
+def test_eye_off_still_wins_on_the_special_paths():
+    g = _eye_graph("CenterOfMass", conns=[{"id": "1", "from_node": "b",
+                                           "from_socket": "result",
+                                           "to_node": "e", "to_socket": "shape"}],
+                   preview=False)
+    assert "e" not in _previews(transpile(g))
+
+
+def test_bypassing_a_node_does_not_un_draw_it():
+    # A bypassed node still carries a value (its upstream's), so it still
+    # answers to the eye.
+    g = _eye_graph("Move", conns=[{"id": "1", "from_node": "b",
+                                   "from_socket": "result",
+                                   "to_node": "e", "to_socket": "shape"}],
+                   preview=True, bypassed=True)
+    code = transpile(g)
+    assert "# bypassed" in code and "e" in _previews(code)

@@ -47,6 +47,16 @@ PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 FONTS_DIR = PROJECTS_DIR / fontlib.FONTS_DIRNAME
 _RESERVED_PROJECT_DIRS = {fontlib.FONTS_DIRNAME}
 
+# Personal add-node search aliases, {node_type: [word, ...]}. Lives under
+# projects/ for the same reason FONTS_DIR does — it is the only writable mount —
+# but as a FILE, so the project/library listings (which filter on is_dir()) never
+# see it, and the name starts with "_" which validate_graph_id forbids, so it can
+# never collide with a project. Kept deliberately plain and greppable: aliases
+# that earn their keep get promoted BY HAND into NodeDef.aliases in catalog.py.
+ALIASES_PATH = PROJECTS_DIR / "_aliases.json"
+_ALIAS_MAX_WORDS = 12
+_ALIAS_MAX_LEN = 40
+
 # User feedback/report drops (see docs/FEEDBACK_FIX_GUIDE.md). A dedicated rw
 # volume kept out of projects/ so a coding agent can find them at the repo root.
 FEEDBACK_DIR = Path("/app/feedback")
@@ -152,6 +162,10 @@ class ParamPatch(BaseModel):
     node_id: str
     param: str       # built-in param name, or "_cb.<name>" for a CodeBlock override
     value: object    # number / bool / str — coerced + clamped server-side
+
+
+class AliasPayload(BaseModel):
+    aliases: list[str] = []             # [] clears this node's personal aliases
 
 
 class FeedbackPayload(BaseModel):
@@ -513,6 +527,51 @@ async def node_catalog(category: str = ""):
     if category:
         nodes = [n for n in nodes if n.get("category") == category]
     return nodes
+
+
+def _read_aliases() -> dict[str, list[str]]:
+    """The personal alias map (ALIASES_PATH), or {} when absent/unreadable — never
+    fatal, a corrupt file must not take the editor down with it."""
+    try:
+        data = json.loads(ALIASES_PATH.read_text())
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: [str(w) for w in v] for k, v in data.items() if isinstance(v, list)}
+
+
+@app.get("/api/aliases")
+async def user_aliases():
+    """Personal search aliases: {node_type: [word, ...]}. These sit ALONGSIDE the
+    catalog's built-in `NodeDef.aliases` — the editor merges the two in its
+    add-node search — and are deliberately kept in a plain, greppable file so a
+    word that proves its worth can be PROMOTED BY HAND into catalog.py."""
+    return {"aliases": _read_aliases()}
+
+
+@app.put("/api/aliases/{node_type}")
+async def set_user_aliases(node_type: str, payload: AliasPayload = Body(...)):
+    """Replace one node's personal aliases (empty list = drop the entry)."""
+    if node_type not in catalog.REGISTRY:
+        raise HTTPException(404, f"Unknown node type '{node_type}'")
+    words, seen = [], set()
+    for w in payload.aliases[:_ALIAS_MAX_WORDS]:
+        w = " ".join(str(w).split())[:_ALIAS_MAX_LEN].strip()
+        if not w or w.lower() in seen:
+            continue
+        seen.add(w.lower())
+        words.append(w)
+    data = _read_aliases()
+    if words:
+        data[node_type] = words
+    else:
+        data.pop(node_type, None)
+    # atomic write: the file is read on every editor boot, never half-written
+    tmp = ALIASES_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(dict(sorted(data.items())), indent=2) + "\n")
+    tmp.replace(ALIASES_PATH)
+    return {"node_type": node_type, "aliases": words}
 
 
 @app.get("/api/wiretypes")
