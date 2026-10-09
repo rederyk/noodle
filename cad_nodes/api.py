@@ -1366,13 +1366,15 @@ def _timeline(view: dict):
 
 
 def snapshot(store: GraphStore, graph_id: str, label: str = "",
-             run: bool = True, base_url: str = "", tags: Optional[list] = None) -> dict:
+             run: bool = True, base_url: str = "", tags: Optional[list] = None,
+             measures: Optional[list] = None) -> dict:
     """Freeze the graph's current result as a new generation and return its
     viewer link. `run=True` (default) executes first, so the generation is the
     graph AS SAVED NOW, not whatever last ran; `run=False` freezes the last
     view.json as is. An unchanged result is not duplicated: if it is identical
     to the newest generation (same geometry, same label) that one is returned
-    with `reused: true`. `tags` (see tag_gen) label its pieces in the same call."""
+    with `reused: true`. `tags` (see tag_gen) label its pieces in the same call,
+    `measures` (see measure_gen) pin dimensions on it."""
     out = _snapshot(store, graph_id, label, run, base_url)
     if tags is not None:
         # the gen exists by now: a bad tag must not read as a failed snapshot
@@ -1380,6 +1382,11 @@ def snapshot(store: GraphStore, graph_id: str, label: str = "",
             out["tags"] = tag_gen(store, graph_id, out["gen"], tags, base_url=base_url)["tags"]
         except ValueError as e:
             out["tags_error"] = str(e)
+    if measures is not None:
+        try:
+            out["measures"] = measure_gen(store, graph_id, out["gen"], measures, base_url=base_url)["measures"]
+        except ValueError as e:
+            out["measures_error"] = str(e)
     return out
 
 
@@ -1490,6 +1497,187 @@ def _check3(v, what):
 
 def gen_tags(store: GraphStore, graph_id: str, gen: str) -> list:
     return store.load_gen_tags(graph_id, gen)
+
+
+def gen_measures(store: GraphStore, graph_id: str, gen: str) -> list:
+    return store.load_gen_measures(graph_id, gen)
+
+
+# --- 📏 the agent's dimensions on a gen ---------------------------------------
+# The other direction of the user's ↔ Metro: «parete 1,2 mm — sotto il minimo
+# di 1,6», «interasse 30 ±0,1: controllalo», drawn ON the part in /view, coloured
+# by `status` (ok green, check amber, fail red). Beside the gen in its own file
+# (measures.json), separate from tags.json: separate checks, separate toggle.
+# The agent must not GUESS points: `between: [refA, refB]` measures the gen's
+# FROZEN graph on the real B-Rep (measure.py `distance`) and takes the two
+# closest points and the exact value from there.
+
+_GEN_MEASURES_MAX = 40
+_GEN_MEASURE_KINDS = ("distance", "edge", "face_gap", "diameter", "radius")
+_STATUSES = ("ok", "check", "fail")
+
+
+def _point(v, what) -> list:
+    if isinstance(v, dict):
+        v = v.get("at")
+    return [round(_num(c, what), 4) for c in _check3(v, what)]
+
+
+def _between_points(store: GraphStore, graph_id: str, gen: str, pairs: dict) -> dict:
+    """{index: (refA, refB)} → {index: result of a `distance` query} on the gen's
+    frozen graph (one run for all of them; memo makes it cheap after a snapshot)."""
+    from .executor import measure_graph
+    graph = Graph.from_dict(store.load_gen(graph_id, gen, "graph"))
+    idx = list(pairs)
+    data = measure_graph(graph, store.dir(graph_id),
+                         [{"op": "distance", "a": pairs[i][0], "b": pairs[i][1]} for i in idx])
+    if not data.get("success"):
+        raise ValueError(f"measure: the gen's graph did not run: "
+                         f"{data.get('error') or data.get('errors') or data.get('error_detail')}")
+    out = {}
+    for i, r in zip(idx, data.get("results") or []):
+        if r.get("error") or r.get("distance") is None:
+            raise ValueError(f"measure {i}: between {list(pairs[i])}: {r.get('error') or 'no result'}")
+        out[i] = r
+    return out
+
+
+def _piece_ref(piece: str) -> str:
+    """A viewer piece key → a measure reference: "n8" stays, "n8.2" (the third
+    item of a fanned-out node) is "n8[2]" — "n8.2" would read as an OUTPUT."""
+    node, _, k = str(piece).partition(".")
+    return f"{node}[{k}]" if k.isdigit() else node
+
+
+def exact_measure(store: GraphStore, graph_id: str, gen: str, measure: dict) -> dict:
+    """A dimension the browser took on the TESSELLATION, redone on the gen's
+    frozen B-Rep (measure.py `exact`): the same vertex / circle / edge / planar
+    face, found again on the real shape. Costs a run of the frozen graph (memo
+    makes it cheap); a mesh-lane piece has no B-Rep and says so."""
+    from .executor import measure_graph
+    if not isinstance(measure, dict) or not isinstance(measure.get("a"), dict):
+        raise ValueError("exact: give the measure as the viewer sends it ({kind, a, b?, …})")
+    m = {"kind": measure.get("kind"), "a": measure["a"], "axis": measure.get("axis")}
+    if isinstance(measure.get("b"), dict):
+        m["b"] = measure["b"]
+    for k, e in (("a", m["a"]), ("b", m.get("b"))):
+        if e is not None:
+            _point(e.get("at"), f"exact {k}")
+            if not e.get("piece"):
+                raise ValueError(f"exact: end {k} names no piece")
+    refs = [_piece_ref(m["a"]["piece"])] + ([_piece_ref(m["b"]["piece"])] if "b" in m else [])
+    graph = Graph.from_dict(store.load_gen(graph_id, gen, "graph"))
+    data = measure_graph(graph, store.dir(graph_id), [{"op": "exact", "nodes": refs, "measure": m}])
+    if not data.get("success"):
+        raise ValueError(f"exact: the gen's graph did not run: {data.get('error') or data.get('errors')}")
+    r = (data.get("results") or [{}])[0]
+    if r.get("error"):
+        err = r["error"]
+        if "no geometry" in err and "Mesh" in err:
+            err = "this piece is a mesh (no B-Rep to measure exactly): the ≈ value is all there is"
+        raise ValueError(err)
+    out = {k: r[k] for k in ("kind", "value", "a", "b", "found") if k in r}
+    out["exact"] = True
+    if isinstance(measure.get("value"), (int, float)):
+        out["delta"] = round(r["value"] - float(measure["value"]), 4)
+    return out
+
+
+def measure_gen(store: GraphStore, graph_id: str, gen: str, measures: list,
+                replace: bool = True, base_url: str = "") -> dict:
+    """Pin DIMENSIONS on generation `gen`: `measures` = [{kind?, a, b, value?,
+    circle?, between?, text?, expected?, tolerance?, status?, note?, node?,
+    offset?, approx?}] — see cad_measure_gen. `replace=False` appends."""
+    import math
+    meta = store.load_gen(graph_id, gen, "meta")
+    if not isinstance(measures, list):
+        raise ValueError("measures must be a list")
+    old = [] if replace else store.load_gen_measures(graph_id, gen)
+    if len(old) + len(measures) > _GEN_MEASURES_MAX:
+        raise ValueError(f"at most {_GEN_MEASURES_MAX} measures per generation")
+    pairs = {}
+    for i, m in enumerate(measures):
+        if not isinstance(m, dict):
+            raise ValueError(f"measure {i} must be an object")
+        bt = m.get("between")
+        if bt is not None:
+            if not (isinstance(bt, (list, tuple)) and len(bt) == 2 and all(isinstance(x, str) and x for x in bt)):
+                raise ValueError(f"measure {i}: between must be two node refs, e.g. [\"n5\", \"n7.body\"]")
+            pairs[i] = tuple(bt)
+    found = _between_points(store, graph_id, gen, pairs) if pairs else {}
+    out = [dict(m) for m in old]
+    for i, m in enumerate(measures):
+        kind = m.get("kind") or ("diameter" if m.get("circle") else "distance")
+        if kind not in _GEN_MEASURE_KINDS:
+            raise ValueError(f"measure {i}: kind must be one of {', '.join(_GEN_MEASURE_KINDS)}")
+        o: dict = {"kind": kind}
+        if i in found:
+            r = found[i]
+            o["a"], o["b"] = _point(r["at_a"], f"measure {i} a"), _point(r["at_b"], f"measure {i} b")
+            o["between"] = list(pairs[i])
+            value = float(r["distance"])
+        elif kind in ("diameter", "radius"):
+            c = m.get("circle")
+            if not isinstance(c, dict):
+                raise ValueError(f"measure {i}: a {kind} needs circle {{center, axis, r}}")
+            ax = _point(c.get("axis") or [0, 0, 1], f"measure {i} circle axis")
+            na = math.hypot(*ax)
+            if na < 1e-9:
+                raise ValueError(f"measure {i}: circle axis must not be zero")
+            r_ = _num(c.get("r"), f"measure {i} circle r")
+            if not 0 < r_ < 1e6:
+                raise ValueError(f"measure {i}: circle r out of range")
+            o["circle"] = {"center": _point(c.get("center"), f"measure {i} circle center"),
+                           "axis": [round(x / na, 4) for x in ax], "r": round(r_, 4)}
+            value = 2 * r_ if kind == "diameter" else r_
+        else:
+            if m.get("a") is None or m.get("b") is None:
+                raise ValueError(f"measure {i}: give a and b ([x,y,z] mm), or between: [refA, refB]")
+            o["a"], o["b"] = _point(m["a"], f"measure {i} a"), _point(m["b"], f"measure {i} b")
+            value = math.dist(o["a"], o["b"])
+        if m.get("value") is not None:
+            value = _num(m["value"], f"measure {i} value")
+            if value < 0:
+                raise ValueError(f"measure {i}: value must not be negative")
+        o["value"] = round(value, 4)
+        o["unit"] = "mm"
+        o["approx"] = bool(m.get("approx"))
+        for k, lim in (("text", 120), ("note", 500)):
+            t = m.get(k)
+            if t is not None:
+                if not isinstance(t, str) or len(t) > lim:
+                    raise ValueError(f"measure {i}: {k} must be a string of at most {lim} chars")
+                if t.strip():
+                    o[k] = t.strip()
+        for k in ("expected", "tolerance"):
+            if m.get(k) is not None:
+                o[k] = round(_num(m[k], f"measure {i} {k}"), 4)
+        if o.get("tolerance", 0) < 0:
+            raise ValueError(f"measure {i}: tolerance must not be negative")
+        st = m.get("status")
+        if st is None and "expected" in o:
+            # judged here when it can be: within tolerance = ok, else fail;
+            # an expectation with no tolerance is something to check
+            st = ("ok" if abs(o["value"] - o["expected"]) <= o["tolerance"] + 1e-9 else "fail") \
+                if "tolerance" in o else "check"
+        if st is not None:
+            if st not in _STATUSES:
+                raise ValueError(f"measure {i}: status must be one of {', '.join(_STATUSES)}")
+            o["status"] = st
+        if m.get("node") is not None:
+            p = _resolve_piece(meta, m["node"])
+            o["node"], o["title"] = p["id"], p.get("title") or p.get("type")
+        if m.get("offset") is not None:
+            off = _point(m["offset"], f"measure {i} offset")
+            L = math.hypot(*off)
+            if L > 0:
+                o["n"], o["off"] = [round(x / L, 4) for x in off], round(L, 4)
+        out.append(o)
+    for k, o in enumerate(out, 1):
+        o["measure"] = k
+    store.save_gen_measures(graph_id, gen, out)
+    return {"gen": gen, "ref": gen_ref(graph_id, gen), "url": gen_url(graph_id, gen, base_url),
+            "measures": out}
 
 
 def list_gens(store: GraphStore, graph_id: str, base_url: str = "") -> list[dict]:
@@ -1636,11 +1824,147 @@ def _marks(strokes: list[dict]) -> list[dict]:
             if s.get("node") and s["node"] not in [n["node"] for n in nodes]:
                 nodes.append({k: s[k] for k in ("node", "title", "type") if k in s})
         m["on"] = nodes
+        # a heap built with the 3D pen: how tall it stands off the part
+        h = max((s.get("height_mm", 0) for s in ss), default=0)
+        if h:
+            m["height_mm"] = h
+        # ⊞ drawn (at least partly) on a working plane, in the void: the plane,
+        # and the piece it is nearest to — «this arm goes on up to HERE»
+        flat = [s for s in ss if s.get("plane")]
+        if flat:
+            m["kind"] = "plane"
+            m["plane"] = flat[0]["plane"]
+            near = [s["near_piece"] for s in flat if s.get("near_piece")]
+            if near:
+                m["near_piece"] = min(near, key=lambda x: x["distance_mm"])
         # the picture this mark is in: the view its strokes were drawn from
         # (0 = the note's main picture, the final view)
         m["view"] = next((s["view"] for s in ss if s.get("view")), 0)
         out.append(m)
     return out
+
+
+def _point_tri_dist(P, A, B, C):
+    """Distances (len(P) × len(A)) from points to triangles — the closest point
+    by Voronoi region of the triangle (Ericson, Real-Time Collision Detection
+    5.1.5), vectorised. P: (n,3); A, B, C: (m,3)."""
+    import numpy as np
+    P = P[:, None, :]
+    ab, ac, ap = B - A, C - A, P - A
+    d1, d2 = (ab * ap).sum(-1), (ac * ap).sum(-1)
+    bp = P - B
+    d3, d4 = (ab * bp).sum(-1), (ac * bp).sum(-1)
+    cp = P - C
+    d5, d6 = (ab * cp).sum(-1), (ac * cp).sum(-1)
+    va, vb, vc = d3 * d6 - d5 * d4, d5 * d2 - d1 * d6, d1 * d4 - d3 * d2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        den = va + vb + vc
+        v, w = np.where(den != 0, vb / den, 0), np.where(den != 0, vc / den, 0)
+        q = A + ab * v[..., None] + ac * w[..., None]                 # inside the face
+        # the edges and vertices, where the projection falls outside
+        t_ab = np.clip(np.where(d1 - d3 != 0, d1 / (d1 - d3), 0), 0, 1)
+        e_ab = A + ab * t_ab[..., None]
+        t_ac = np.clip(np.where(d2 - d6 != 0, d2 / (d2 - d6), 0), 0, 1)
+        e_ac = A + ac * t_ac[..., None]
+        bc = C - B
+        t_bc = np.clip(np.where((d4 - d3) + (d5 - d6) != 0, (d4 - d3) / ((d4 - d3) + (d5 - d6)), 0), 0, 1)
+        e_bc = B + bc * t_bc[..., None]
+    out = np.linalg.norm(P - q, axis=-1)
+    inside = (va > 0) & (vb > 0) & (vc > 0)
+    edge = np.minimum(np.minimum(np.linalg.norm(P - e_ab, axis=-1), np.linalg.norm(P - e_ac, axis=-1)),
+                      np.linalg.norm(P - e_bc, axis=-1))
+    return np.where(inside, out, edge)
+
+
+def _gen_piece_meshes(view: dict, hidden: frozenset = frozenset()) -> dict:
+    """{node id: [(vertices, triangles), …]} of a frozen gen's previews — the
+    plain meshes, scene bodies at rest; dots and lines are not a surface.
+    `hidden` = the piece keys the user had hidden in /view (`hide=`, a bare
+    node id or `<id>.<k>`): a piece they could not see is not «nearest»."""
+    out = {}
+    for nid, pv in (view.get("previews") or {}).items():
+        if not isinstance(pv, dict) or nid in hidden:
+            continue
+        bodies = list(pv.get("bodies") or [])
+        for b, g in enumerate([pv] + bodies):
+            if b and f"{nid}.{b - 1}" in hidden:
+                continue
+            m = g.get("mesh") if isinstance(g, dict) else None
+            if not (isinstance(m, dict) and m.get("vertices") and m.get("triangles")):
+                continue
+            tris = m["triangles"]
+            parts = g.get("parts") if not b else None
+            # a fan-out in ONE buffer: `parts` = triangles per piece, in order
+            if (isinstance(parts, list) and len(parts) > 1 and len(tris) == sum(parts)
+                    and any(f"{nid}.{i}" in hidden for i in range(len(parts)))):
+                keep, at = [], 0
+                for i, c in enumerate(parts):
+                    if f"{nid}.{i}" not in hidden:
+                        keep.extend(tris[at:at + c])
+                    at += c
+                tris = keep
+            if tris:
+                out.setdefault(nid, []).append((m["vertices"], tris))
+    return out
+
+
+def _hidden_keys(hash_str) -> frozenset:
+    """The `hide=` of a /view hash ("hide=n3,n7.2&look=…") as a set of keys."""
+    if not isinstance(hash_str, str):
+        return frozenset()
+    from urllib.parse import unquote
+    for part in hash_str.lstrip("#").split("&"):
+        if part.startswith("hide="):
+            return frozenset(unquote(k) for k in part[5:].split(",") if k)
+    return frozenset()
+
+
+def _nearest_piece(points: list, meshes: dict, titles: dict, cap: int = 24) -> Optional[dict]:
+    """The piece nearest to a polyline: {node, title, type, distance_mm} — the
+    smallest point-to-triangle distance over up to `cap` samples of it."""
+    import numpy as np
+    if not points or not meshes:
+        return None
+    step = max(1, len(points) // cap)
+    P = np.asarray(points[::step] + [points[-1]], float)
+    best = None
+    for nid, parts in meshes.items():
+        for verts, tris in parts:
+            V, T = np.asarray(verts, float), np.asarray(tris, int)
+            if V.ndim != 2 or T.ndim != 2 or not len(T):
+                continue
+            # a cheap bound first: a box farther than the best cannot win
+            lo, hi = V.min(0), V.max(0)
+            box = np.linalg.norm(np.maximum(np.maximum(lo - P, P - hi), 0), axis=1).min()
+            if best is not None and box >= best[0]:
+                continue
+            d = float(_point_tri_dist(P, V[T[:, 0]], V[T[:, 1]], V[T[:, 2]]).min())
+            if best is None or d < best[0]:
+                best = (d, nid)
+    if best is None:
+        return None
+    t = titles.get(best[1]) or {}
+    o = {"node": best[1], "distance_mm": round(best[0], 2)}
+    if t.get("title"):
+        o["title"] = t["title"]
+    if t.get("type"):
+        o["type"] = t["type"]
+    return o
+
+
+def _near_pieces(store: GraphStore, graph_id: str, gen: str, strokes: list, titles: dict,
+                 hidden: frozenset = frozenset()) -> None:
+    """A stroke drawn on a ⊞ plane touches no piece: it gets the NEAREST one
+    (`near_piece`), measured on the gen's frozen meshes — the SHOWN ones."""
+    try:
+        meshes = _gen_piece_meshes(store.load_gen(graph_id, gen, "view"), hidden)
+    except (KeyError, ValueError, OSError):
+        return
+    for s in strokes:
+        if s.get("plane"):
+            near = _nearest_piece(s["points"], meshes, titles)
+            if near:
+                s["near_piece"] = near
 
 
 _NOTE_MAX_VIEWS = 24
@@ -1720,6 +2044,83 @@ def _labels(labels_in, n_views: int, titles: dict) -> list[dict]:
     return out
 
 
+_MEASURE_KINDS = ("distance", "edge", "diameter", "radius", "face_gap", "angle")
+_MEASURE_SNAPS = ("vertex", "circle_center", "edge", "face", "free")
+_NOTE_MAX_MEASURES = 50
+
+
+def _measure_end(e, what: str, titles: dict) -> dict:
+    """One end of a dimension: a point ON the part and what it was snapped to."""
+    if not isinstance(e, dict):
+        raise ValueError(f"note: {what} must be an object")
+    o = {"at": _vec(e.get("at"), f"{what} at")}
+    snap = e.get("snap") or "free"
+    if snap not in _MEASURE_SNAPS:
+        raise ValueError(f"note: {what} snap must be one of {', '.join(_MEASURE_SNAPS)}")
+    o["snap"] = snap
+    if e.get("normal") is not None:
+        o["normal"] = _vec(e["normal"], f"{what} normal")
+    piece = str(e["piece"])[:40] if e.get("piece") else None
+    if piece:
+        node = piece.split(".")[0]
+        o.update(piece=piece, node=node)
+        if node in titles:
+            o["title"] = titles[node].get("title")
+    if isinstance(e.get("circle"), dict):
+        c = e["circle"]
+        o["circle"] = {"center": _vec(c.get("center"), f"{what} circle center"),
+                       "axis": _vec(c.get("axis"), f"{what} circle axis"),
+                       "r": round(_num(c.get("r"), f"{what} circle r"), 4)}
+    return o
+
+
+def _measures(items, n_views: int, titles: dict) -> list[dict]:
+    """Dimensions the user took ON the part (📏): two ends — one for an edge or
+    a circle — the value the browser measured and whether it is approximate
+    (a tessellated curve). The browser measures; the server only checks the
+    shape and keeps it, so a reader gets «12,40 mm between here and there»."""
+    if not isinstance(items, list) or len(items) > _NOTE_MAX_MEASURES:
+        raise ValueError(f"note: measures must be a list of at most {_NOTE_MAX_MEASURES}")
+    out = []
+    for i, m in enumerate(items):
+        if not isinstance(m, dict):
+            raise ValueError(f"note: measure {i} must be an object")
+        kind = m.get("kind")
+        if kind not in _MEASURE_KINDS:
+            raise ValueError(f"note: measure {i} kind must be one of {', '.join(_MEASURE_KINDS)}")
+        o = {"kind": kind, "a": _measure_end(m.get("a"), f"measure {i} a", titles)}
+        if m.get("b") is not None:
+            o["b"] = _measure_end(m["b"], f"measure {i} b", titles)
+        elif kind in ("distance", "face_gap", "angle"):
+            raise ValueError(f"note: measure {i} ({kind}) needs two ends, a and b")
+        v = _num(m.get("value"), f"measure {i} value")
+        if v < 0:
+            raise ValueError(f"note: measure {i} value must not be negative")
+        o["value"] = round(v, 4)
+        o["unit"] = "deg" if kind == "angle" else "mm"
+        o["approx"] = bool(m.get("approx"))
+        if m.get("exact"):                   # verified on the B-Rep before sending
+            o["exact"] = True
+        if m.get("axis") is not None:
+            if m["axis"] not in ("x", "y", "z"):
+                raise ValueError(f"note: measure {i} axis must be x, y or z")
+            o["axis"] = m["axis"]
+        t = m.get("text")
+        if t is not None:
+            if not isinstance(t, str) or len(t) > 200:
+                raise ValueError(f"note: measure {i} text must be at most 200 chars")
+            if t.strip():
+                o["text"] = t.strip()
+        vw = m.get("view")
+        if vw is not None:
+            vw = int(_num(vw, f"measure {i} view"))
+            if not 0 <= vw < n_views:
+                raise ValueError(f"note: measure {i} view {vw} out of range")
+            o["view"] = vw + 1
+        out.append(o)
+    return out
+
+
 def _link_labels(marks: list[dict], strokes: list[dict], labels: list[dict]) -> list[dict]:
     """Which marks each label is written next to — «qui 8 mm» beside a red
     circle is a fact about THAT circle. Distance from the label's centre to the
@@ -1750,6 +2151,179 @@ def _link_labels(marks: list[dict], strokes: list[dict], labels: list[dict]) -> 
     return out
 
 
+def measure_phrase(m: dict) -> str:
+    """«Ø ≈ 8,00» / «12,40 mm» — the way the viewer writes a dimension."""
+    v = m.get("value", 0)
+    num = (f"{v:.1f}" if m.get("unit") == "deg" else f"{v:.2f}").replace(".", ",")
+    ap = "≈ " if m.get("approx") else ""
+    k = m.get("kind")
+    if k == "angle":
+        return f"{ap}{num}°"
+    if k == "diameter":
+        return f"Ø {ap}{num}"
+    if k == "radius":
+        return f"R {ap}{num}"
+    return f"{ap}{num} mm"
+
+
+_SHAPE_KINDS = ("box", "cylinder", "sphere")
+_NOTE_MAX_SHAPES = 30
+
+
+def _shapes(items, n_views: int, titles: dict) -> list[dict]:
+    """Basic shapes the user PLACED on the part (▣ Forme): a cube, a cylinder or
+    a sphere, with its size, centre and orientation in model mm — «a Ø 6
+    cylinder here» as data. `size` is [x, y, z] in the shape's own frame (a
+    cylinder: [Ø, Ø, height], its axis = local z = `axis`); `anchor` is the
+    point of the surface it sits on, `normal` that surface's normal. A shape
+    bent by the ▣ Deforma cage also carries `ffd` — the 8 cage corners'
+    offsets [dx, dy, dz] in its own frame, 1 = its size, corners ordered
+    sx, sy, sz ∈ {−1, 1} nested — and `corners`, those 8 corners in the world
+    (mm), so a text-only reader sees the bent shape without interpolating."""
+    import math
+    if not isinstance(items, list) or len(items) > _NOTE_MAX_SHAPES:
+        raise ValueError(f"note: shapes must be a list of at most {_NOTE_MAX_SHAPES}")
+    out = []
+    for i, sh in enumerate(items):
+        if not isinstance(sh, dict):
+            raise ValueError(f"note: shape {i} must be an object")
+        kind = sh.get("kind")
+        if kind not in _SHAPE_KINDS:
+            raise ValueError(f"note: shape {i} kind must be one of {', '.join(_SHAPE_KINDS)}")
+        size = _vec(sh.get("size"), f"shape {i} size")
+        if not all(0 < x < 1e5 for x in size):
+            raise ValueError(f"note: shape {i} size must be positive")
+        q = sh.get("quat")
+        if not isinstance(q, (list, tuple)) or len(q) != 4:
+            raise ValueError(f"note: shape {i} quat must be [x, y, z, w]")
+        q = [_num(c, f"shape {i} quat") for c in q]
+        nq = math.sqrt(sum(c * c for c in q))
+        if nq < 1e-6:
+            raise ValueError(f"note: shape {i} quat must not be zero")
+        o = {"kind": kind, "center": _vec(sh.get("center"), f"shape {i} center"), "size": size,
+             "quat": [round(c / nq, 5) for c in q]}
+        # the shape's own z axis in the world, from the quaternion
+        x, y, z, w = o["quat"]
+        o["axis"] = [round(2 * (x * z + w * y), 4), round(2 * (y * z - w * x), 4), round(1 - 2 * (x * x + y * y), 4)]
+        for k in ("anchor", "normal"):
+            if sh.get(k) is not None:
+                o[k] = _vec(sh[k], f"shape {i} {k}")
+        ffd = sh.get("ffd")
+        if ffd is not None:
+            if not isinstance(ffd, (list, tuple)) or len(ffd) != 8:
+                raise ValueError(f"note: shape {i} ffd must be 8 [dx, dy, dz] offsets")
+            ffd = [_vec(d, f"shape {i} ffd") for d in ffd]
+            if not all(abs(v) < 10 for d in ffd for v in d):
+                raise ValueError(f"note: shape {i} ffd offsets must be finite and below 10")
+            if any(v for d in ffd for v in d):
+                o["ffd"] = [[round(v, 4) for v in d] for d in ffd]
+        corners = sh.get("corners")
+        if corners is not None:
+            if not isinstance(corners, (list, tuple)) or len(corners) != 8:
+                raise ValueError(f"note: shape {i} corners must be 8 points")
+            corners = [_vec(c, f"shape {i} corners") for c in corners]
+            if "ffd" in o:
+                o["corners"] = corners
+        color = str(sh.get("color") or "").lower()
+        if color:
+            if not re.fullmatch(r"#[0-9a-f]{6}", color):
+                raise ValueError(f"note: shape {i} color must be #rrggbb")
+            o["color"] = color
+        piece = str(sh["piece"])[:40] if sh.get("piece") else None
+        if piece:
+            node = piece.split(".")[0]
+            o.update(piece=piece, node=node)
+            if node in titles:
+                o["title"] = titles[node].get("title")
+        v = sh.get("view")
+        if v is not None:
+            v = int(_num(v, f"shape {i} view"))
+            if not 0 <= v < n_views:
+                raise ValueError(f"note: shape {i} view {v} out of range")
+            o["view"] = v + 1
+        out.append(o)
+    return out
+
+
+def shape_phrase(sh: dict) -> str:
+    x, y, z = sh["size"]
+    f = lambda v: f"{v:.2f}".replace(".", ",")
+    if sh["kind"] == "sphere":
+        return f"sphere Ø {f(x)}" if abs(x - y) < 1e-3 and abs(y - z) < 1e-3 else f"ellipsoid {f(x)} × {f(y)} × {f(z)}"
+    if sh["kind"] == "cylinder":
+        return f"cylinder Ø {f(x)} × {f(z)} mm"
+    return f"box {f(x)} × {f(y)} × {f(z)} mm"
+
+
+def _link_shapes(marks: list[dict], strokes: list[dict], shapes: list[dict]) -> list[dict]:
+    """The user's shapes for the agent: a one-line `summary` and the marks
+    drawn on or next to them (`near_marks`; the mark lists them under `shapes`)."""
+    import math
+    pts: dict[int, list] = {}
+    for s in strokes:
+        if s.get("kind") != "text":
+            pts.setdefault(s.get("g"), []).extend(s["points"])
+    by_mark = list(pts.values())
+    out = []
+    for sh in shapes:
+        sh = {k: v for k, v in sh.items() if k != "near_marks"}
+        reach = max(2.0, 0.75 * max(sh["size"]))
+        near = [k + 1 for k, ps in enumerate(by_mark) if ps and min(math.dist(sh["center"], p) for p in ps) <= reach]
+        c = ", ".join(f"{v:.2f}" for v in sh["center"])
+        a = ", ".join(f"{v:.2f}" for v in sh["axis"])
+        sh["summary"] = (f"{shape_phrase(sh)}" + (", deformed by its cage (see corners)," if sh.get("ffd") else "")
+                         + f" centred at ({c}), axis ({a})"
+                         + (f", on {sh.get('title') or sh['node']}" if sh.get("node") else ""))
+        sh["near_marks"] = near
+        out.append(sh)
+        for k in near:
+            marks[k - 1].setdefault("shapes", []).append(shape_phrase(sh))
+    return out
+
+
+_MEASURE_SAYS = {"distance": "distance", "edge": "edge length", "face_gap": "gap between parallel faces",
+                 "diameter": "diameter", "radius": "radius", "angle": "angle"}
+
+
+def _link_measures(marks: list[dict], strokes: list[dict], measures: list[dict]) -> list[dict]:
+    """The user's dimensions, for the agent: each with a one-line `summary`
+    a text-only model can read («face_gap 8,00 mm on Move (face → face)»), and
+    `near_marks` = the marks drawn at either end (within a quarter of the
+    dimension, ≥ 2 mm) — a red circle round a hole plus «Ø ≈ 8,00» on it is one
+    remark. Each such mark lists the dimension under `measures`."""
+    import math
+    pts: dict[int, list] = {}
+    for s in strokes:
+        if s.get("kind") != "text":
+            pts.setdefault(s.get("g"), []).extend(s["points"])
+    by_mark = list(pts.values())
+    out = []
+    for m in measures:
+        m = {k: v for k, v in m.items() if k != "near_marks"}
+        ends = [e for e in (m.get("a"), m.get("b")) if isinstance(e, dict)]
+        reach = max(2.0, 0.25 * float(m.get("value") or 0))
+        circ = (m.get("a") or {}).get("circle") if isinstance(m.get("a"), dict) else None
+        if circ:                             # a circled hole: the pen is ON the rim, the Ø at its centre
+            reach = max(reach, 1.5 * float(circ.get("r") or 0))
+        near = [k + 1 for k, ps in enumerate(by_mark)
+                if ps and any(min(math.dist(e["at"], p) for p in ps) <= reach for e in ends)]
+        on = [e.get("title") or e.get("node") for e in ends if e.get("title") or e.get("node")]
+        snaps = " → ".join(e.get("snap", "free") for e in ends)
+        summary = f"{_MEASURE_SAYS.get(m.get('kind'), m.get('kind'))} {measure_phrase(m)}"
+        if on:
+            summary += f" on {' / '.join(dict.fromkeys(on))}"
+        summary += f" ({snaps})"
+        if m.get("axis"):
+            summary += f", along {m['axis'].upper()} only"
+        if m.get("text"):
+            summary += f" — «{m['text']}»"
+        m["summary"], m["near_marks"] = summary, near
+        out.append(m)
+        for k in near:
+            marks[k - 1].setdefault("measures", []).append(measure_phrase(m))
+    return out
+
+
 def _camera(cam, what="camera") -> Optional[dict]:
     if not (isinstance(cam, dict) and cam.get("position") and cam.get("target")):
         return None
@@ -1774,13 +2348,43 @@ def _image_kind(data: bytes) -> str:
     raise ValueError("note: a placed image must be a PNG or a JPEG")
 
 
+_NOTE_MAX_BRUSHES = 8
+_BRUSH_DATA_CHARS = 200_000
+
+
+def _brushes(raw) -> list:
+    """The pictures a note's strokes are drawn WITH (✎ alpha / colour texture):
+    small JPEG/PNG data URLs, kept inside the note — only /view reads them."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > _NOTE_MAX_BRUSHES:
+        raise ValueError(f"note: brushes must be a list of at most {_NOTE_MAX_BRUSHES}")
+    out = []
+    for i, b in enumerate(raw):
+        if not isinstance(b, dict):
+            raise ValueError(f"note: brush {i} must be an object")
+        kind, data, bid = b.get("kind"), b.get("data"), str(b.get("id") or "")
+        if kind not in ("alpha", "tex"):
+            raise ValueError(f"note: brush {i} kind must be alpha|tex")
+        if (not isinstance(data, str) or len(data) > _BRUSH_DATA_CHARS
+                or not re.match(r"data:image/(jpeg|png);base64,[A-Za-z0-9+/=]+$", data)):
+            raise ValueError(f"note: brush {i} must be a JPEG/PNG data URL under {_BRUSH_DATA_CHARS} chars")
+        if not re.fullmatch(r"[a-z0-9]{1,16}", bid):
+            raise ValueError(f"note: brush {i} id must be short [a-z0-9]")
+        out.append({"id": bid, "kind": kind, "data": data})
+    return out
+
+
 def add_note(store: GraphStore, graph_id: str, gen: str, payload: dict,
              jpeg: Optional[bytes] = None,
              view_jpegs: Optional[list] = None,
-             image_blobs: Optional[list] = None) -> dict:
+             image_blobs: Optional[list] = None,
+             note_id: Optional[str] = None) -> dict:
     """Validate and store what the /view page sends. `payload` = {text, strokes:
-    [{color, width, points:[[x,y,z]…], normals?, piece?}], camera?, t?, hide?}."""
+    [{color, width, points:[[x,y,z]…], normals?, piece?}], camera?, t?, hide?}.
+    With `note_id` it REPLACES that note (same id): /view saves as you draw."""
     import datetime
+    import math
     if not isinstance(payload, dict):
         raise ValueError("note: expected a JSON object")
     text = payload.get("text") or ""
@@ -1801,7 +2405,15 @@ def add_note(store: GraphStore, graph_id: str, gen: str, payload: dict,
         if len(b) > _NOTE_IMAGE_BYTES:
             raise ValueError(f"note: a placed image is over {_NOTE_IMAGE_BYTES // (1024 * 1024)} MB")
     kinds = [_image_kind(b) for b in image_blobs]
-    if not strokes_in and not labels_in and not images_in and not text.strip():
+    brushes = _brushes(payload.get("brushes"))
+    measures_in = payload.get("measures") or []
+    shapes_in = payload.get("shapes") or []
+    history = _note_history_in(payload.get("history"))
+    empty = (not strokes_in and not labels_in and not images_in and not measures_in and not shapes_in
+             and not text.strip())
+    # ↶ an EMPTY note is kept only while its history can bring something back
+    # (Pulisci, or every mark undone): hidden from the agent, resumable by /view
+    if empty and not history:
         raise ValueError("note: nothing drawn and nothing written")
     views_in = payload.get("views") or []
     if not isinstance(views_in, list) or len(views_in) > _NOTE_MAX_VIEWS:
@@ -1843,6 +2455,49 @@ def add_note(store: GraphStore, graph_id: str, gen: str, payload: dict,
             out["view"] = v + 1                # 1-based, as the picture file: aK.v1.jpg
         if s.get("normals") and len(s["normals"]) == len(pts):
             out["normals"] = [_vec(n, f"stroke {i} normal") for n in s["normals"]]
+        # ✎ the 3D pen: where the user circled one spot the ink piled up, and
+        # each sample sits `lifts[i]` mm above the part along its normal
+        if s.get("lifts") is not None:
+            lifts = s["lifts"]
+            if not isinstance(lifts, list) or len(lifts) != len(pts):
+                raise ValueError(f"note: stroke {i} lifts must be one number per point")
+            lifts = [round(_num(v, f"stroke {i} lift"), 4) for v in lifts]
+            if any(not 0 <= v <= 1e4 for v in lifts):
+                raise ValueError(f"note: stroke {i} lifts must be 0..10000 mm")
+            if max(lifts) > 0:
+                out["lifts"] = lifts
+                out["height_mm"] = round(max(lifts) + width, 3)
+        # the pen that drew it (✎ spray / ✎³ filament) and its tip — only the
+        # viewer reads them, so it redraws the stroke as it was drawn
+        if s.get("pen") is not None:
+            if s["pen"] not in ("spray", "3d"):
+                raise ValueError(f"note: stroke {i} pen must be spray|3d")
+            out["pen"] = s["pen"]
+        if s.get("alpha") is not None:
+            if s["alpha"] not in ("soft", "normal", "star", "img"):
+                raise ValueError(f"note: stroke {i} alpha must be soft|normal|star|img")
+            out["alpha"] = s["alpha"]
+        # 🖼 a picture brush: `brush` = the alpha picture, `tex` = the colour
+        # texture, both indices into the note's `brushes`
+        for k, kind in (("brush", "alpha"), ("tex", "tex")):
+            if s.get(k) is not None:
+                j = int(_num(s[k], f"stroke {i} {k}"))
+                if not 0 <= j < len(brushes) or brushes[j]["kind"] != kind:
+                    raise ValueError(f"note: stroke {i} {k} {j} is not a {kind} picture of the note")
+                out[k] = j
+        # ⊞ drawn on a working PLANE, in the void (PLAN_VIEW_TOOLS §4): no
+        # piece, and the plane it lies on
+        if s.get("plane") is not None:
+            pl = s["plane"]
+            if not isinstance(pl, dict):
+                raise ValueError(f"note: stroke {i} plane must be {{origin, normal}}")
+            nv = _vec(pl.get("normal"), f"stroke {i} plane normal")
+            nn = math.hypot(*nv)
+            if nn < 1e-6:
+                raise ValueError(f"note: stroke {i} plane normal must not be zero")
+            out["plane"] = {"origin": _vec(pl.get("origin"), f"stroke {i} plane origin"),
+                            "normal": [round(c / nn, 4) for c in nv]}
+            node = piece = None
         if node:
             out["piece"] = piece
             out["node"] = node
@@ -1851,6 +2506,8 @@ def add_note(store: GraphStore, graph_id: str, gen: str, payload: dict,
                 out["type"] = titles[node].get("type")
         out.update(_stroke_summary(pts, width))
         strokes.append(out)
+    if any("plane" in s for s in strokes):
+        _near_pieces(store, graph_id, gen, strokes, titles, _hidden_keys(payload.get("hide")))
     labels = _labels(labels_in, len(views), titles)
     # a placed image is placed exactly like a label: same frame, same checks
     images = []
@@ -1861,6 +2518,8 @@ def add_note(store: GraphStore, graph_id: str, gen: str, payload: dict,
         o = {"image": i + 1, **{k: v for k, v in o.items()
                                 if k not in ("label", "text", "style", "color", "color_name")}}
         images.append(o)
+    measures = _measures(measures_in, len(views), titles)
+    shapes = _shapes(shapes_in, len(views), titles)
     marks = _marks(strokes)
     note = {"text": text.strip(),
             "created": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -1869,6 +2528,12 @@ def add_note(store: GraphStore, graph_id: str, gen: str, payload: dict,
         note["labels"] = _link_labels(marks, strokes, labels)
     if images:
         note["images"] = _link_labels(marks, strokes, images)
+    if brushes:
+        note["brushes"] = brushes
+    if measures:
+        note["measures"] = measures
+    if shapes:
+        note["shapes"] = shapes
     cam = _camera(payload.get("camera"))
     if cam:
         note["camera"] = cam
@@ -1878,13 +2543,67 @@ def add_note(store: GraphStore, graph_id: str, gen: str, payload: dict,
         note["t"] = round(min(max(float(payload["t"]), 0.0), 1.0), 4)
     if isinstance(payload.get("hide"), str):
         note["hide"] = payload["hide"][:500]
+    cut = _note_cut(payload.get("cut"))
+    if cut:
+        note["cut"] = cut
+    if empty:
+        note["empty"] = True
     return store.save_gen_note(graph_id, gen, note, jpeg, view_jpegs,
-                               list(zip(kinds, image_blobs, strict=True)))
+                               list(zip(kinds, image_blobs, strict=True)), note_id=note_id,
+                               history=history)
+
+
+_NOTE_HISTORY_BYTES = 24 * 1024 * 1024
+
+
+def _note_history_in(h) -> Optional[dict]:
+    """↶ ↷ the undo history of a note, as /view keeps it (feature: «salva la
+    history nel file così si può annullare anche se ricarico»). It is the
+    page's own data — items by `k`, actions that point at them — and only the
+    page reads it back, so the server checks its size and shape, not its
+    meaning. Stored beside the note (aK.history.json), never shown to the agent."""
+    if h is None:
+        return None
+    if not isinstance(h, dict) or not isinstance(h.get("actions", []), list) \
+            or not isinstance(h.get("redone", []), list):
+        raise ValueError("note: history must be {actions: [...], redone: [...], ...}")
+    if not h.get("actions") and not h.get("redone"):
+        return None
+    import json
+    if len(json.dumps(h)) > _NOTE_HISTORY_BYTES:
+        raise ValueError(f"note: history over {_NOTE_HISTORY_BYTES // (1024 * 1024)} MB")
+    return h
+
+
+def note_history(store: GraphStore, graph_id: str, gen: str, note_id: str) -> dict:
+    """What /view needs to rebuild ↶ ↷ after a reload ({} = none kept)."""
+    return store.gen_note_history(graph_id, gen, note_id)
+
+
+def _note_cut(cut) -> Optional[dict]:
+    """✂ The section plane the note was drawn on, as /view sends it:
+    `{axis: x|y|z, pos: mm, flip: bool, nocut?: [piece keys]}`. The view keeps
+    the half where the coordinate is <= pos (>= with flip); `nocut` pieces stay
+    whole. Kept as given (checked, not reinterpreted): without it the agent
+    sees, in the note's picture, a hole the model does not have."""
+    if cut is None:
+        return None
+    if not isinstance(cut, dict) or cut.get("axis") not in ("x", "y", "z"):
+        raise ValueError("note: cut must be {axis: x|y|z, pos, flip?, nocut?}")
+    out = {"axis": cut["axis"], "pos": round(_num(cut.get("pos", 0), "cut pos"), 4),
+           "flip": bool(cut.get("flip"))}
+    nocut = cut.get("nocut") or []
+    if not isinstance(nocut, list) or len(nocut) > 500 or not all(isinstance(k, str) for k in nocut):
+        raise ValueError("note: cut.nocut must be a list of piece keys")
+    if nocut:
+        out["nocut"] = [k[:40] for k in nocut]
+    out["keeps"] = f"{out['axis']} {'>=' if out['flip'] else '<='} {out['pos']:g}"
+    return out
 
 
 def _open_notes(store: GraphStore, graph_id: str, gen: str) -> int:
     try:
-        return sum(1 for n in store.list_gen_notes(graph_id, gen) if not n.get("done"))
+        return sum(1 for n in store.list_gen_notes(graph_id, gen) if not n.get("done") and not n.get("empty"))
     except (KeyError, ValueError):
         return 0
 
@@ -1917,9 +2636,15 @@ def _note_for_agent(n: dict, base_url: str, points: bool) -> dict:
             im["image_path"] = f"projects/{g}/gens/{gen}/notes/{im.get('file', '')}"
             if im.get("view"):                 # the photo of the view it was placed from
                 im["view_image_path"] = f"projects/{g}/gens/{gen}/notes/{nid}.v{im['view']}.jpg"
+    if n.get("measures"):
+        out["measures"] = _link_measures(out["marks"], n.get("strokes") or [], n["measures"])
+    if n.get("shapes"):
+        out["shapes"] = _link_shapes(out["marks"], n.get("strokes") or [], n["shapes"])
     if points:
         out["strokes"] = n.get("strokes", [])
-    for k in ("t", "hide", "camera"):
+    # the user keeps drawing on a note after it is first saved: `updated` says
+    # when it last changed, `reopened` = the reply it had before that change
+    for k in ("t", "hide", "cut", "camera", "updated", "reopened"):
         if n.get(k) is not None:
             out[k] = n[k]
     if n.get("image"):
@@ -1960,6 +2685,8 @@ def list_notes(store: GraphStore, graph_id: str = "", gen: str = "", limit: int 
                     raise
                 continue
             for n in notes:
+                if n.get("empty"):                 # cleared, kept only for its ↶
+                    continue
                 if include_done or not n.get("done"):
                     out.append(_note_for_agent(n, base_url, points))
     out.sort(key=lambda e: (e["created"] or "", int(e["gen"][1:]), int(e["id"][1:])),

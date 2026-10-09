@@ -128,6 +128,7 @@ server.py            FastAPI HTTP API (port 8090). Routes under /api/* :
                        /api/nodes?query=|compact=1 and /api/nodes/{type},
                        /api/agent/tags (ToAgent provenance index, §7b),
                        /api/graph/{name}/slice_summary|section_outline (§7b),
+                       /api/graph/{name}/gens/{gen}/measures[/exact] (↔ Metro, §9c),
                        /api/graph/{name}/screenshot (PNG of the viewport, §9 —
                        the agent's eyes; also MCP cad_screenshot),
                        POST /api/graph/{name}/anticipate (baked meshes of the
@@ -1690,8 +1691,8 @@ result while the workflow moves on.
   master `t`), `tracks=1` (panel open). Framing restores every track's own `t`.
   Example project: `projects/cassone-demo` (a chest whose lid opens on a hinge).
 - **✎ Disegna — the user draws FOR the agent.** In /view (button, or `D`) the
-  user paints on the part — circles a hole in red, marks a fillet — picks
-  colour/size and writes a sentence; "Invia all'agente" stores a NOTE beside
+  user paints on the part — circles a hole in red, marks a fillet, writes ON
+  it — picks colour/size; it is stored AS THEY DRAW as a NOTE beside
   the gen (`gens/gN/notes/aK.{json,jpg}` — the gen's own files stay immutable;
   `aK.claim` is kept so an id is never reused, like a gen number). Strokes are
   paint ON THE SURFACE, not on the screen: each pointer sample is a raycast
@@ -1710,6 +1711,42 @@ result while the workflow moves on.
   graph. Agent side: `cad_notes` / `GET /api/notes`, `cad_note_image`,
   `cad_note_done` (reply shown under the note); `recent_gens` counts open
   `notes`; `#note=aK` opens the viewer on one. Tests: `tests/test_notes.py`.
+  - **The bar is four tabs + one common row** (`PLAN_VIEW_TOOLS.md` §1):
+    ✎ Matita (✎ penna — flat —, ✎³ penna 3D, T vernice, ▭ decal) · ◆ Tag (⚑
+    targhetta, 🖼 Img) · ▣ Blocky (▣ forma + its kind, the gizmo modes ✥ ⟳ ▣
+    ◌) · 🔧 Tool (↔ metro + modes, ✂ sezione — a disabled placeholder until
+    task A). Keys `1-4`; P/T/E/M/F as before, a key shared by several tools
+    (P, T) takes the one used last; tab + tool per tab remembered in
+    localStorage `noodle:view:drawTools`. Common row, every tab: ↶ ↷ 🗑 ⌫ Muovi,
+    colours, sizes. The TAB row ends with the note's name + state (`#d-save`:
+    ● g4#a1, green saved / ◌ saving / ⚠ not saved — click copies the ref),
+    Fatto ✓ · ⋯ (Pulisci, on every screen — and 🗑 next to ↷ is the same
+    Pulisci in sight, since nobody found it in the menu) · ▾ · ✕. On a phone that end
+    sits on its own line above the tabs, the tool row scrolls sideways, the
+    common row stays; on `pointer:coarse` those buttons are ≥ 44px.
+    **▾ hides the bar while you work** (quill: «nascondere la tab disegna
+    mentre si fa un'operazione»; key **B** — H already hides a piece): only
+    the top row is left (`#vp.dhide`: the tool in hand as a chip that
+    reopens it, the name, Fatto ⋯ ▴ ✕), at the top on a desktop and at the
+    bottom on a phone, where the bar was. The tool is NOT deselected — you
+    keep drawing, placing/scaling shapes (their own `#s-bar` stays), measuring;
+    the ✂ cut's controls live in the tool row, so with the bar hidden its own
+    `#cutbar` comes back. Not remembered: entering ✎ always opens it whole. There is **no note text field** any more: a note is what is
+    drawn and written on the part; `text` stays in the data ('' for new notes,
+    an old note's sentence is kept when it is resumed).
+    **A tool is one `registerTool({id, tab, key, icon, label, title, mode,
+    cursor, hint, options, select, deselect, down/move/up/cancel, click,
+    ownsTaps, disabled})`** — `webui/view-tools.js`, a table + a dispatcher
+    that calls the active tool's handlers in the CAPTURE phase on `#vp` (a
+    gesture stays with the tool that got its pointerdown); `ctx` carries
+    what view.html shares with a tool module. Tests:
+    `tests/ui/view-tools.test.cjs`.
+  - **↷ redo**: the action stack has two sides (`actions` / `redone`); ↶
+    steps back, ↷ steps forward, a new action (`pushAction`) empties the redo
+    side; Ctrl+Shift+Z / Ctrl+Y. Every step goes through the autosave (PUT;
+    DELETE when nothing is left — a ↷ after that is a new note, new id) and
+    re-shoots the view pictures it touched (`refreshViews`), both ways. A
+    module's action may carry its own `undo()` / `redo()`.
   - **One picture per VIEW, not per note** — paid for on the first real note:
     the main JPEG is the LAST view, and a cross drawn under a bolt head from
     below was simply not in it (nor a line along the thread); the agent found
@@ -1728,14 +1765,93 @@ result while the workflow moves on.
     task, `_renderFrame` before the browser composites); a view left empty
     keeps its camera with `image: null` and is not sent; only a persp↔ortho
     change falls back to a fresh picture of the current view.
-  - **⌫ eraser**: whole strokes (the pen already splits them where it leaves
-    the surface), hit-tested in 3D — the point on the PART vs each stroke's
+  - **✎ as a 3D pen — ink piles up where you INSIST** (`webui/pen3d.js`,
+    pure, `tests/ui/pen3d.test.cjs`). quill: «penna 3D immaginaria con cui
+    fare cacchette… solo se si insiste a girare su un punto, senza torri
+    fuori controllo». Each pen sample gets a `lift` (mm along its normal) on
+    top of the 0.6 r the tube always has: the ink under the pen is measured
+    as the LENGTH of earlier stroke inside its reach, in passes (one straight
+    pass = 2 × reach) — counting runs of samples read a circle's seam, where
+    it starts AND ends, as two passes. Under 1.5 passes → 0 (a line crossed
+    once or twice stays flat); from there one layer (0.7 × width) on top of
+    the highest ink under the pen, so each further loop adds ONE layer; along
+    the stroke the lift moves ≤ 1 mm per mm (a ramp, never a wall — off a
+    heap it hangs a moment, like a real 3D pen). The pen's own last 2.5
+    widths are its wake, not old ink. Painted text never stacks. Measured in
+    the browser: 1 and 2 loops flat, 8 loops ≈ 2.5 mm. The note carries
+    `lifts` per stroke (only when > 0) and `height_mm` per stroke and per mark
+    — read by the agent as «material here, this tall».
+  - **The note saves itself — there is no send button.** Paid for on
+    `creepyfinger-v4/g13` (feedback 20261008-153010): quill drew for a quarter
+    of an hour, the page was reloaded, and it was gone — the server log showed
+    not one write in between, because a note reached the server only when
+    "Invia all'agente" was pressed. Now every change goes through `syncDraw()`,
+    which schedules `flushSave()` (900ms debounce, one request in flight): the
+    first change POSTs and gets the id, every later one PUTs the WHOLE note
+    back under that id (`PUT …/notes/{id}` → `api.add_note(note_id=)` →
+    `store.save_gen_note`, which keeps `created`, sets `updated`, deletes the
+    pictures the rewrite no longer names and REOPENS a note the agent had
+    closed, its reply kept in `reopened`). **The undo history rides along**
+    (quill: «salva la history nel file così si può annullare anche se
+    ricarico»): `historyOut()` names items by their `k` (unique, ++seq) —
+    `live` = the k of each item of the note in its own order, `pool` = every
+    item an action still points at that is off the part, in full, plus
+    `actions`/`redone` by k — and the server keeps it as `aK.history.json`
+    beside the note (never in the note, never shown to the agent); `resumeNote`
+    reads it back (`historyIn`), so ↶ ↷ survive a reload. 🗑 Pulisci
+    (`clearAll`, also visible next to ↷) is an erase of everything, so ↶ undoes
+    it and it no longer asks. A note with nothing on it but something to bring
+    back is KEPT with `empty: true` — hidden from `list_notes`, the open-note
+    counts and the /view list, resumed by its page; with no history either, or
+    on «Fatto», it is DELETEd. It compares a signature of the content, computed with
+    every view at its own index — tied to the camera, orbiting after a stroke
+    re-saved the note. A failed save shows `⚠ non salvata, riprovo` in the
+    `#d-save` chip and retries every 4s; `visibilitychange` (a phone
+    backgrounding the page) saves at once, `beforeunload` with a change still
+    unsent saves AND asks. «Fatto ✓» closes the note:
+    the next mark starts a new one. The live note is drawn by the draft, not
+    by `noteObject` (it would show twice), and is «✎ in corso» in the list.
+    **…and it comes BACK into the draft** (`resumeNote`): strokes (painted
+    letters re-linked to their words), labels, placed pictures (fetched and
+    turned back into data URLs, since every PUT re-sends them), measures,
+    shapes (`rot` = surfQuat(normal)⁻¹ · quat, `ffd` kept) and the view
+    pictures, with `save.id` on the note — so it stays ONE note across a
+    reload. The page remembers the note it was drawing per gen in
+    localStorage (`noodle:view:live:<graph>/<gen>`, a convenience: the server
+    holds the note) and resumes it on load unless it is done; any note has a
+    ✎ in the list to continue it. The undo history is not rebuilt: ↶ starts
+    from the note as saved (⌫ still rubs anything out).
+  - **The brush: alpha + width, for ✎ and ✎³ alike** (common row). Three
+    ALPHAS (`webui/ink.js`): *sfumato* `soft` (the spray that evens out; ✎³ a
+    tapered, matte bead), *normale* `normal` (a marker's crisp edge; ✎³ the
+    round tube), *stellina* `star` (stars stamped along the stroke at a fixed
+    pace — `stamp` = arc length so far, each star drawn by the segment its
+    centre falls in; ✎³ the tube through a star nozzle). Width = a slider
+    1…80 px on a square law. Both remembered (`noodle:view:penAlpha|penSize`).
+    Each stroke saves `pen` (spray|3d) and `alpha`, so a reloaded ✎³ line stays
+    filament even when it never piled up; absent = what the pen drew before
+    alphas (soft spray, round tube). 🖼 Two picture squares: one among the
+    tips (a photo as the ALPHA — stamped on ✎, a relief on ✎³) and one among
+    the colours (a photo as the colour TEXTURE — along the stroke, per stamp,
+    wrapped round the tube). `webui/brush-img.js` prepares any photo with no
+    question asked: ground read on a ring 4–8% inside the border (the outer
+    band is often a frame — taken for the ground it turned a leaf inside out),
+    crop to the subject, polarity, levels with a floor over the ground's
+    grain, round feather; the texture is cropped by covering and sampled
+    mirrored (no seam). The pictures travel INSIDE the note as small JPEG
+    data URLs (`brushes`, strokes name them by `brush`/`tex` index; the agent's
+    listing leaves them out). The toast steps past every visible bar
+    (`placeToast`): it used to cover the folded ✎ row and the shape's bar.
+  - **⌫ eraser**: any object of the note, whole — a stroke (the pen already
+    splits them where it leaves the surface), a painted word, a targhetta, a
+    decal, a picture, a dimension (along its line), a shape — hit-tested in 3D — the point on the PART vs each stroke's
     polyline, radius from the size buttons in px → mm (`ERASE_PX`). Picking
     the tubes would miss 3px lines and catch strokes on the far side. Draft
     only; sent notes stay immutable.
   - **T — text ON the part, and it is DATA.** Drag a box (a tap = default box,
     smaller on a phone), type, Enter; tap a label with T to edit; ⌫ rubs it
-    out. Three STYLES, picked next to T and remembered (`noodle:view:labelStyle`),
+    out. Three STYLES = three tools (T vernice and ▭ decal in ✎ Matita, ⚑
+    targhetta in ◆ Tag), the last one remembered (`noodle:view:labelStyle`),
     stored per label as `style` ("tag" when absent, for old notes):
     **✎ vernice** (`paint`, the default) — quill: «come disegna già a mano può
     stampare testo?». The words are laid out in the box in SCREEN space with a
@@ -1809,11 +1925,298 @@ result while the workflow moves on.
     then until every stroke projects inside. `cam.lookAt` inside that loop is
     load-bearing — the controls orient the camera only on `update()`, and
     without it every stroke tested off-screen and the part shrank to a dot.
+- **↔ Metro — dimensions ON the part, both ways** (`PLAN_VIEW_MEASURE.md`).
+  `measureObject` in view.html is the third kind of targhetta: two anchors, a
+  line with arrowheads (outside, pointing in, when there is no room), extension
+  lines when `n`+`off` lift it, a ring for Ø/R, the plate BESIDE the line on
+  screen (re-decided each frame in `onBeforeRender`), every piece twice like
+  `tagObject` (depth-tested + 0.35 ghost). mm, 2 decimals, decimal comma; `≈`
+  when the value came from a tessellated curve. Violet = the user's, cyan ◆ =
+  the agent's, or green/amber/red by `status`. «↔ Quote» / `#measures=0`.
+  - **The user's** (✎ Disegna → ↔, `M`): a TAP takes a point — the tool never
+    captures the pointer, so a drag still orbits; with a mouse a rubber
+    dimension follows; Shift locks to the dominant axis; Esc drops the first
+    point; Enter / the same feature twice = its Ø or length. Modes (remembered,
+    `noodle:view:measureMode`): Auto, Punto–punto, Spigolo, Foro / cerchio,
+    Faccia–faccia. Part of the draft like a stroke (↶, ⌫ along its line, view
+    pictures); sent as the note's `measures` (`api._measures`), read by the
+    agent through `cad_notes` with a one-line `summary` and `near_marks` (a Ø
+    reaches 1.5·r: the pen circles the RIM, the Ø sits at the centre). On a
+    phone, press and HOLD: a lens above the finger, lifting takes the point.
+  - **Snaps without a B-Rep** — `webui/measure.js`, pure, tested in node
+    (`tests/ui/measure.test.cjs`): weld → sharp edges (>28°) → chains between
+    corners classified line / circle / arc / curve (PCA plane + Kåsa +
+    Gauss–Newton), planar faces by flood fill (same normal AND same plane),
+    cylinders from a smooth patch's normals, a spatial grid. Built lazily per
+    piece (~170 ms on the 19k-tri nut). Priority: vertex > circle centre >
+    edge > face > free. A thread is the trap: thousands of crests, each a
+    "vertex" — a spot with >10 sharp edges within 2·rE snaps circles only, a
+    piece over 20k sharp edges snaps faces only. Two EDGES are measured
+    lato–lato — at their closest points (`polylineGap`, segment–segment), in
+    Auto and in the Spigolo–spigolo mode; `exact` does the same on the B-Rep.
+    A silhouette edge is where a ray GRAZES past the part, so a miss looks
+    around within the snap radius and accepts only an edge/vertex/circle
+    there (never a free point in the air). Two traps paid for: a point
+    lying ON the tapped plane measured 0 (now: the distance to the tapped
+    spot), and `e.at || e` on an end given as `[x,y,z]` — an Array HAS `.at`
+    (Array.prototype.at), so every agent dimension vanished silently.
+  - **The agent's**: `api.measure_gen` / `POST|GET …/gens/{gen}/measures` /
+    MCP `cad_measure_gen` / `measures=` on `cad_snapshot`, stored in
+    `gens/gN/measures.json` (beside tags.json, not in it). `between: [refA,
+    refB]` measures the gen's FROZEN graph on the B-Rep (`measure.py
+    distance`) so the agent never guesses points; `expected` ± `tolerance`
+    judges `status`. A tap on any dimension explains it (toast).
+  - **✓ Verifica esatto**: a user's dimension, tapped, can be redone on the
+    gen's frozen B-Rep — `measure.py` op `exact` finds the same vertex /
+    circle edge / edge / planar face again and re-measures; `POST
+    …/measures/exact` (off_loop, writes nothing). A draft takes the exact
+    value. Mesh-lane pieces have no B-Rep and say so. Static preview: the
+    snaps work (computation in the browser), exact does not.
+  Tests: `tests/test_measures.py`, `tests/test_notes.py`, `tests/ui/measure.test.cjs`.
+- **▣ Forme — basic shapes placed ON the part** (✎ Disegna → ▣, `F`): a cube,
+  a cylinder or a sphere, in the pen's colour, sent as the note's `shapes`
+  (`kind`, `size` in its own frame — a cylinder is [Ø, Ø, h] along `axis` —
+  `center`, `quat`, `anchor`/`normal` of the surface, the piece; `cad_notes`
+  adds a `summary` and `near_marks`). A tap on the part sets one down SITTING
+  on the surface (local Z = the normal). Selected, it wears ONE set of handles
+  at a time, picked in ▣ Blocky's tool row (`#s-modes`; `gizmoMode`,
+  remembered in localStorage `noodle:view:gizmoMode`; `refreshCage`
+  builds only the active set, one function per set, and `handleAt` finds what
+  is there): **✥ Sposta** = three arrows along its own X/Y/Z, on a LEASH (the
+  centre stays in the piece's box grown by max(¼ of the piece, the shape's
+  size)); **⟳ Ruota** = three rings about the centre (Shift 15°); **▣ Gabbia**
+  = ALL IN ONE (quill: «fai valere gli spigoli della gabbia per deform, e un po'
+  c'è tutto in uno» — the old Scala ⇄ Deforma chip and `cageMode` are gone, a
+  stored `noodle:view:cageMode` is simply never read): the 8 **vertices**
+  (amber cubes) and the 12 **edges** (pale-amber diamonds at their middle,
+  picked on a fat rod over the middle 60% of the edge, distance measured to the
+  SEGMENT on screen) bend the shape — an edge moves its two vertices by ONE
+  delta, clamped once for both (`FFD.moveEdge`), so the side stays parallel;
+  Shift keeps only the dominant axis of the move (in mm). The six **face**
+  handles (±X red, ±Y green, ±Z blue) stretch ONE axis with the opposite face
+  fixed (a cylinder keeps round, a sphere scales whole), the violet
+  **centre** dot scales the whole about its base. Precedence: whatever pick
+  volume is hit, the handle nearest the pointer on screen wins — the centre
+  included, at its old size and grab (mark min(1.4·grab, 0.15·side), grab
+  1.4·grab). Shrinking it and letting every handle beat it (edaaf40) answered
+  the wrong complaint: what took «every press» was the BODY moving the shape.
+  **Scale
+  after a bend** (quill: «si scala con la deformazione applicata»): `ffd` is
+  normalised, so a face / the centre scales `size` and the bend grows with it;
+  the face handles sit on the BENT face (`FFD.faceMean`, the mean of its 4
+  corners), the fixed side is the opposite bent face's centre, and the centre
+  dot sits at the bent body's centre. The deformation is a trilinear FFD
+  (`webui/ffd.js`, pure, `tests/ui/ffd.test.cjs`): a
+  corner's motion fades over the whole body, the other 7 corners and the
+  three faces that do not touch it stay exactly put, so the cage's edges stay
+  straight and the millimetre paper bends with the body (it reads the REST
+  position, `restPos`); corners keep their octant and the minimum apart. The
+  note carries `ffd` (8 offsets in the shape's frame, 1 = its size) AND
+  `corners` (the 8 in world mm, for a text-only reader); `cad_notes` says
+  «deformed». **◌ Nascondi** = no handles; the right button / double tap
+  still slides the body. A pen
+  colour clicked with a shape selected RECOLOURS it (one undo step; the pen
+  takes it too). Standard sizes next to the label: **1mm** / **10mm** (every
+  side, Ø and height) and **½ vol** (same shape, scaled until it is half the
+  volume of the piece it sits on — the gen's `previews[id].volume`, a
+  body's, or a fanned part's triangles; disabled with the reason when none is
+  known); the base stays on the surface. On a deformed shape they rescale
+  the cage and KEEP the deformation (`ffd` is normalised, so the bend scales
+  with it); ½ vol counts the nominal box, not the bend. A drag that changes
+  nothing is not an undo step. MOVING IS
+  NOT FREE: a slide re-anchors the body on the surface hit under the
+  pointer (`stickAt`) or does nothing — quill: «si clicca e appiccica sui
+  pezzi». **The slide is the RIGHT button dragged on a shape** (mouse; off the
+  shapes the right button is still the pan, and no context menu opens over a
+  shape) **or a double tap and drag** (finger: the second press ≤ 300 ms and
+  ≤ 20 px from a tap on a shape, `DTAP_MS`/`DTAP_PX`; it wins over the handles
+  a small cage spreads under the finger). The LEFT button / one finger on the
+  body does not move it (quill: «se premi su un punto qualsiasi della
+  superficie sposta il pezzo»): a tap selects the shape, a drag orbits like
+  anywhere else; handles still take the left button. A second finger during a
+  slide puts the shape back and re-dispatches the first finger to
+  OrbitControls, like ✎'s pinch. The body is GRAPH PAPER in the shape's colour (`mmGridMaterial`, a
+  shader injected into the standard material): 1 / 5 / 10 mm rules in the
+  shape's own millimetres (local position × size, triplanar per face), the
+  1 mm rule fading where it would be denser than a few px. The minimum side
+  follows the PIECE it sits on (2% of its size, capped at 1 mm — or the next
+  drag would snap a 1mm preset back up), so
+  corners never meet; the handle MARKS shrink with the shape (≤ 10% of its
+  shortest side) while the GRAB volumes stay ~6/9 px, nearest one wins, and
+  on the body of the selected shape a handle wins only within half a grab
+  radius (else a small shape could never be moved). Phone: the tool row
+  wraps and each tool's menu shows only while it is in hand — 604px of tools
+  in a 390px screen had been scrolling the whole viewer sideways; `#s-bar`
+  moves to the top, takes the full width (`width:max-content` — at left:50%
+  it shrank to the modes row and wrapped Togli/✓ off the size row) and
+  «· deformato» becomes an amber ≈. A click in the bar's first 400ms is the
+  placing tap's ghost and is ignored (`sBarGhost`).
+  Screens: `docs/asset/view-shapes-*.png`.
+- **⊞ Piano — the pencil draws in the void too** (`webui/view-plane.js`,
+  PLAN_VIEW_TOOLS §4; quill: «disegni sui piani anche se non c'è un pezzo, tipo
+  ZBrush»). In ✎ Matita, ⊞ + a menu: Superficie (default, as before) / XY / XZ /
+  YZ / Vista (perpendicular to the camera, FIXED when picked). For ✎ ✎³ and T
+  vernice only: `inkHit()` = `surfaceHit()` first, then `VP.planeHit()` — over
+  the part you still draw ON it, in the void on the plane, and with a plane in
+  use a drag in the void DRAWS instead of orbiting (right button, wheel, two
+  fingers, ✋ Muovi still move the view; the hint says so). The plane goes
+  through the point a stroke began on the part (Alt+click on the part puts it
+  there without drawing), else the centre of the visible pieces;
+  **Shift+wheel** moves it along the normal in round 1-2-5 mm steps (~8 px of
+  screen, `mmPerPx`), a phone gets a vertical slider at the side. It is a veil
+  ruled 1 / 10 mm (the ▣ Forme paper, own ShaderMaterial) over a rectangle
+  round the pieces AND what was drawn on it; its position is in the bar beside
+  ⊞ and on the slider — NOT in 3D: a label there sat on the very stroke and
+  went into the view photo with it. Mixed strokes: leaving the part's edge
+  starts a new stroke (same gesture) that begins at the last point ON the part
+  — and the plane is re-anchored right there first, or a Vista plane through
+  the start of the stroke put the void part 7 mm behind the silhouette
+  (measured on `creepyfinger-v4/g64`; near_piece read 3.08 mm instead of 0); a
+  jump > max(pen rule, 4 mm) still breaks it. Data: a sample on the plane has
+  normal = the plane's, the stroke no `piece` and `plane: {origin, normal}`
+  (a painted label keeps its plane, `L.plane`, for re-lettering). Server
+  (`api.add_note` / `_marks`): such a gesture is a mark of `kind: "plane"` with
+  its `plane` and `near_piece` {node, title, distance_mm} — point-to-TRIANGLE
+  distance (`_point_tri_dist`, numpy) on the gen's FROZEN view.json meshes,
+  computed once at save and stored on the stroke. The ⌫ eraser finds void ink
+  on SCREEN (`planeInkNear`, segment by segment). `near_piece` skips the
+  pieces the note's `hide=` had hidden (a node, a scene body, or one piece of
+  a fan-out buffer by its `parts` counts). The sheet is a faint veil fading to
+  a rounded-square border (it used to cover most of g64's view), and the line
+  where the plane meets the shown pieces is drawn on it — ✂'s CPU slice
+  (`sliceTriangles`), solid + faint through the part, computed 150 ms after
+  the plane moves and never while a pointer button is down, cached per plane
+  (+ section state), the removed side of a ✂ cut dropped. Tests:
+  `tests/test_view_plane.py`.
 - **The viewer draws on demand** (`CadViewer.invalidate()`, no continuous loop):
   anything that changes the scene from outside the viewer must ask for a frame.
   `/view` does it in `poseTrack()` (every timeline pose) and `apply()` (hidden
   pieces); without it the ▶ player moves the meshes and the canvas stays still.
+  `_tick` clears the dirty flag BEFORE it draws, so a hook that runs inside the
+  frame (`scene.onBeforeRender`) and asks for another one gets it.
+- **✂ Sezione — one plane, the cut face hatched** (`PLAN_VIEW_SECTION.md` §1
+  phase 1). ONE state, two ways in: ✂ beside Tutti/Inverti/Inquadra (key X,
+  floating X/Y/Z · slider · ⇄ · ✕ bar) and the `section` tool in ✎ Disegna's
+  🔧 Tool tab (key X there too) — `webui/view-section.js` builds the controls
+  twice from one function. ✂ in a list row leaves that piece WHOLE (the bolt
+  intact in the cut nut). Hash `cut=z:12.5&cutflip=1&nocut=n3,n7.2` (nocut
+  encoded like `hide=`); a new plane takes the half facing the camera off;
+  the slider spans the box of the SHOWN pieces. Rendering in
+  `webui/section.js` (for the editor later), pure geometry in
+  `section-core.js` (`tests/ui/section.test.cjs`):
+  - the cut is `material.clippingPlanes` set in each piece's `onBeforeRender`,
+    on whatever material it wears at draw time — never `renderer.
+    clippingPlanes` (it would cut grid, notes, tags) — so a restyle (🔍 Aspetto)
+    keeps the cut with no call to remember;
+  - the cap is the stencil trick PER PIECE (back faces +1, front −1, a quad on
+    the plane where ≠ 0, `clearStencil` after each): one stencil for all could
+    not tell nested pieces apart. It needs `stencil: true` on the renderer
+    (three ≥ r163 no longer asks for one). Caps are opaque, so the
+    transmission target (which has a stencil too) draws them behind glass;
+  - only CLOSED pieces get a cap (`closedRange`: every welded edge used an even
+    number of times); lines, dots and open shells are cut and not capped;
+  - hatch in the plane's own axes in mm (pitch ≈ 9 px snapped to 1/2/5, so it
+    neither swims nor crawls), 45°/135° chosen greedily between pieces whose
+    boxes overlap; the dark contour is the CPU triangle/plane slice, hidden
+    while ▶ plays and redrawn when the pieces stop (`setMoving` / `posed`);
+  - `firstHit` (the ONE raycast: pen, metro, forme, targhette, selection)
+    skips hits on the removed side and returns the CAP when the ray is inside
+    a cut piece at the plane (odd number of that piece's surfaces crossed —
+    the stencil's parity); `h.cap` → the metro takes a free point there;
+  - a note drawn on a sectioned view saves `cut: {axis, pos, flip, nocut?}`
+    and the server adds `keeps: "y >= 0"`; `cad_notes` shows it
+    (`tests/test_view_section.py`).
+- **🔍 Aspetto — glass, glow or ghost, for THIS view only** (`webui/view-look.js`,
+  PLAN_VIEW_SECTION §2): 🎨 on every row of the piece list (a node row = all its
+  leaves), on the selection bar, or `G`; the gen stays immutable, the look lives
+  in the hash — `#look=n3:glass,n7.2:emissive:#ffcc00,n5:ghost,n9:#ff0000`
+  (finish and/or colour, a bare node id = all its leaves), read once at boot,
+  written on every change. Per LEAF, like visibility: a whole object swaps its
+  material; one piece of a fan-out gets a PROXY mesh (shared buffers, a group
+  of its own) and its group material hidden — swapping the group in place
+  would make one emissive piece light the whole buffer, because the glow pass
+  renders whole objects. `markGlow` + `viewer.syncGlow()` after each change.
+  - **👻 fantasma** is a finish of `makeMaterial` (editor too, 🎨 modal):
+    alpha 0.15, `depthWrite:false`, plus opaque sharp edges (`ghostEdges`,
+    EdgesGeometry 30°, never pickable). Ghost in ghost shows (glass in glass
+    does not — §0 of the plan), and it is the same on a phone. A pick goes
+    THROUGH a ghost (`firstHit` → `hitOf(hits, skipGhost)`): click the servo
+    inside the ghost shell and you get the servo, and the pen draws on it.
+  - **«Guarda dentro»** (in the menu): the piece stays, everything that COVERS
+    it goes all-glass or all-ghost, never a mix; again = back. «Covers» is
+    rays, not boxes (`coverOf`: 60 surface points × 26 directions, first other
+    piece hit, ≥10% of rays): measured on `creepyfinger-v4/g64`, the
+    electronics sit in a shell cut in two halves and neither half's bbox holds
+    60% of theirs (0.40 / 0.55) — the plan's «bbox che lo contiene» found
+    nothing. Rays give the two shells + the phalanx in front of the servo.
+  - Not verified: a real Android phone (glass there loses the inner glass
+    entirely, `WEBGL_multisampled_render_to_texture`, plan §0.2). A big
+    emissive body floods the frame with bloom (existing glow pass, not new).
+- **Plates step aside when you zoom into them** (`webui/view-plates.js`,
+  PLAN_VIEW_TOOLS §3). ONE builder for the three plates of /view —
+  `makePlate()` (dot + stem + plate: the user's ⚑ targhetta via `tagObject`,
+  the agent's tags) and `plateSprites()` (the bare plate: the ↔ metro's value,
+  whose side of the line is its `place(cam)` callback). They stay what they
+  were — mm-sized sprites, solid + 0.35 ghost — until the plate on screen is
+  too big to read as a word: ≥ 92% of the viewport wide, letters ≥ 56 px
+  (`letter` = letter height / plate height, from the canvas builder), or a big
+  plate cut by the screen edge. Hysteresis 1.0 / 0.8. Then it SLIDES away
+  from the zoom point (last wheel cursor, pinch centre, else the middle; a
+  mouse orbit/pan resets it), preferring its stem's direction on screen, and
+  never onto its own anchor (`keep`) — or, with no room, FADES to 0.15 (down
+  to 0.06 the more oversized it is), stem included, dot never. ~150 ms. The
+  plan's "60% of the viewport" was tuned up by eye on creepyfinger-v4 g51/g64:
+  an 84%-wide agent tag still reads at a glance. Hover holds a stepped-aside
+  plate at full opacity only when the pointer ENTERS it (zooming at the cursor
+  puts the cursor on it already, and a wheel lets go); on touch, a TAP decided
+  on lift (the first finger of a pinch lands on it too). It all runs in
+  `scene.onBeforeRender` (main frame only, not the bloom target), so only
+  when a frame is drawn. **Trap, paid for:** an `invalidate()` from inside a
+  frame used to be eaten (`_tick` cleared `_dirty` AFTER rendering) and a
+  plate froze half faded; `_tick` now clears it before drawing, so the
+  transition asks for its next frame with a plain `invalidate()`. No
+  registry: plates are found by `traverseVisible` each frame.
+  Tests: `tests/ui/plates.test.cjs`.
+- **✂ × 🔍 × ⊞ — where the four tools meet** (`tests/test_view_int.py`).
+  ONE `firstHit` → `hitOf(hits, skipGhost)`: the first pass looks through
+  ghosts, the second takes them; inside each pass a hit on the side the cut
+  removed is air and the cap parity is counted on the hits that pass may take
+  — so a ghost's cap is looked through with the ghost. section.js re-hooks
+  the cut EVERY frame (a flag per object), because Aspetto adds children after
+  bind: a fan-out piece's proxy (`userData.lookProxy`, its own group 0) and a
+  ghost's edges were drawn whole on a cut view; the cap reads colour and
+  visibility from the proxy, and a ghost's cap is hatched at 0.3 alpha with
+  no depth (CustomBlending, so it stays in the opaque list and in stencil
+  order). One stencil count per LEAF, not per drawn object: no double cap.
+  In the piece list ✂ and 🎨 are 24 px (36 on touch) before ◎.
 
+- **✎ spray, ✎³ filament — two pens that LOOK different** (`webui/ink.js`, pure,
+  `tests/ui/ink.test.cjs`; materials in `webui/view-ink.js`). quill: «i tubi
+  della penna 3D più ombreggiati … e quella normale più simile a vernice spray
+  che si omogeneizza». Only the drawing changed: the note's data are the same.
+  ✎ is a flat band on the surface, one quad per segment, each quad a soft
+  CAPSULE in its own coordinates (round ends, a fading mist to 1.3 r with a
+  speckle fixed in model space; T vernice letters crisper, and the fade never
+  eats a thin line's last pixel — `fwidth`). **The trick for the even coat:**
+  blending sums coverage, so crossings and every joint went darker; a coat of
+  paint is the MAX. The canvas has no destination alpha, the depth buffer does
+  the max: each fragment writes `gl_FragDepth` pulled toward the camera by its
+  coverage (a × r, view-space mm, never under the depth step at that
+  distance), pass 1 writes depth only, pass 2 blends with LessEqual — one blend
+  per pixel. A new colour starts a RUN (`nextRun`) one `runStep` nearer, drawn
+  after the previous one (renderOrder 100+2·run): the last colour covers, its
+  mist blends over the earlier ink, not over the part. Runs cap at 4 so a long
+  note never floats its last colour off the part. Both passes stay in the
+  OPAQUE list (CustomBlending blends with `transparent:false`): ink on a piece
+  inside 🔎 glass is still in the transmission target, a 👻 ghost blends over
+  it. ✎³ is a real tube framed by the SURFACE normal (no twist), Catmull-Rom
+  smoothed (×3), 16 sides, hemispherical ends, MeshPhysical with a clearcoat,
+  NOT tone mapped (ACES turned green into pastel) and a baked occlusion round
+  the section (dark underside = contact with the part / the layer below),
+  alternate layers ±8%. A saved stroke does not say which pen drew it: it is
+  filament if it piled up (`lifts`), spray otherwise — a ✎³ line that never
+  stacked comes back as spray after a reload. `disposeObj` skips the shared
+  spray materials (`isShared`).
 
 ## 9d. Exports — the bake bundle and the per-workflow index
 
