@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SERVER = (ROOT / "server.py").read_text()
 MCP = (ROOT / "mcp_server.py").read_text()
 VIEW = (ROOT / "webui" / "view.html").read_text()
+TOOLS_JS = (ROOT / "webui" / "view-tools.js").read_text()
 HELP = (ROOT / "cad_nodes" / "AGENT_HELP.md").read_text()
 
 BOX = {"id": "n1", "type": "Box", "title": "Body",
@@ -161,11 +162,12 @@ def test_the_pen_paints_on_the_surface_and_leaves_the_background_to_orbit():
     # strokes come from a raycast on the part, not from screen coordinates, and a
     # press that misses the part is left to OrbitControls
     assert "function surfaceHit" in VIEW and "if (!hit && !onLabel) return;" in VIEW
-    assert "vp.addEventListener('pointerdown'" in VIEW and "}, true);" in VIEW
+    # the tools' handlers run in the CAPTURE phase on #vp (webui/view-tools.js)
+    assert "TOOLS.attach(vp);" in VIEW and "}, true);" in TOOLS_JS
     # the picture is the user's own view, not a re-framed one — and one more per
     # view the user drew from, taken when the pen lifts
     assert "snapshot({ frame: false" in VIEW
-    assert "if (mine.length) { actions.push({ type: 'pen', g: p.g }); takeView(mine); }" in VIEW
+    assert "if (mine.length) { pushAction({ type: 'pen', g: p.g }); takeView(mine); }" in VIEW
     # a note opened on another screen backs off by the aspect ratio, then
     # until every stroke is inside the picture
     assert "c.aspect / now" in VIEW and "!inside()" in VIEW
@@ -188,7 +190,7 @@ def test_the_eraser_takes_whole_draft_strokes_and_undo_gives_them_back():
     """⌫ hits in 3D: distance from the point on the PART to each stroke's
     polyline, radius from the size buttons in px → mm. ↶ is a stack of
     actions, so it restores what an erase removed, in the original order."""
-    assert 'id="d-erase"' in VIEW
+    assert "TOOLS.registerTool({ id: 'erase', tab: 'common', key: 'e'" in VIEW
     erase = VIEW[VIEW.index("function eraseAt"):]
     erase = erase[:erase.index("\n}\n")]
     assert "strokeDist(s, hit.p) > r + s.width / 2" in erase and "mmPerPx(hit.p)" in erase
@@ -196,7 +198,7 @@ def test_the_eraser_takes_whole_draft_strokes_and_undo_gives_them_back():
     assert "else if (a.type === 'erase') { restore(a);" in VIEW
     assert "draft.sort((a, b) => a.k - b.k)" in VIEW
     # an erase drag is ONE action, pushed at pointer-up; a pinch undoes it on the spot
-    assert "actions.push({ type: 'erase', ...p.erased })" in VIEW
+    assert "pushAction({ type: 'erase', ...p.erased })" in VIEW
     assert "if (p.mode === 'erase') restore(p.erased);" in VIEW
     # only the draft: saved notes are never touched by the eraser
     assert "notesData" not in erase
@@ -247,25 +249,31 @@ def test_the_text_tool_projects_a_decal_and_sends_labels():
     # three's DecalGeometry, vendored at the pinned version, imported via the map
     assert "from 'three/addons/geometries/DecalGeometry.js'" in VIEW
     assert (ROOT / "webui/vendor/three-0.170.0/examples/jsm/geometries/DecalGeometry.js").exists()
-    assert 'id="d-texttool"' in VIEW
+    for t in ("id: 'paint', tab: 'pencil', key: 't'", "id: 'decal', tab: 'pencil', key: 't'", "id: 'tag', tab: 'tag', key: 't'"):
+        assert t in VIEW
     # the normal is the surface under the WHOLE box, size measured on its plane
     new = VIEW[VIEW.index("function makeLabel"):]
     new = new[:new.index("\n}\n")]
     assert "for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++)" in new and "planeSize(" in new
-    # two styles, the user's choice, remembered; a decal that cannot be made
-    # becomes a plate — never the one-sided flying card it used to be
-    assert 'id="d-lstyle"' in VIEW and "localStorage.getItem('noodle:view:labelStyle')" in VIEW
+    # three styles = three tools, the last one remembered (T goes back to it); a
+    # decal that cannot be made becomes a plate — never the one-sided flying card
+    assert 'id="d-lstyle"' not in VIEW and "localStorage.getItem('noodle:view:labelStyle')" in VIEW
+    assert "TOOLS.preferKey('t', labelStyle);" in VIEW
     assert "if (mesh && !under.ridged)" in VIEW and "mat.map.dispose(); mat.dispose(); L.surface = 'tag';" in VIEW
     assert "PlaneGeometry" not in VIEW
-    # the plate faces the camera and shows through the part, faded
+    # the plate faces the camera and shows through the part, faded — built by
+    # the ONE plate module (webui/view-plates.js), shared with the agent's tags
+    # and the metro's values
     tag = VIEW[VIEW.index("function tagObject"):]
     tag = tag[:tag.index("\n}\n")]
-    assert "new THREE.Sprite(" in tag and "depthTest: !ghost" in tag and "for (const ghost of [false, true])" in tag
+    assert "makePlate(THREE," in tag
+    PLATES = (ROOT / "webui/view-plates.js").read_text()
+    assert "new THREE.Sprite(" in PLATES and "depthTest: !ghost" in PLATES and "for (const ghost of [false, true])" in PLATES
     assert "style: L.style" in VIEW and "style: l.style || 'tag'" in VIEW
     # labels are data in the note, and part of the undo / eraser / views machinery
     assert "labels: words.map(L => ({ text: L.text" in VIEW
     for t in ("else if (a.type === 'label')", "else if (a.type === 'edit')", "er.labels.push(L)",
-              "[...draft, ...labels].filter(x => x.view === i)"):
+              "[...draft, ...labels, ...dmeasures, ...shapes].filter(x => x.view === i)"):
         assert t in VIEW
     # saved notes draw their labels too
     assert "for (const l of n.labels || [])" in VIEW
@@ -423,3 +431,701 @@ def test_the_image_tool_and_its_route():
     assert "images: pictures.map(L => ({ data: L.img.data" in VIEW
     assert '@app.get("/api/graph/{name}/gens/{gen}/notes/{note_id}/img/{k}")' in SERVER
     assert "images" in HELP[HELP.index("cad_notes"):] and "image_path" in MCP
+
+
+MEASURE = {"kind": "distance", "value": 12.4, "approx": False,
+           "a": {"at": [0, 0, 10], "normal": [0, 0, 1], "piece": "n1"},
+           "b": {"at": [12.4, 0, 10], "piece": "n1", "snap": "vertex"}}
+
+
+def test_a_dimension_is_data_in_the_note(store):
+    # 📏 the browser measures; the note keeps what and where, named by piece
+    note = api.add_note(store, "demo", "g1", {"measures": [MEASURE, {
+        "kind": "diameter", "value": 8.0, "approx": True,
+        "a": {"at": [5, 5, 10], "snap": "circle_center",
+              "circle": {"center": [5, 5, 10], "axis": [0, 0, 1], "r": 4}}}]})
+    d, o = note["measures"]
+    assert d["value"] == 12.4 and d["unit"] == "mm" and d["approx"] is False
+    assert d["a"]["snap"] == "free" and d["b"]["snap"] == "vertex"
+    assert d["a"]["node"] == "n1" and d["a"]["title"] == "Body"
+    assert o["kind"] == "diameter" and "b" not in o and o["a"]["circle"]["r"] == 4
+    # a note of dimensions alone is a note
+    assert api.gen_notes_raw(store, "demo", "g1")[0]["measures"][0]["value"] == 12.4
+
+
+def test_an_axis_locked_dimension_says_which_axis(store):
+    note = api.add_note(store, "demo", "g1", {"measures": [{**MEASURE, "axis": "z"}]})
+    assert note["measures"][0]["axis"] == "z"
+
+
+def test_bad_dimensions_are_refused(store):
+    bad = [{**MEASURE, "kind": "volume"}, {**MEASURE, "value": -1}, {**MEASURE, "value": float("nan")},
+           {**MEASURE, "b": None}, {**MEASURE, "a": {"at": [0, 0]}}, {**MEASURE, "axis": "w"},
+           {**MEASURE, "a": {**MEASURE["a"], "snap": "magnet"}}, {**MEASURE, "view": 0},
+           {**MEASURE, "text": "x" * 201}, "12 mm"]
+    for b in bad:
+        with pytest.raises(ValueError):
+            api.add_note(store, "demo", "g1", {"measures": [b]})
+    with pytest.raises(ValueError):
+        api.add_note(store, "demo", "g1", {"measures": [MEASURE] * 51})
+
+
+def test_the_measure_tool_is_part_of_the_draft():
+    assert "id: 'measure', tab: 'tool', key: 'm'" in VIEW and 'id="d-mmode"' in VIEW
+    # a dimension rides the undo / eraser / views machinery like a stroke
+    for t in ("pushAction({ type: 'measure', M })", "else if (a.type === 'measure')",
+              "er.measures.push(M)", "measures: dmeasures.map(M =>"):
+        assert t in VIEW
+    # the tool never captures the pointer: a drag on the part still orbits
+    assert "if (tool === 'hand' || tool === 'measure' || tool === 'shape' || e.button !== 0" in VIEW
+    # saved notes draw their dimensions
+    assert "for (const m of n.measures || [])" in VIEW
+    # the snaps come from webui/measure.js (tested in tests/ui/measure.test.cjs)
+    assert "import * as MS from '/static/measure.js';" in VIEW
+    assert (ROOT / "webui" / "measure.js").exists()
+    for mode in ("auto", "p2p", "edge", "hole", "faces"):
+        assert f'<option value="{mode}">' in VIEW
+
+
+SHAPE = {"kind": "cylinder", "size": [6, 6, 10], "center": [5, 5, 15], "quat": [0, 0, 0, 1],
+         "anchor": [5, 5, 10], "normal": [0, 0, 1], "color": "#ef4444", "piece": "n1"}
+
+
+def test_a_shape_is_data_in_the_note(store):
+    # ▣ Forme: «a Ø 6 pin here» — kind, size, centre, axis, the piece it sits on
+    note = api.add_note(store, "demo", "g1", {"shapes": [SHAPE, {**SHAPE, "kind": "box",
+        "quat": [0.2588, 0, 0, 0.9659], "size": [4, 2, 3]}]})
+    c, b = note["shapes"]
+    assert c["axis"] == [0, 0, 1] and c["node"] == "n1" and c["title"] == "Body"
+    assert b["axis"] == pytest.approx([0, -0.5, 0.866], abs=1e-3), "the box was turned 30° about x"
+    n, = api.list_notes(store)
+    assert n["shapes"][0]["summary"] == "cylinder Ø 6,00 × 10,00 mm centred at (5.00, 5.00, 15.00), axis (0.00, 0.00, 1.00), on Body"
+
+
+def test_bad_shapes_are_refused(store):
+    bad = [{**SHAPE, "kind": "cone"}, {**SHAPE, "size": [6, 0, 10]}, {**SHAPE, "quat": [0, 0, 0, 0]},
+           {**SHAPE, "quat": [0, 0, 1]}, {**SHAPE, "center": [1, 2]}, {**SHAPE, "color": "red"},
+           {**SHAPE, "view": 0}, "a pin"]
+    for b in bad:
+        with pytest.raises(ValueError):
+            api.add_note(store, "demo", "g1", {"shapes": [b]})
+    with pytest.raises(ValueError):
+        api.add_note(store, "demo", "g1", {"shapes": [SHAPE] * 31})
+
+
+def test_the_shape_tool_stays_on_the_parts():
+    assert "id: 'shape', tab: 'blocky', key: 'f'" in VIEW and 'id="d-shapekind"' in VIEW
+    # moving is NOT free: the shape follows a surface hit, or does not move
+    move = VIEW[VIEW.index("if (d.h.type === 'move') {"):]
+    move = move[:move.index("} else if")]
+    assert "stickAt(e.clientX, e.clientY)" in move and "if (!hit) return;" in move
+    # a face never passes the opposite one, and the minimum follows the PIECE
+    assert "shapeMin(S) / ref" in VIEW and "function shapeMin(S)" in VIEW
+    assert "const box = pieceBox(S);" in VIEW[VIEW.index("function shapeMin(S)"):][:200]
+    assert "leafIndex.get(S.piece)" in VIEW[VIEW.index("function pieceBox(S)"):][:200]
+    # the marks shrink with the shape; the grab volume does not
+    assert "hs = Math.min(grab, 0.1 * side)" in VIEW
+    # a shape rides the draft like a stroke
+    for t in ("pushAction({ type: 'shape', S, before: null })", "else if (a.type === 'shape')",
+              "er.shapes.push(S)", "shapes: shapes.map(S =>", "for (const sh of n.shapes || [])"):
+        assert t in VIEW
+    assert "`shapes`" in HELP[HELP.index("cad_notes"):] and "Basic SHAPES" in MCP
+
+
+def test_the_draw_tools_never_widen_a_phone():
+    # 604px of tools in a 390px screen scrolled the whole viewer sideways: the
+    # tab's tool row scrolls on its own, the common row stays
+    assert "#d-rows{order:2;overflow-x:auto;" in VIEW
+    assert "#d-rows .trow{flex-wrap:nowrap;width:max-content;}" in VIEW
+    assert "#d-common{order:3;" in VIEW
+
+
+def test_shapes_have_move_arrows_on_a_leash():
+    # the classic X/Y/Z arrows — but the shape may not wander off the part:
+    # its centre stays in the piece's box grown by a quarter of the piece
+    assert "type: 'arrow'" in VIEW and "function shapeLeash(S)" in VIEW
+    assert "expandByScalar(Math.max(0.25 * L" in VIEW
+    arrow = VIEW[VIEW.index("} else if (d.h.type === 'arrow') {"):]
+    arrow = arrow[:arrow.index("} else if (d.h.type === 'center')")]
+    assert "k = Math.min(Math.max(k, lo), hi);" in arrow
+
+
+def test_two_edges_are_measured_side_to_side():
+    # lato–lato: Auto on two edges, and a mode of its own
+    assert '<option value="edges">' in VIEW and "'edges'" in VIEW
+    assert "o.polyline = q.polyline;" in VIEW
+    # a silhouette edge is taken even when the pointer grazes just off the part
+    assert "offPart && !['vertex', 'edge', 'circle_center'].includes(f.snap)" in VIEW
+    M = (ROOT / "cad_nodes" / "measure.py").read_text()
+    assert 'if "edge" in A and "edge" in B:' in M      # exact: the two edges' closest points
+
+
+def test_shapes_are_ruled_in_millimetres_in_their_colour():
+    # graph paper in the shape's colour, in the shape's OWN mm (local position
+    # × size), 1 / 5 / 10 mm rules, the 1 mm one fading where it gets too dense
+    assert "function mmGridMaterial(color, size)" in VIEW
+    # the REST position/normal: on a bent shape the paper bends with the body
+    assert "vGP = restPos * uSize; vGN = restNrm;" in VIEW
+    for rule in ("mmRule(uv, 1.0,", "mmRule(uv, 5.0,", "mmRule(uv, 10.0,"):
+        assert rule in VIEW
+    assert "smoothstep(0.12, 0.33, dense)" in VIEW
+    assert "const body = new THREE.Mesh(geo, mmGridMaterial(S.color, S.size));" in VIEW
+
+
+def test_shapes_wear_one_set_of_handles_at_a_time():
+    # quill: buttons to pick move / rotate / the cage / no gizmo, instead of
+    # the arrows and the rings being there always, together
+    for m in ("move", "rotate", "cage", "none"):
+        assert f'data-gm="{m}"' in VIEW
+    assert "const GIZMO_MODES = ['move', 'rotate', 'cage', 'none'];" in VIEW
+    assert "let gizmoMode = 'cage';" in VIEW
+    key = "noodle:view:gizmoMode"
+    assert f"localStorage.getItem('{key}')" in VIEW and f"localStorage.setItem('{key}'" in VIEW
+    # refreshCage builds ONLY the active mode's handles, one branch per mode
+    rc = VIEW[VIEW.index("function refreshCage() {"):]
+    rc = rc[:rc.index("\n}\n")]
+    assert "switch (gizmoMode) {" in rc
+    assert "case 'move': cageArrows(G); break;" in rc
+    assert "case 'rotate': cageRings(G); break;" in rc
+    assert "cageDeformCorners(G); cageEdges(G); cageFaces(G); cageCentre(G);" in rc
+    assert "case 'none': break;" in rc
+    # G / R / C, only with the shape tool; no H (it already hides the piece)
+    assert "setGizmoMode({ g: 'move', r: 'rotate', c: 'cage' }[k])" in VIEW
+    # the modes are ▣ Blocky's tool row (no longer in the bar over the shape),
+    # one row that never wraps; the size bar keeps the sizes, Togli and ✓
+    assert "#s-modes{display:inline-flex;gap:4px;flex-wrap:nowrap;}" in VIEW
+    assert "options: () => [$('d-shapekind'), $('s-modes')]" in VIEW
+    assert "max-width:calc(100vw - 16px)" in VIEW
+    # the tap that sets a shape down opens the bar under the finger on a phone:
+    # its compatibility click must not press the button that just appeared
+    assert "const sBarGhost = () => performance.now() - sBarOpened < 400;" in VIEW
+    assert "setGizmoMode(b.dataset.gm)" in VIEW
+    assert "if (selShape && !sBarGhost()) deleteShape(selShape);" in VIEW
+
+
+def test_scale_mode_has_six_face_handles_in_the_axis_colours():
+    # task D: in Gabbia → Scala the six face centres stretch ONE axis each,
+    # ±X red / ±Y green / ±Z blue; corners stay white, the centre uniform
+    rc = VIEW[VIEW.index("function refreshCage() {"):]
+    rc = rc[:rc.index("\n}\n")]
+    assert "cageFaces(G)" in rc
+    assert "const RING_INK = ['#ef4444', '#22c55e', '#3b82f6'];" in VIEW
+    fc = VIEW[VIEW.index("function cageFaces({ S, q, grab, hs }) {"):]
+    fc = fc[:fc.index("\n}\n")]
+    assert "for (let a = 0; a < 3; a++) {" in fc and "for (const sg of [-1, 1]) {" in fc
+    assert "const handle = { type: 'face', axis: a, s };" in fc
+    assert "handleMat(RING_INK[a])" in fc
+    # the body no longer moves the shape on the left button, so no handle has
+    # to give way to it any more: whatever pick volume is hit, nearest wins
+    assert "grabPx" not in VIEW
+    # the drag: along the face's outward axis, opposite face fixed, signed min
+    assert "if (h && h.type === 'face') {" in VIEW
+    br = VIEW[VIEW.index("} else if (d.h.type === 'face') {"):]
+    br = br[:br.index("} else if (d.h.type === 'arrow') {")]
+    assert "const k = Math.max((d.L0 + (t - d.t0)) / d.L0, shapeMin(S) / ref);" in br
+    assert "if (S.kind === 'sphere') sz.multiplyScalar(k);" in br
+    assert "else if (S.kind === 'cylinder' && a < 2) { sz.x *= k; sz.y *= k; }" in br
+    assert "sh.setComponent(a, d.mOpp * (s0 - sz[c]));" in br
+
+
+DEFORMED = [[0, 0, 0]] * 7 + [[0.25, -0.1, 0.3]]
+
+
+def test_a_deformed_shape_carries_its_cage(store):
+    # ▣ Deforma: the 8 corner offsets AND the 8 corners in the world, so a
+    # text-only reader sees the bent shape without interpolating
+    corners = [[i, i + 0.5, 2 * i] for i in range(8)]
+    note = api.add_note(store, "demo", "g1", {"shapes": [
+        {**SHAPE, "ffd": DEFORMED, "corners": corners},
+        {**SHAPE, "ffd": [[0, 0, 0]] * 8, "corners": corners},      # all zero = not deformed
+        SHAPE]})
+    bent, flat, plain = note["shapes"]
+    assert bent["ffd"] == DEFORMED and bent["corners"] == corners
+    assert "ffd" not in flat and "corners" not in flat and "ffd" not in plain
+    s = [sh["summary"] for sh in api.list_notes(store)[0]["shapes"]]
+    assert "deformed" in s[0] and "deformed" not in s[1] and "deformed" not in s[2]
+    assert s[0].startswith("cylinder Ø 6,00 × 10,00 mm, deformed by its cage")
+
+
+def test_bad_deformations_are_refused(store):
+    corners = [[0, 0, 0]] * 8
+    bad = [{**SHAPE, "ffd": DEFORMED[:7]}, {**SHAPE, "ffd": [[0, 0]] * 8},
+           {**SHAPE, "ffd": [[0, 0, 0]] * 7 + [[10, 0, 0]]}, {**SHAPE, "ffd": [[0, 0, 0]] * 7 + [[0, -12.5, 0]]},
+           {**SHAPE, "ffd": [[0, 0, 0]] * 7 + [[0, float("nan"), 0]]}, {**SHAPE, "ffd": "bent"},
+           {**SHAPE, "ffd": DEFORMED, "corners": corners[:7]},
+           {**SHAPE, "ffd": DEFORMED, "corners": [[0, 0]] * 8},
+           {**SHAPE, "ffd": DEFORMED, "corners": [[0, 0, float("inf")]] * 8}]
+    for b in bad:
+        with pytest.raises(ValueError):
+            api.add_note(store, "demo", "g1", {"shapes": [b]})
+
+
+def test_the_cage_deforms():
+    # the cage bends: its vertices, in the one ▣ Gabbia set
+    rc = VIEW[VIEW.index("function refreshCage() {"):]
+    rc = rc[:rc.index("\n}\n")]
+    assert "cageDeformCorners(G);" in rc
+    assert "import * as FFD from '/static/ffd.js';" in VIEW
+    # the pure math lives in webui/ffd.js (tests/ui/ffd.test.cjs) and ships to the static pages
+    assert (ROOT / "webui" / "ffd.js").exists()
+    assert '"ffd.js"' in (ROOT / "scripts" / "build_pages.py").read_text()
+    # amber corners, a COPY of the geometry bent and its normals recomputed
+    fn = VIEW[VIEW.index("function cageDeformCorners("):]
+    fn = fn[:fn.index("\n}\n")]
+    assert "type: 'ffd'" in fn and "handleMat(DEFORM_INK)" in fn and "const DEFORM_INK = '#f59e0b';" in VIEW
+    geo = VIEW[VIEW.index("function shapeGeoOf(S)"):]
+    geo = geo[:geo.index("\n}\n")]
+    for t in ("geo.setAttribute('restPos', pos.clone());", "FFD.deformPositions(pos.array, S.ffd)", "geo.computeVertexNormals();"):
+        assert t in geo
+    assert "const g = new THREE.Group(), geo = shapeGeoOf(S);" in VIEW
+    # the drag: on the view plane, into the shape's normalised frame, constrained
+    br = VIEW[VIEW.index("} else if (d.h.type === 'ffd' || d.h.type === 'edge') {"):]
+    br = br[:br.index("} else if", 1)]
+    assert "onViewPlane(e.clientX, e.clientY, d.grab)" in br
+    assert ".applyQuaternion(d.q0.clone().invert()).toArray();" in br
+    assert "FFD.moveCorner(d.ffd0, d.h.i," in br and "shapeMin(S)" in br
+    # the cage lines follow the moved corners
+    assert "FFD.CAGE_EDGES.flatMap" in VIEW[VIEW.index("function cageOutline("):][:600]
+    # undo carries the deformation; the note says it; eraser + leash see the bent box
+    assert "ffd: FFD.copyFfd(S.ffd) }" in VIEW[VIEW.index("function shapeState(S)"):].split("\n")[0]
+    assert "S.ffd = FFD.copyFfd(st.ffd);" in VIEW[VIEW.index("function setShapeState(S, st)"):].split("\n")[0]
+    assert "o.ffd = S.ffd.map(d => d.map(r4)); o.corners = shapeCorners(S, q).map(v3);" in VIEW
+    for f in ("function shapeContains(S, p, r)", "function shapeLeash(S)"):
+        assert "shapeExtent(S)" in VIEW[VIEW.index(f):][:500]
+    assert "`ffd`" in HELP and "`corners`" in HELP and "`ffd`" in MCP and "`corners`" in MCP
+
+
+def test_a_pen_colour_recolours_the_selected_shape():
+    # with a shape in hand a colour paints THE SHAPE (and the pen), instead of
+    # switching tool; without one it stays the pen's colour as before
+    fn = VIEW[VIEW.index("function recolorShape(c, merge)"):]
+    fn = fn[:fn.index("\n}\n")]
+    assert "if (!S) return false;" in fn and "pen.color = c;" in fn
+    assert "S.color = c; drawShape(S);" in fn
+    assert "pushAction({ type: 'shape', S, before: shapeState(S), recolor: merge })" in fn
+    assert "if (recolorShape(c, false)) return;" in VIEW
+    assert "if (recolorShape(e.target.value, true)) return;" in VIEW
+    # undo puts the old colour back: the shape's state carries it
+    st = VIEW[VIEW.index("function shapeState(S)"):].split("\n")[0]
+    assert "color: S.color" in st
+    assert "if (st.color) S.color = st.color;" in VIEW[VIEW.index("function setShapeState(S, st)"):].split("\n")[0]
+    # …and the note says it
+    assert "const o = { kind: S.kind, color: S.color," in VIEW
+
+
+def test_shapes_have_standard_sizes():
+    # quill: «bottoncini per misure standard 10mm 1mm e 50% del volume del
+    # pezzo originale» — 50% of the piece the shape SITS ON
+    for sp, label in (("1", "1mm"), ("10", "10mm"), ("half", "½ vol")):
+        assert f'data-sp="{sp}"' in VIEW and f">{label}</button>" in VIEW
+    # the shape's own volume, from its size fields, per kind
+    fn = VIEW[VIEW.index("function shapeVolume(S)"):]
+    fn = fn[:fn.index("\n}\n")]
+    assert "if (S.kind === 'sphere') return Math.PI / 6 * s.x * s.y * s.z;" in fn
+    assert "if (S.kind === 'cylinder') return Math.PI / 4 * s.x * s.y * s.z;" in fn
+    assert "return s.x * s.y * s.z;" in fn
+    # the piece's: the gen's own volume (a body's, or a fanned part's triangles)
+    pv = VIEW[VIEW.index("function pieceVolume(key)"):]
+    pv = pv[:pv.index("\n}\n")]
+    assert "pv.bodies[i].volume" in pv and "meshVolume(g, gr.start, gr.count)" in pv and "v = pv.volume;" in pv
+    assert "genPreviews = view.previews || {};" in VIEW
+    # uniform scale to half, one undo step, re-shot views, through the ghost guard
+    fn = VIEW[VIEW.index("function setShapePreset(S, p)"):]
+    fn = fn[:fn.index("\n}\n")]
+    assert "Math.cbrt(0.5 * vp / vs)" in fn
+    assert "new THREE.Vector3(+p, +p, +p)" in fn
+    assert "pushAction({ type: 'shape', S, before: shapeState(S) });" in fn
+    assert "refreshViews(viewsOf([S])); takeView([S]);" in fn
+    assert "if (selShape && !sBarGhost() && !b.disabled) setShapePreset(selShape, b.dataset.sp);" in VIEW
+    # no volume known → the button says why instead of doing nothing
+    assert "b.disabled = v == null;" in VIEW and "syncSizePresets(S);" in VIEW
+    # a drag never snaps the 1 mm preset back up: the minimum is capped at 1 mm
+    assert "return Math.min(Math.max(0.02 * L, 1e-3), SHAPE_MM_FLOOR);" in VIEW
+    assert "const SHAPE_MM_FLOOR = 1;" in VIEW
+
+
+def test_the_shape_features_work_together():
+    # E (integration, found in the browser): a drag that ends where it began —
+    # a body slid off the parts, a handle held at its minimum — is NOT an undo
+    # step (↶ used to spend one press on nothing)
+    end = VIEW[VIEW.index("const endShapeDrag = e => {"):]
+    end = end[:end.index("\n};\n")]
+    assert "if (d.moved && !sameShapeState(d.before, shapeState(d.S))) {" in end
+    fn = VIEW[VIEW.index("function sameShapeState(a, b)"):]
+    fn = fn[:fn.index("\n}\n")]
+    for f in ("a.anchor.equals(b.anchor)", "a.rot.equals(b.rot)", "a.size.equals(b.size)", "a.color === b.color",
+              "JSON.stringify(a.ffd) === JSON.stringify(b.ffd)"):
+        assert f in fn
+    # «· deformato» is a span of its own: words on a desktop, an amber ≈ on a
+    # phone, and the phone bar takes its whole width — at 390 px the size row
+    # (cubo 10,00 × 10,00 × 10,00 + presets + Togli + ✓) used to wrap
+    assert "className: 's-def', textContent: ' · deformato'" in VIEW
+    phone = VIEW[VIEW.index("#s-dims{font-size:11px;}"):][:400]
+    assert "#s-dims .s-def{font-size:0;" in phone and "content:'≈'" in phone
+    assert "#s-bar{width:max-content;}" in VIEW
+
+
+def test_a_heap_built_with_the_3d_pen_says_how_tall_it_is(store):
+    # ✎ as a 3D pen: circling one spot piles the ink up; each point carries how
+    # far it sits above the part, and the mark says how tall the heap stands
+    pts = _circle(n=72)
+    lifts = [0.0] * 50 + [round(0.35 * k, 4) for k in range(1, 24)]
+    note = api.add_note(store, "demo", "g1", {"strokes": [
+        {"color": "#f59e0b", "width": 0.5, "piece": "n1", "g": 1, "points": pts, "lifts": lifts},
+        {"color": "#ef4444", "width": 0.5, "piece": "n1", "g": 2, "points": _circle(cx=0),
+         "lifts": [0] * 25}]})                       # all flat = an ordinary stroke
+    heap, flat = note["strokes"]
+    assert heap["lifts"] == lifts and heap["height_mm"] == round(max(lifts) + 0.5, 3)
+    assert "lifts" not in flat and "height_mm" not in flat
+    marks = api.list_notes(store)[0]["marks"]
+    assert marks[0]["height_mm"] == heap["height_mm"] and "height_mm" not in marks[1]
+
+
+def test_bad_lifts_are_refused(store):
+    for lifts in ([0, 1], [-1] * 25, [float("nan")] * 25, "up", [2e4] * 25):
+        with pytest.raises(ValueError):
+            api.add_note(store, "demo", "g1", {"strokes": [{"points": _circle(), "lifts": lifts}]})
+
+
+def test_the_pen_piles_ink_only_where_it_insists():
+    # the lift comes from the pure module (tests/ui/pen3d.test.cjs) and rides
+    # every sample: the tube is drawn lifted, the note carries it, a saved note
+    # redraws it; painted text never stacks
+    assert "import * as P3 from '/static/pen3d.js';" in VIEW
+    assert (ROOT / "webui" / "pen3d.js").exists()
+    assert '"pen3d.js"' in (ROOT / "scripts" / "build_pages.py").read_text()
+    ink = (ROOT / "webui" / "ink.js").read_text()
+    assert "r * o.sit + (lift[i] || 0)" in ink        # the filament stands on its lifts
+    assert "if (s.pen3d == null) s.pen3d = !!(s.lift && s.lift.some(v => v > 0));" in VIEW
+    assert "const ink = draft.filter(s => !s.label)" in VIEW
+    assert "lift: [penLift(hit.p, width, null)]" in VIEW
+    assert "const lift = penLift(hit.p, s.width, s);" in VIEW
+    assert "{ lifts: s.lift.map(r4) }" in VIEW
+    assert "const o = { color: s.color, width: s.width_mm || 1, pts, nrm, lift," in VIEW
+    assert '"view-ink.js"' in (ROOT / "scripts" / "build_pages.py").read_text()
+    assert "height_mm" in HELP and "`lifts`" in MCP
+
+
+# ── the note saves itself (feedback 20261008-153010-creepyfinger-v4) ────────
+# quill drew for a quarter of an hour, the page was reloaded and nothing had
+# reached the server: a note was only written when "Invia all'agente" was
+# pressed. Now /view saves as the user draws — POST once, then PUT on the SAME
+# id — so these pin the rewrite: one note, never copies.
+
+def test_a_note_is_rewritten_in_place_under_the_same_id(store):
+    first = api.add_note(store, "demo", "g1", {"text": "foro", "strokes": [{"points": _circle()}],
+                                               "views": [{"camera": {"position": [1, 2, 3], "target": [0, 0, 0]}}]},
+                         JPEG, [JPEG])
+    d = store.gen_dir("demo", "g1") / "notes"
+    assert (d / "a1.v1.jpg").exists()
+    again = api.add_note(store, "demo", "g1", {"text": "foro più grande",
+                                               "strokes": [{"points": _circle()}, {"points": [[0, 0, 10], [8, 0, 10]]}]},
+                         JPEG, note_id="a1")
+    assert again["id"] == "a1" and again["created"] == first["created"] and again["updated"]
+    assert [n["id"] for n in api.list_notes(store)] == ["a1"]           # one note, no copy
+    assert api.list_notes(store)[0]["text"] == "foro più grande"
+    assert len(api.list_notes(store)[0]["marks"]) == 2
+    # the view the rewrite no longer has is gone with it — no stale picture
+    assert not (d / "a1.v1.jpg").exists() and (d / "a1.jpg").exists() and (d / "a1.claim").exists()
+    # the next NEW note still gets a new id
+    assert api.add_note(store, "demo", "g1", {"text": "altro"})["id"] == "a2"
+
+
+def test_a_rewrite_reopens_a_note_the_agent_had_closed(store):
+    api.add_note(store, "demo", "g1", {"text": "uno"})
+    api.resolve_note(store, "demo", "g1", "a1", reply="fatto")
+    api.add_note(store, "demo", "g1", {"text": "uno, e anche questo"}, note_id="a1")
+    n = api.list_notes(store)[0]
+    assert n["done"] is None and n["reopened"]["reply"] == "fatto" and n["updated"]
+
+
+def test_a_rewrite_needs_an_existing_note(store):
+    with pytest.raises(KeyError):
+        api.add_note(store, "demo", "g1", {"text": "x"}, note_id="a7")
+    with pytest.raises(ValueError):
+        api.add_note(store, "demo", "g1", {"text": "x"}, note_id="../a1")
+
+
+def test_the_viewer_saves_as_you_draw_and_has_no_send_button():
+    assert '@app.put("/api/graph/{name}/gens/{gen}/notes/{note_id}")' in SERVER
+    assert "async function flushSave()" in VIEW and "method: save.id ? 'PUT' : 'POST'" in VIEW
+    # every change goes through syncDraw, and syncDraw schedules the save
+    sync = VIEW[VIEW.index("function syncDraw()"):]
+    assert "scheduleSave()" in sync[:sync.index("\n}\n")]
+    # taking everything back deletes the note; a closing tab saves or asks
+    assert "method: 'DELETE'" in VIEW[VIEW.index("async function flushSave()"):VIEW.index("function setSaveState")]
+    assert "visibilitychange" in VIEW and "beforeunload" in VIEW
+    assert "Invia all'agente ➤" not in VIEW and "async function sendNote" not in VIEW
+    assert "updated" in HELP and "reopened" in HELP
+
+
+def test_a_saved_note_comes_back_into_the_draft():
+    """…so it stays ONE note across a reload: rebuilt as draft items with
+    save.id on it, remembered per gen, and resumable from the list."""
+    body = VIEW[VIEW.index("async function resumeNote(n)"):]
+    body = body[:body.index("\n}\n")]
+    for kind in ("draft.push(", "labels.push(", "dmeasures.push(", "shapes.push(", "views.push("):
+        assert kind in body, kind
+    assert "save.id = n.id" in body and "rememberLive(n.id)" in body
+    assert "/img/${im.image}" in body                 # pictures are re-sent on every PUT
+    assert "noodle:view:live:${NAME}/${GEN}" in VIEW
+    assert "await resumeNote(liveN)" in VIEW            # picked up again on load
+    assert "Continua questa nota" in VIEW               # ✎ in the list
+
+
+# ── ✎ Disegna as tabs (PLAN_VIEW_TOOLS.md §1, task T0) ──────────────────────
+
+def test_the_draw_bar_is_four_tabs_and_a_common_row():
+    for t in ("{ id: 'pencil', icon: '✎', label: 'Matita', key: '1'", "{ id: 'tag', icon: '◆', label: 'Tag', key: '2'",
+              "{ id: 'blocky', icon: '▣', label: 'Blocky', key: '3'", "{ id: 'tool', icon: '🔧', label: 'Tool', key: '4'"):
+        assert t in TOOLS_JS, t
+    assert 'id="d-tabs" role="tablist"' in VIEW and 'id="d-common"' in VIEW and 'id="d-rows"' in VIEW
+    # the common row: ↶ ↷ ⌫ (and Muovi), colours, the brush's tip and width
+    common = VIEW[VIEW.index('<div id="d-common">'):VIEW.index('<div id="d-rows">')]
+    for el in ('id="d-undo"', 'id="d-redo"', 'id="d-ctools"', 'id="d-colors"', 'id="d-alphas"', 'id="d-size"'):
+        assert el in common, el
+    assert "TOOLS.registerTool({ id: 'hand', tab: 'common'" in VIEW
+    # every tool of today, in its tab
+    for t in ("id: 'pen', tab: 'pencil', key: 'p'", "id: 'pen3d', tab: 'pencil', key: 'p', mode: 'pen', pen3d: true",
+              "id: 'image', tab: 'tag'", "id: 'shape', tab: 'blocky'", "id: 'measure', tab: 'tool'"):
+        assert t in VIEW, t
+    # ✂ in its place: task A filled it (webui/view-section.js, tests/test_view_section.py)
+    assert "TOOLS.registerTool(SECUI.tool);" in VIEW
+    # 1-4 switch tabs; the tab and the tool per tab are remembered
+    assert "TOOLS.setTab(tab.id)" in VIEW and "noodle:view:drawTools" in TOOLS_JS
+    assert "try { localStorage.setItem(STORE" in TOOLS_JS
+
+
+def test_there_is_no_note_field_any_more():
+    # the note is what is drawn and written ON the part; `text` stays in the
+    # data — empty for a new note, an old note's sentence kept on resume
+    assert 'id="d-text"' not in VIEW and "$('d-text')" not in VIEW
+    assert "const text = noteText;" in VIEW and "noteText = n.text || '';" in VIEW
+
+
+def test_redo_is_the_other_side_of_the_undo_stack():
+    assert "const actions = [], redone = [];" in VIEW
+    assert "function pushAction(a) { actions.push(a); redone.length = 0; }" in VIEW
+    # every action goes through pushAction (a new one empties the redo side)
+    assert "actions.push({" not in VIEW
+    for fn in ("function undo()", "function redo()"):
+        body = VIEW[VIEW.index(fn):]
+        body = body[:body.index("\n}\n")]
+        # each step re-shoots the pictures it touched and saves (syncDraw → autosave)
+        assert "refreshViews(touched);" in body and "syncDraw();" in body, fn
+    assert "(e.ctrlKey || e.metaKey) && (k === 'y' || (k === 'z' && e.shiftKey))" in VIEW
+    # a tool module's own action carries its own undo/redo
+    assert "if (a.undo) touched = a.undo() || [];" in VIEW and "if (a.redo) touched = a.redo() || [];" in VIEW
+
+
+def test_a_tool_is_one_register_call():
+    # webui/view-tools.js: the table and the dispatcher, nothing else
+    assert "export function registerTool(def)" in TOOLS_JS and "export const ctx = {};" in TOOLS_JS
+    assert "export function attach(el)" in TOOLS_JS and "export function byKey(k)" in TOOLS_JS
+    # a gesture stays with the tool that got its pointerdown
+    assert "owner.set(e.pointerId, cur)" in TOOLS_JS
+    # the static preview ships it
+    BP = (ROOT / "scripts" / "build_pages.py").read_text()
+    assert '"view-tools.js"' in BP
+
+
+def test_the_cage_is_all_in_one():
+    # quill: «in Blocky in modalità gabbia fai valere gli spigoli della gabbia
+    # per deform, e un po' c'è tutto in uno» — no Scala ⇄ Deforma switch any more
+    assert 's-cagemode' not in VIEW and 'cageMode' not in VIEW.replace("noodle:view:cageMode", "")
+    assert "toggleCageMode" not in VIEW and "function cageCorners(" not in VIEW
+    # the 12 edges: a diamond each, picked on a fat rod over the edge's middle,
+    # measured on screen to the SEGMENT; dragging moves its two vertices together
+    fn = VIEW[VIEW.index("function cageEdges("):]
+    fn = fn[:fn.index("\n}\n")]
+    assert "FFD.CAGE_EDGES.forEach((e, k) => {" in fn and "const handle = { type: 'edge', k, e };" in fn
+    assert "pk.userData.seg = [u, v];" in fn
+    br = VIEW[VIEW.index("} else if (d.h.type === 'ffd' || d.h.type === 'edge') {"):]
+    br = br[:br.index("} else if", 1)]
+    assert ": FFD.moveEdge(d.ffd0, d.h.e, l, minN);" in br
+    assert "if (e.shiftKey) l = FFD.dominantOnly(l);" in br
+    # the centre: back to its size and grab of before (quill: «il pallino viola
+    # era per lo scale intero»), chosen by proximity like every other handle
+    cc = VIEW[VIEW.index("function cageCentre("):]
+    cc = cc[:cc.index("\n}\n")]
+    assert "rDot = Math.min(grab * 1.4, 0.15 * side)" in cc and "new THREE.SphereGeometry(rDot, 16, 10)" in cc
+    assert "new THREE.SphereGeometry(grab * 1.4, 12, 8)" in cc
+    ha = VIEW[VIEW.index("function handleAt(x, y) {"):]
+    ha = ha[:ha.index("\n}\n")]
+    assert "type !== 'center'" not in ha
+    # …and a press on the dot AS DRAWN takes the dot, even if an edge seen
+    # end-on passes a hair nearer in projection
+    assert "m.userData.dotPx = rDot / px;" in cc
+    assert "Math.sqrt(dist2(dot.object)) <= dot.object.userData.dotPx" in ha
+    # the face handles sit on the BENT face; the scale keeps the bend
+    assert "shapeLocal(S, FFD.faceMean(S.ffd, a, sg), q)" in VIEW
+
+
+def test_the_shape_slides_on_the_right_button_or_a_double_tap():
+    # quill: «se premi su un punto qualsiasi della superficie sposta il pezzo […]
+    # usa il click destro per spostarlo invece, o il doppio tap e trascina»
+    sd = VIEW[VIEW.index("function shapeDown(e) {"):]
+    sd = sd[:sd.index("\n}\n")]
+    # the right button (mouse) or a second tap close in time and place
+    assert "const right = e.pointerType === 'mouse' && e.button === 2;" in sd
+    assert "const DTAP_MS = 300, DTAP_PX = 20;" in VIEW
+    assert "now - t1.t <= DTAP_MS" in sd and "<= DTAP_PX" in sd
+    assert "const slide = right ? onBody : dtap ? (onBody || t1.S) : null;" in sd
+    # off the shapes the right button is the view's pan: not taken
+    assert "if (right && !slide) return;" in sd
+    # the left button on the body is NOT a move: only a handle or a slide starts a drag
+    assert "h: h || { type: 'move' }" in sd and "if (h || slide) {" in sd
+    assert "const body = !h && onBody;" not in sd
+    # …it is a tap that selects (and arms the double tap), or an orbit
+    assert "sDown = { id: e.pointerId, x: e.clientX, y: e.clientY, t: now, body: onBody };" in sd
+    up = VIEW[VIEW.index("const endShapeDrag = e => {"):]
+    up = up[:up.index("\n};\n")]
+    assert "if (d.body !== selShape) selectShape(d.body);" in up
+    assert "shapeTap = { S: d.body, x: e.clientX, y: e.clientY, t: e.timeStamp };" in up
+    assert "now = e.timeStamp;" in sd
+    # a second finger cancels the slide and hands the first one to the view
+    assert "setShapeState(d.S, d.before); drawShape(d.S); refreshCage();" in sd
+    assert "dispatchEvent(new PointerEvent('pointerdown', d.down))" in sd
+    # no context menu over a shape
+    assert "vp.addEventListener('contextmenu'" in VIEW
+    # the hint and the ◌ button say how
+    assert "tasto DESTRO trascinato sulla forma (dito: doppio tocco e trascina)" in VIEW
+
+
+def test_the_tab_row_carries_the_name_fatto_menu_hide_and_close():
+    # quill: «metti un hide accanto alla X e metti Fatto e il menu a tre
+    # pallini lì in quella riga» + «anche il nome mettilo lì»
+    head = VIEW[VIEW.index('<div id="d-head">'):VIEW.index('<div id="d-common">')]
+    common = VIEW[VIEW.index('<div id="d-common">'):VIEW.index('<div id="d-rows">')]
+    order = ['id="d-tabs"', 'id="d-save"', 'id="d-send"', 'id="d-more"', 'id="d-hide"', 'id="d-x"']
+    pos = [head.index(el) for el in order]
+    assert pos == sorted(pos), order
+    assert 'id="d-menu"' in head and 'id="d-clear"' in head          # Pulisci lives in ⋯
+    for el in ('id="d-send"', 'id="d-more"', 'id="d-save"', 'id="d-x"', 'id="d-clear"', 'id="d-hide"'):
+        assert el not in common, el
+    # ⋯ on every screen, not only a phone's
+    assert 'class="btn narrow" id="d-more"' not in VIEW and ".narrow{" not in VIEW
+
+
+def test_clear_all_is_in_sight_next_to_undo():
+    # quill: «metti un bottone clear all nel disegna perché non sempre undo
+    # leva tutto o la gomma prende le cose» — Pulisci in ⋯ was not found
+    common = VIEW[VIEW.index('<div id="d-common">'):VIEW.index('<div id="d-rows">')]
+    assert common.index('id="d-redo"') < common.index('id="d-clearall"')
+    assert "$('d-clear').onclick = $('d-clearall').onclick = askClear;" in VIEW
+    assert "$('d-clearall').disabled = !any" in VIEW
+
+
+def test_hiding_the_draw_bar_keeps_its_top_row_and_the_tool():
+    # ▾ folds the bar to its top row; the tool in hand keeps working (no
+    # deselect), the ✂ cut's own bar comes back, entering ✎ opens it whole
+    assert "#vp.dhide #d-tabs,#vp.dhide #d-common,#vp.dhide #d-rows,#vp.dhide #d-hint{display:none;}" in VIEW
+    assert "#vp.drawing.dhide #cutbar.open{display:flex;" in VIEW
+    assert "if (on) dHidden = false;" in VIEW
+    assert "else if (k === 'b') { e.stopImmediatePropagation(); setHidden(!dHidden); }" in VIEW
+    sh = VIEW[VIEW.index("function setHidden("):]
+    sh = sh[:sh.index("\n")]
+    assert "setTool" not in sh and "TOOLS.select" not in sh
+    # H stays «hide the selected piece»
+    assert "if (k === 'h' && selected)" in VIEW
+    assert "@media (pointer:coarse){ #d-end .btn,#d-cur{min-height:44px;min-width:44px;} }" in VIEW
+
+
+def test_a_stroke_keeps_its_pen_and_its_tip(store):
+    # ✎ / ✎³ and the alpha (sfumato / normale / stellina) ride the stroke, so a
+    # saved note redraws a flat ✎³ line as filament and stars as stars
+    note = api.add_note(store, "demo", "g1", {"strokes": [
+        {"points": _circle(), "pen": "3d", "alpha": "star"},
+        {"points": _circle(cx=0), "pen": "spray", "alpha": "normal"},
+        {"points": _circle(cx=5)}]})
+    a, b, c = note["strokes"]
+    assert (a["pen"], a["alpha"]) == ("3d", "star") and (b["pen"], b["alpha"]) == ("spray", "normal")
+    assert "pen" not in c and "alpha" not in c
+    for bad in ({"pen": "brush"}, {"alpha": "heart"}):
+        with pytest.raises(ValueError):
+            api.add_note(store, "demo", "g1", {"strokes": [{"points": _circle(), **bad}]})
+    assert "pen: s.pen3d ? '3d' : 'spray', alpha: INK.alphaOf(" in VIEW
+    assert VIEW.count("...(s.pen ? { pen3d: s.pen === '3d' } : {})") == 2   # the draft and a saved note
+
+
+_JPG = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgK"
+
+
+def test_a_picture_brush_travels_inside_the_note(store):
+    # 🖼 the alpha square and the texture square: the pictures go in `brushes`
+    # (small data URLs, only /view reads them) and a stroke names them by index
+    note = api.add_note(store, "demo", "g1", {
+        "brushes": [{"id": "afoo1", "kind": "alpha", "data": _JPG}, {"id": "tbar2", "kind": "tex", "data": _JPG}],
+        "strokes": [{"points": _circle(), "pen": "3d", "alpha": "img", "brush": 0, "tex": 1},
+                    {"points": _circle(cx=0), "alpha": "soft", "tex": 1}]})
+    assert [b["kind"] for b in note["brushes"]] == ["alpha", "tex"]
+    a, b = note["strokes"]
+    assert (a["alpha"], a["brush"], a["tex"]) == ("img", 0, 1) and b["tex"] == 1 and "brush" not in b
+    assert note["brushes"] == api.gen_notes_raw(store, "demo", "g1")[-1]["brushes"]
+    # the agent's view does not carry the pictures
+    assert "brushes" not in api.list_notes(store, "demo", "g1", points=True)[0]
+    bad = [
+        {"brushes": [{"id": "a1", "kind": "alpha", "data": "javascript:alert(1)"}], "strokes": [{"points": _circle()}]},
+        {"brushes": [{"id": "a1", "kind": "paint", "data": _JPG}], "strokes": [{"points": _circle()}]},
+        {"brushes": [{"id": "a1", "kind": "alpha", "data": _JPG}], "strokes": [{"points": _circle(), "tex": 0}]},
+        {"strokes": [{"points": _circle(), "brush": 0}]},
+        {"brushes": [{"id": "A/../x", "kind": "alpha", "data": _JPG}], "strokes": [{"points": _circle()}]},
+    ]
+    for p in bad:
+        with pytest.raises(ValueError):
+            api.add_note(store, "demo", "g1", p)
+    assert "import * as BIMG from '/static/brush-img.js';" in VIEW
+    assert 'id="d-tex"' in VIEW and "b.id = 'd-alphaimg'" in VIEW
+
+
+# ── ↶ ↷ the history travels with the note ────────────────────────────────
+# quill: «fammi annullare anche il pulisci con ↶ e salva la history nel file
+# così si può annullare anche se ricarico».
+HIST = {"v": 1, "live": {"strokes": [], "words": [], "images": [], "measures": [], "shapes": []},
+        "pool": [{"kind": "stroke", "k": 1, "g": 0, "pts": [[0, 0, 0]], "nrm": [[0, 0, 1]]}],
+        "actions": [{"type": "pen", "g": 0}, {"type": "erase", "clear": True, "strokes": [1],
+                                                "labels": [], "measures": [], "shapes": []}], "redone": []}
+
+
+def test_the_history_is_kept_beside_the_note_and_read_back(store):
+    api.add_note(store, "demo", "g1", {"strokes": [{"points": _circle()}], "history": HIST})
+    d = store.gen_dir("demo", "g1") / "notes"
+    assert (d / "a1.history.json").exists()
+    assert api.note_history(store, "demo", "g1", "a1") == HIST
+    # the agent never sees it, nor does the note file carry it
+    assert "history" not in api.list_notes(store)[0] and "history" not in json.loads((d / "a1.json").read_text())
+    # a rewrite without one drops it; the delete takes it too
+    api.add_note(store, "demo", "g1", {"strokes": [{"points": _circle()}]}, note_id="a1")
+    assert api.note_history(store, "demo", "g1", "a1") == {}
+    api.add_note(store, "demo", "g1", {"strokes": [{"points": _circle()}], "history": HIST}, note_id="a1")
+    store.delete_gen_note("demo", "g1", "a1")
+    assert not (d / "a1.history.json").exists()
+
+
+def test_a_cleared_note_is_kept_for_its_undo_but_hidden(store):
+    api.add_note(store, "demo", "g1", {"strokes": [{"points": _circle()}]})
+    # 🗑 Pulisci: nothing on the part, but ↶ can bring it back
+    n = api.add_note(store, "demo", "g1", {"history": HIST}, note_id="a1")
+    assert n["empty"] is True
+    assert api.list_notes(store) == [] and api._open_notes(store, "demo", "g1") == 0
+    assert [x["id"] for x in api.gen_notes_raw(store, "demo", "g1")] == ["a1"]    # /view resumes it
+    # ↶: it is a note again
+    assert "empty" not in api.add_note(store, "demo", "g1", {"strokes": [{"points": _circle()}], "history": HIST},
+                                       note_id="a1")
+    assert [x["id"] for x in api.list_notes(store)] == ["a1"]
+    # with nothing to bring back, empty is still refused
+    with pytest.raises(ValueError):
+        api.add_note(store, "demo", "g1", {"history": {"actions": [], "redone": []}}, note_id="a1")
+    with pytest.raises(ValueError):
+        api.add_note(store, "demo", "g1", {"history": "x"}, note_id="a1")
+
+
+def test_pulisci_is_an_undoable_action_and_the_viewer_saves_the_history():
+    assert "function clearAll()" in VIEW and "confirm('Togliere tutto" not in VIEW
+    body = VIEW[VIEW.index("function clearAll()"):VIEW.index("const askClear")]
+    assert "pushAction(a); takeAway(a);" in body
+    assert "if (history) body.history = history;" in VIEW
+    assert "fetch(`${base}/history`)" in VIEW and "await historyIn(hist)" in VIEW
+    assert '@app.get("/api/graph/{name}/gens/{gen}/notes/{note_id}/history")' in SERVER
+    # the list and the count skip a note kept only for its ↶
+    assert "const listed = notesData.filter(n => !n.empty);" in VIEW
